@@ -11,7 +11,7 @@ for f in src/main/identity/keys.ts src/main/identity/register.ts src/main/identi
 cmp -s resources/summit-bandersnatch-cli.wasm .refs/bot-core/vendor/summit-bandersnatch-cli.wasm || fail "wasm differs from bot-core's"
 ! git grep -n -E 'console\.log\([^)]*(mnemonic|seed|privateKey)' -- src scripts || fail "a log statement mentions secret material"
 npm run check >/tmp/m1-check.log 2>&1 || { tail -40 /tmp/m1-check.log; fail "npm run check failed"; }
-name="pcdrev$(LC_ALL=C tr -dc a-z < /dev/urandom | head -c 4)"
+name="pcdrev$(printf "%s" "$RANDOM$RANDOM" | tr 0-9 a-j)"
 out=$(with_timeout 400 npm run identity:register -- "$name" 2>&1 | tail -15) || true
 echo "$out"
 echo "$out" | grep -q 'ON_CHAIN key_type=0' || fail "registration did not land on chain with an X25519 key"
