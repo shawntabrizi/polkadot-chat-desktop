@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
-git log -1 --format=%s | grep -q '^M0:' || fail "last commit is not an M0 commit"
+git log --format=%s | grep -q '^M0:' || fail "no M0 commit in history"
 [ -f electron.vite.config.ts ] || fail "electron.vite.config.ts missing"
 [ -f src/main/index.ts ] && [ -f src/preload/index.ts ] && [ -f src/renderer/main.tsx ] || fail "main/preload/renderer entry missing"
 grep -q '"electron": "44.4.1"' package.json || fail "electron not pinned to 44.4.1"

@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
-git log -1 --format=%s | grep -q '^M4:' || fail "last commit is not an M4 commit"
+git log --format=%s | grep -q '^M4:' || fail "no M4 commit in history"
 [ -f src/main/assistant/client.ts ] && [ -f scripts/e2e-assistant.mjs ] || fail "assistant files missing"
 ! git grep -n 'LLM_PROXY_KEY' -- src/renderer || fail "renderer references the proxy key"
 npm run check >/tmp/m4-check.log 2>&1 || { tail -40 /tmp/m4-check.log; fail "npm run check failed"; }

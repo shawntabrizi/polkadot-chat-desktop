@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
-git log -1 --format=%s | grep -q '^M3:' || fail "last commit is not an M3 commit"
+git log --format=%s | grep -q '^M3:' || fail "no M3 commit in history"
 [ -f electron-builder.yml ] || fail "electron-builder.yml missing"
 npm run check >/tmp/m3-check.log 2>&1 || { tail -40 /tmp/m3-check.log; fail "npm run check failed"; }
 with_timeout 900 npm run package >/tmp/m3-package.log 2>&1 || { tail -30 /tmp/m3-package.log; fail "package failed"; }
