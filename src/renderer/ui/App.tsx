@@ -8,7 +8,7 @@ import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
 import { type IdentityLookup, createIdentityLookup } from '../domain/identity/lookup';
 import { ensureSelfIdentitySeeded } from '../domain/identity/selfIdentity';
-import { type UserIdentity, clearUserIdentity, readUserIdentity } from '../domain/identity/userIdentity';
+import { type UserIdentity, readUserIdentity } from '../domain/identity/userIdentity';
 import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
 
 import { Chats } from './Chats';
@@ -134,14 +134,6 @@ export const App = () => {
     setStartCount(count => count + 1);
   };
 
-  // The identity is owned by this machine, so logout clears the local chat
-  // rows only; the start-up seeds them again from the saved identity.
-  const logout = async () => {
-    await clearUserIdentity();
-    setBoot(null);
-    setStartCount(count => count + 1);
-  };
-
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', padding: 24, maxWidth: 720 }}>
       <h1>Polkadot Chat Web</h1>
@@ -185,10 +177,10 @@ export const App = () => {
           ) : null}
           {tab === 'settings' ? (
             <Settings
+              username={boot.username}
               identity={boot.identity}
               deviceKeys={boot.deviceKeys}
               profileId={boot.profileId}
-              onLogout={() => void logout()}
             />
           ) : null}
         </>

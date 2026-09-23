@@ -73,6 +73,8 @@ So the React app mounts (not only `did-finish-load`) and `window.desktop.version
 
 Run 2026-09-23 on macOS (Apple Silicon), Node v24.13.1, npm 11.12.1.
 
+Reviewer check run (2026-09-23): `docs/milestones/M1.check.sh` registered `pcdrevchibacbfcc.48`, `ON_CHAIN key_type=0`.
+
 ### `npm run check` (last 12 lines)
 
 ```
