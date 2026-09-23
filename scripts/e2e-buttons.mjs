@@ -5,7 +5,7 @@
 // connection). Sends a chat request, waits for the accept, sends `menu`, and
 // waits for a `buttons` message (BUTTONS_RECEIVED rows=<n>). Presses the first
 // `callback` button through the manager, as the app does (PRESS_SENT), and
-// waits up to 60 s for a text reply that names the button's label (BUTTONS_OK).
+// waits up to 60 s for any text reply to the press (BUTTONS_OK).
 // Exit 0 BUTTONS_OK; 7 BUTTONS_FALLBACK (the bot answered `menu` with plain
 // text: no buttons extension, or the gate did not open); 3 PEER_KEY_UNSUPPORTED;
 // 4 E2E_TIMEOUT <stage>; 1 any other failure. Prints no secret.
@@ -273,16 +273,16 @@ console.log(`PRESS_SENT row=${target.row} index=${target.index} label=${JSON.str
 // The answer may come as a new message or as an edit of a status row; read
 // every row after the press, and the latest text of each.
 const PRESS_REPLY_MS = 60_000;
+// Reviewer ruling (2026-09-23): the proof is that the bot answers the press at
+// all; a bot's wording is its persona's business (the guide answers "Colour of
+// the day" with a colour name). Whether the reply names the label is reported,
+// not required.
 const needle = target.label.toLowerCase();
-let lastSeen = null;
 const answer = await waitFor(async () => {
   const fresh = (await incoming()).filter((row) => !beforePress.has(row.messageId) && !isStatus(row));
-  if (fresh.length > 0) lastSeen = fresh.at(-1);
-  return fresh.find((row) => textOf(row).toLowerCase().includes(needle)) ?? null;
+  return fresh.length > 0 ? fresh.at(-1) : null;
 }, PRESS_REPLY_MS);
-if (!answer) {
-  if (lastSeen) console.log(`PRESS_REPLY ${oneLine(textOf(lastSeen))} (does not name "${target.label}")`);
-  finish(4, 'E2E_TIMEOUT press reply');
-}
-console.log(`PRESS_REPLY ${oneLine(textOf(answer))}`);
+if (!answer) finish(4, 'E2E_TIMEOUT press reply');
+const names = textOf(answer).toLowerCase().includes(needle);
+console.log(`PRESS_REPLY ${oneLine(textOf(answer))} (names the label: ${names ? 'yes' : 'no'})`);
 finish(0, 'BUTTONS_OK');
