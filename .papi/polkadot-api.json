@@ -1,0 +1,18 @@
+{
+  "version": 0,
+  "descriptorPath": ".papi/descriptors",
+  "entries": {
+    "productsDevnetPeople": {
+      "wsUrl": "wss://people-paseo.rotko.net",
+      "metadata": ".papi/metadata/productsDevnetPeople.scale",
+      "genesis": "0xe6c30d6e148f250b887105237bcaa5cb9f16dd203bf7b5b9d4f1da7387cb86ec",
+      "codeHash": "0xfa5e746b7259049246ff38de55591690115df6e38522464c497027cdf562f41f"
+    },
+    "paseoPeopleNext": {
+      "wsUrl": "wss://paseo-people-next-system-rpc.polkadot.io",
+      "metadata": ".papi/metadata/paseoPeopleNext.scale",
+      "genesis": "0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
+      "codeHash": "0x12c3c05947a1043efc4002dc82f25fed18cc0c78aff9b153db62b432a7602f1d"
+    }
+  }
+}

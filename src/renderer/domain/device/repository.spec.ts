@@ -46,4 +46,23 @@ describe('getDeviceKeys', () => {
     expect(second.statementAccountPublicKey).not.toEqual(first.statementAccountPublicKey);
     expect((await db.secrets.get('device.statementSeed'))?.bytes).toEqual(second.statementAccountSeed);
   });
+
+  // On the desktop the seed is the identity wallet key; minting over it would
+  // make this app sign as an account nobody knows.
+  it('rebuilds the device row from a stored seed instead of minting', async () => {
+    const first = await getDeviceKeys();
+    await db.device.delete('self');
+    forgetCachedDeviceKeys();
+    const second = await getDeviceKeys();
+    expect(second).toEqual(first);
+    expect((await db.device.get('self'))?.statementAccountPublicKey).toEqual(first.statementAccountPublicKey);
+  });
+
+  it('fails instead of minting when a stored seed has no usable encryption key', async () => {
+    const first = await getDeviceKeys();
+    await db.secrets.delete('device.encryptionPrivateKey');
+    forgetCachedDeviceKeys();
+    await expect(getDeviceKeys()).rejects.toThrow(/incomplete/);
+    expect((await db.secrets.get('device.statementSeed'))?.bytes).toEqual(first.statementAccountSeed);
+  });
 });

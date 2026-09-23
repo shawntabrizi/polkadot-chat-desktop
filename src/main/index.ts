@@ -1,6 +1,8 @@
 import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 
+import { registerIpc } from './ipc';
+
 const SMOKE_TIMEOUT_MS = 30_000;
 
 function createWindow(smoke: boolean): BrowserWindow {
@@ -48,6 +50,7 @@ function watchSmoke(win: BrowserWindow): void {
 }
 
 void app.whenReady().then(() => {
+  registerIpc();
   createWindow(process.argv.includes('--smoke'));
 });
 

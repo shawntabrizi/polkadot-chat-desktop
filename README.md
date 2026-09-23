@@ -11,5 +11,6 @@ its own. See `PLAN.md` for the scope and the milestones.
 - `npm run build` — build main, preload and renderer into `out/`.
 - `npm run check` — type check, unit tests, lint.
 - `npm run smoke` — build, start the app hidden, print `SMOKE_OK` when the renderer loads.
+- `npm run identity:register -- <name> [--profile devnet|paseo]` — create and register an identity without Electron (test use; stores it unencrypted under `.agent-runs/`).
 
 Reference code: `.refs/` (git-ignored symlinks; see PLAN.md)

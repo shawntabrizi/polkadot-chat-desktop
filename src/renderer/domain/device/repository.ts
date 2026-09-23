@@ -29,6 +29,14 @@ const readStored = async (): Promise<DeviceKeys | null> => {
   return toDeviceKeys(seed.bytes, encryptionPrivateKey.bytes);
 };
 
+const putDeviceRow = (keys: DeviceKeys): Promise<unknown> =>
+  db.device.put({
+    id: DEVICE_ROW_ID,
+    statementAccountPublicKey: keys.statementAccountPublicKey,
+    encryptionPublicKey: keys.encryptionPublicKey,
+    createdAt: Date.now(),
+  });
+
 const load = (): Promise<DeviceKeys> =>
   // One read-write transaction: a concurrent first launch in another tab sees
   // either nothing or the complete key set, never a row without its secrets.
@@ -36,13 +44,22 @@ const load = (): Promise<DeviceKeys> =>
     const existing = await readStored();
     if (existing) return existing;
 
+    // A stored seed is never replaced. On the desktop it is the identity
+    // wallet key (selfIdentity.ts); a fresh mint would sign as an account no
+    // peer knows. Rebuild the public row from it, or fail loudly.
+    const seed = await db.secrets.get('device.statementSeed');
+    if (seed) {
+      const encryptionPrivateKey = await db.secrets.get('device.encryptionPrivateKey');
+      if (seed.bytes.length !== STATEMENT_SEED_BYTES || encryptionPrivateKey?.bytes.length !== ENCRYPTION_KEY_BYTES) {
+        throw new Error('stored device keys are incomplete');
+      }
+      const keys = toDeviceKeys(seed.bytes, encryptionPrivateKey.bytes);
+      await putDeviceRow(keys);
+      return keys;
+    }
+
     const keys = toDeviceKeys(generateStatementAccountSeed(), generateEncryptionPrivateKey());
-    await db.device.put({
-      id: DEVICE_ROW_ID,
-      statementAccountPublicKey: keys.statementAccountPublicKey,
-      encryptionPublicKey: keys.encryptionPublicKey,
-      createdAt: Date.now(),
-    });
+    await putDeviceRow(keys);
     await db.secrets.bulkPut([
       { id: 'device.statementSeed', bytes: keys.statementAccountSeed },
       { id: 'device.encryptionPrivateKey', bytes: keys.encryptionPrivateKey },
@@ -50,7 +67,7 @@ const load = (): Promise<DeviceKeys> =>
     return keys;
   });
 
-/** This device's keys, minted on first use and stable for the install. */
+/** This device's keys: the stored seed when there is one, else minted on first use; stable for the install. */
 export const getDeviceKeys = (): Promise<DeviceKeys> => {
   loading ??= load().catch((error: unknown) => {
     loading = null;
