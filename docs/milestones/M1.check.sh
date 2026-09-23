@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
-git log --format=%s | grep -q '^M1:' || fail "no M1 commit in history"
+[ -n "$(git log --format=%s --grep='^M1:')" ] || fail "no M1 commit in history"
 for f in src/main/identity/keys.ts src/main/identity/register.ts src/main/identity/store.ts src/main/identity/service.ts src/main/ipc.ts src/renderer/domain/identity/selfIdentity.ts src/renderer/ui/SignUp.tsx scripts/identity-register.mjs resources/summit-bandersnatch-cli.wasm; do [ -f "$f" ] || fail "missing $f"; done
 cmp -s resources/summit-bandersnatch-cli.wasm .refs/bot-core/vendor/summit-bandersnatch-cli.wasm || fail "wasm differs from bot-core's"
 ! git grep -n -E 'console\.log\([^)]*(mnemonic|seed|privateKey)' -- src scripts || fail "a log statement mentions secret material"

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
-git log --format=%s | grep -q '^M2:' || fail "no M2 commit in history"
+[ -n "$(git log --format=%s --grep='^M2:')" ] || fail "no M2 commit in history"
 [ -f scripts/e2e-chat.mjs ] || fail "scripts/e2e-chat.mjs missing"
 npm run check >/tmp/m2-check.log 2>&1 || { tail -40 /tmp/m2-check.log; fail "npm run check failed"; }
 out=$(with_timeout 420 npm run e2e:chat -- pcdpeer.47 2>&1 | tail -25) || true
