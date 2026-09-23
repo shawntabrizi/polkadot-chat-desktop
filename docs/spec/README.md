@@ -33,6 +33,7 @@ Provisional kind numbers are in the range 240–249 (`kinds.md`); RFC-0003 takes
 | File | Status | Implemented in |
 |---|---|---|
 | `kinds.md` | living | registry of provisional kinds and their fallbacks |
+| `efficiency.md` | living | submission-cost rule and the tightenings owed |
 | `0003-message-deletion.md` | upstream (chat-spec), implemented | desktop M7, pca `desktop/rfc-0003` |
 | `0005-typing-and-seen.md` | draft complete | desktop M9, pca `desktop/rfc-0003` |
 | `0006-buttons.md` | draft complete | desktop M8, pca `desktop/rfc-0003` |
