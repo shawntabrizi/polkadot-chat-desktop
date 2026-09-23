@@ -90,7 +90,18 @@ export type AssistantChat = {
 type Api = Pick<DesktopAssistantApi, 'send' | 'cancel' | 'onDelta' | 'onDone' | 'onError' | 'onActivity' | 'getSettings'>;
 
 /** The engine session of the room's last reply. */
-type StoredSession = { engine: AssistantEngineId; sessionId: string; replyId: string };
+type StoredSession = { engine: AssistantEngineId; sessionId: string; replyId: string; prompt?: string };
+
+/**
+ * A CLI session keeps the system prompt it was created with (`--append-system-prompt`
+ * on a resumed Claude Code session does not replace the original), so a
+ * session is resumed only while the prompt is the one it was born with.
+ */
+export const promptFingerprint = (prompt: string): string => {
+  let h = 2166136261;
+  for (let i = 0; i < prompt.length; i++) { h ^= prompt.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16);
+};
 
 const readSession = async (): Promise<StoredSession | null> => {
   const raw = await readSetting('assistant.session');
@@ -205,7 +216,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       replies.delete(event.messageId);
       ended.add(event.messageId);
       if (event.sessionId) {
-        await writeSetting('assistant.session', JSON.stringify({ engine: event.engine, sessionId: event.sessionId, replyId: event.messageId } satisfies StoredSession));
+        await writeSetting('assistant.session', JSON.stringify({ engine: event.engine, sessionId: event.sessionId, replyId: event.messageId, prompt: promptFingerprint(SYSTEM_PROMPT) } satisfies StoredSession));
       }
     });
   });
@@ -242,6 +253,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
     if (!stored) return null;
     const lastReply = [...earlier].reverse().find(row => row.direction === 'incoming');
     if (lastReply?.messageId !== stored.replyId) return null;
+    if (stored.prompt !== promptFingerprint(SYSTEM_PROMPT)) return null;
     const { engine } = await api.getSettings();
     return engine === stored.engine ? stored.sessionId : null;
   };
