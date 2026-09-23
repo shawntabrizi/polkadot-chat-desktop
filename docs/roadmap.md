@@ -50,3 +50,7 @@ Product:
 ## Embedded bots (owner ruling, 2026-09-23)
 
 A bot that ships with the app is embedded in the app: a local contact whose logic runs in the main process, never a separate identity or process the owner has to keep running. Embedded today: Assistant (LLM engines), Faucet (devnet drip signed from the public dev account). On-chain bots (`pca`) are separate identities for anyone on the network; the desktop's own agent becomes one in M13. Embedded bots may later be exposed on chain by that same mechanism, but they never depend on it.
+
+## Structured directives (added 2026-09-23 after the owner saw partial buttons JSON during streaming)
+
+Models produce client directives (buttons, tx intents, bot-info updates) today as a fenced text block that the host parses. Not planned before this: in M13, engines that support tool calling (the proxy engine; any API-backed pca brain) get a `buttons`/`tx` tool generated from the same schema as the parser, so the directive arrives as one validated object and never streams as text. The fenced block stays the fallback for text-only engines (Claude Code, Codex, OpenCode CLIs) and is never required. Wire format unchanged.
