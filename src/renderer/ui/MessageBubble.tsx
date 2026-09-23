@@ -58,6 +58,16 @@ export const SystemRow = ({ text }: { text: string }) => (
   </div>
 );
 
+/**
+ * A bot's spec 0008 greeting: system-style (centred, quiet, no bubble, no
+ * actions), but it can run to 280 characters, so a block, not a pill.
+ */
+export const GreetingRow = ({ text }: { text: string }) => (
+  <div className="flex justify-center py-2" data-testid="bot-greeting">
+    <p className="max-w-md rounded-nested bg-surface-nested px-4 py-2 text-center text-body-s whitespace-pre-wrap text-fg-secondary">{text}</p>
+  </div>
+);
+
 export const DateSeparator = ({ text }: { text: string }) => (
   <div className="flex justify-center pt-4 pb-2">
     <span className="text-label-s text-fg-tertiary">{text}</span>

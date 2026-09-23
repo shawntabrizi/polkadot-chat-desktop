@@ -9,7 +9,7 @@
  */
 
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
-import { Bytes, type Codec, type CodecType, Enum, Struct, Vector, bool, createCodec, str, u64, u8 } from 'scale-ts';
+import { Bytes, type Codec, type CodecType, Enum, Struct, Vector, bool, createCodec, str, u16, u64, u8 } from 'scale-ts';
 
 import { hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
@@ -53,6 +53,18 @@ export type TypingWire = { tag: 'typing'; value: { until: bigint; kind: number }
 /** Spec 0005 `seen(SeenContent)`, provisional kind 241. `upTo` is a message id of the receiver's; `at` unix ms. */
 export type SeenWire = { tag: 'seen'; value: { upTo: string; at: bigint } };
 
+/** Spec 0008 `Command`: `name` without the slash. */
+export type BotCommandWire = { name: string; description: string };
+/**
+ * Spec 0008 `botInfo(BotInfo)`, provisional kind 244. `kind` is 0 bot, 1
+ * agent, 2 person-operated service; any other byte is kept as read (a later
+ * revision may add kinds). Never a row.
+ */
+export type BotInfoWire = {
+  tag: 'botInfo';
+  value: { kind: number; name: string; description: string; greeting: string; commands: BotCommandWire[]; version: number };
+};
+
 export type ChatContent =
   | SdkChatMessageWire['versioned']['value']
   | DeletedWire
@@ -60,6 +72,7 @@ export type ChatContent =
   | ButtonPressWire
   | TypingWire
   | SeenWire
+  | BotInfoWire
   | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
@@ -77,6 +90,8 @@ export const BUTTON_PRESS_KIND = 243;
 /** Spec 0005 provisional kinds (docs/spec/kinds.md). */
 export const TYPING_KIND = 240;
 export const SEEN_KIND = 241;
+/** Spec 0008 provisional kind (docs/spec/kinds.md). */
+export const BOT_INFO_KIND = 244;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -90,8 +105,27 @@ const ButtonPressContentCodec = Struct({ messageId: str, row: u8, index: u8, pay
 // Spec 0005 layout (docs/spec/vectors-0005.md).
 const TypingContentCodec = Struct({ until: u64, kind: u8 });
 const SeenContentCodec = Struct({ upTo: str, at: u64 });
+// Spec 0008 layout (docs/spec/vectors-0008.md).
+const BotCommandCodec = Struct({ name: str, description: str });
+const BotInfoContentCodec = Struct({ kind: u8, name: str, description: str, greeting: str, commands: Vector(BotCommandCodec), version: u16 });
 
-type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire;
+/**
+ * Spec 0008 decoder bounds, the same as pca's (vectors-0008.md): each string
+ * in bytes (4 per character of the spec's limit) and the command count. Over
+ * a bound the message is undecodable.
+ */
+export const BOT_INFO_BOUNDS = { name: 160, description: 1120, greeting: 1120, commandName: 128, commandDescription: 320, commands: 32 } as const;
+const utf8Length = (text: string): number => new TextEncoder().encode(text).length;
+const withinBotInfoBounds = (info: BotInfoWire['value']): boolean =>
+  utf8Length(info.name) <= BOT_INFO_BOUNDS.name &&
+  utf8Length(info.description) <= BOT_INFO_BOUNDS.description &&
+  utf8Length(info.greeting) <= BOT_INFO_BOUNDS.greeting &&
+  info.commands.length <= BOT_INFO_BOUNDS.commands &&
+  info.commands.every(
+    command => utf8Length(command.name) <= BOT_INFO_BOUNDS.commandName && utf8Length(command.description) <= BOT_INFO_BOUNDS.commandDescription,
+  );
+
+type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire | BotInfoWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -103,6 +137,7 @@ const ButtonsMessage = envelope(ButtonsContentCodec);
 const ButtonPressMessage = envelope(ButtonPressContentCodec);
 const TypingMessage = envelope(TypingContentCodec);
 const SeenMessage = envelope(SeenContentCodec);
+const BotInfoMessage = envelope(BotInfoContentCodec);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
   value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
@@ -119,7 +154,7 @@ const decodeWith = <T>(codec: Codec<Envelope & { content: T }>, bytes: Uint8Arra
   }
 };
 
-/** A spec 0005/0006 message this build cannot read past the header (coordinator ruling, docs/decisions.md M8). */
+/** A spec 0005/0006/0008 message this build cannot read past the header (coordinator ruling, docs/decisions.md M8). */
 const undecodable = (header: Envelope): ChatMessageWire => ({
   messageId: header.messageId,
   timestamp: header.timestamp,
@@ -149,6 +184,11 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       return decodeWith(TypingMessage, bytes, value => ({ tag: 'typing', value })) ?? undecodable(header);
     case SEEN_KIND:
       return decodeWith(SeenMessage, bytes, value => ({ tag: 'seen', value })) ?? undecodable(header);
+    case BOT_INFO_KIND: {
+      const decoded = decodeWith(BotInfoMessage, bytes, value => ({ tag: 'botInfo', value }));
+      const value = decoded?.versioned.value;
+      return decoded && value?.tag === 'botInfo' && withinBotInfoBounds(value.value) ? decoded : undecodable(header);
+    }
     default:
       return null;
   }
@@ -156,8 +196,8 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
 
 /**
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
- * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005) and kinds 242
- * `buttons` / 243 `buttonPress` (spec 0006).
+ * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005), kinds 242
+ * `buttons` / 243 `buttonPress` (spec 0006) and kind 244 `botInfo` (spec 0008).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -175,6 +215,8 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
         return TypingMessage.enc({ ...head, kind: TYPING_KIND, content: content.value });
       case 'seen':
         return SeenMessage.enc({ ...head, kind: SEEN_KIND, content: content.value });
+      case 'botInfo':
+        return BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value });
       case 'undecodable':
         throw new Error('an undecodable message is receive-only');
       default:

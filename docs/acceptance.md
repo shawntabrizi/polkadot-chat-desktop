@@ -1584,3 +1584,200 @@ Earlier runs of the same command (same session):
 
 - `e2e:typing` does not check `typing{composing}` from a person, because no phone app sends kind 240 yet. The desktop's own `composing` send is covered by `manager.messaging.spec.ts` (two clients, one in-memory store).
 - The deferral of a `seen` with an unknown `upTo` is covered by `signals.spec.ts` (the bounded set) and `messages.spec.ts` (`applySeen` returns `unknown`); no two-client test drives the race, because a test cannot choose the id of a message the manager sends.
+
+## M10
+
+Run on 2026-09-23 against devnet. The pca half is `polkadot-chat-agents` commit 70d8a87 (branch `desktop/rfc-0003`). The bots were restarted by the coordinator (pcdguide log 20:56:14Z: `BOT_PROTOCOL_EXTENSIONS` enabled deleted, buttons, typing, seen, botinfo). I did not start or stop any bot.
+
+### npm run check
+
+```
+> polkadot-chat-desktop@0.1.0 check
+> tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+ Test Files  45 passed (45)
+      Tests  372 passed (372)
+   Start at  17:02:59
+   Duration  3.72s (transform 1.66s, setup 810ms, import 8.16s, tests 9.18s, environment 3ms)
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+check:tokens: clean (115 files)
+EXIT=0
+```
+
+The pca vector of `docs/spec/vectors-0008.md` (`BOT-1`, kind 244) decodes byte for byte to the file's values and the values encode to the same bytes (`content.spec.ts`, "decodes the pca vector byte for byte…" and "encodes the pinned values…", both pass above). The file appeared at the 3rd 60 s poll (16:45:22).
+
+### npm run smoke
+
+```
+✓ built in 178ms
+SMOKE_OK
+```
+
+(Last lines; the lines before them are the usual electron-vite build output.)
+
+### npm run e2e:botinfo — PASSED (exit 0)
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:botinfo
+> node scripts/e2e-botinfo.mjs
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7051652 (runtime ready in 1.8s)
+PEER 0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06 key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+BOTINFO_RECEIVED name="Polkadot Guide" commands=5 kind=agent version=1 at=0.0s
+BOTINFO_DESCRIPTION Friendly Polkadot support: staking, governance, parachains, the app. Test bot on devnet.
+BOTINFO_COMMANDS /help /menu /staking /governance /reset
+GREETING_ROW Hi! Ask me anything about Polkadot, or type /menu.
+START_SENT /start
+START_ANSWER botInfo again version=1 at=1.0s
+START_TEXT Hi! Ask me anything about Polkadot, or type /menu.
+START_OK
+BOTINFO_OK
+EXIT=0
+```
+
+A first run the same minute also ended `BOTINFO_OK` with the same lines; its exit code was lost to my shell's `PIPESTATUS` (zsh), so I ran it again with the exit code captured (above). `at=0.0s`: pca sends `botInfo` in the same statement as the accept, so the row exists when the accept is seen. After `/start` the bot sent `botInfo` again (same version, new `botInfoAt`) and then the greeting as text, as vectors-0008.md says.
+
+### npm run screenshots
+
+Command: `PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots` (headless).
+
+```
+> polkadot-chat-desktop@0.1.0 screenshots
+> node scripts/screenshots.mjs
+0.5s built
+5.7s saved berlin-day/signup.png
+11.1s saved berlin-night/signup.png
+11.9s seeded pcdecejakd.11
+11.9s assistant engine claude
+28.0s accepted the request of pcdtestjaia.98
+46.3s saved berlin-day/room.png
+46.6s deleting, the toast shows
+52.6s tombstone shown
+53.5s saved berlin-day/room-deleted.png
+53.5s callback pressed, spinner on
+53.5s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+53.5s disabled buttons: 1
+54.3s saved berlin-day/room-buttons.png
+54.3s header: "Answers staking questions and checks your rewards"
+54.3s command menu: ["/stakingHow staking works","/rewardsYour rewards this era","/validatorsPick validators to nominate","/startStart over","/helpWhat I can do"]
+55.8s saved berlin-day/room-bot.png
+57.0s seen tick shown
+57.7s tooltip: "Seen 05:01 PM"
+58.4s saved berlin-day/room-seen.png
+60.1s header: "working…"
+61.0s saved berlin-day/room-typing.png
+65.9s saved berlin-day/assistant.png
+68.5s saved berlin-day/chats.png
+71.9s request sent to pcdpirate.81 from a global search hit
+74.8s saved berlin-day/search.png
+75.0s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke05:01 PM"
+75.1s saved berlin-day/search-jump.png
+76.4s the highlight ended
+77.9s global search "pcd": 7 rows, 14 after Show more
+78.7s saved berlin-day/search-empty.png
+80.6s saved berlin-day/search-no-results.png
+81.6s bots: ["Faucet Test funds for devnet","P Captain Dot A cheerful pirate who answers everything in pirate speak. Test bot on devnet.","P Staking Helper Answers staking questions and checks your rewards"]
+81.6s sections: ["Bots"]
+82.5s saved berlin-day/search-bots.png
+82.7s faucet strip: "Open faucet.polkadot.io in your browser?CancelOpen"
+83.6s saved berlin-day/faucet.png
+84.9s saved berlin-day/requests.png
+86.8s saved berlin-day/settings.png
+87.6s saved berlin-day/keyboard.png
+91.3s saved berlin-night/room.png
+92.2s saved berlin-night/room-deleted.png
+92.2s callback pressed, spinner on
+92.2s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+92.2s disabled buttons: 1
+93.0s saved berlin-night/room-buttons.png
+93.0s header: "Answers staking questions and checks your rewards"
+93.0s command menu: ["/stakingHow staking works","/rewardsYour rewards this era","/validatorsPick validators to nominate","/startStart over","/helpWhat I can do"]
+94.5s saved berlin-night/room-bot.png
+96.3s seen tick shown
+96.9s tooltip: "Seen 05:02 PM"
+97.6s saved berlin-night/room-seen.png
+99.1s header: "working…"
+99.9s saved berlin-night/room-typing.png
+100.8s saved berlin-night/assistant.png
+103.5s saved berlin-night/chats.png
+106.7s saved berlin-night/search.png
+107.0s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke05:01 PM"
+107.0s saved berlin-night/search-jump.png
+108.3s the highlight ended
+109.1s saved berlin-night/search-empty.png
+111.7s saved berlin-night/search-no-results.png
+113.5s bots: ["Faucet Test funds for devnet","P Captain Dot A cheerful pirate who answers everything in pirate speak. Test bot on devnet.","P Staking Helper Answers staking questions and checks your rewards"]
+113.5s sections: ["Bots"]
+114.3s saved berlin-night/search-bots.png
+114.9s faucet strip: "Open faucet.polkadot.io in your browser?CancelOpen"
+115.7s saved berlin-night/faucet.png
+117.0s saved berlin-night/requests.png
+119.1s saved berlin-night/settings.png
+120.0s saved berlin-night/keyboard.png
+120.6s seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/room-deleted.png
+  .agent-runs/screens/berlin-day/room-buttons.png
+  .agent-runs/screens/berlin-day/room-bot.png
+  .agent-runs/screens/berlin-day/room-seen.png
+  .agent-runs/screens/berlin-day/room-typing.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/search.png
+  .agent-runs/screens/berlin-day/search-jump.png
+  .agent-runs/screens/berlin-day/search-empty.png
+  .agent-runs/screens/berlin-day/search-no-results.png
+  .agent-runs/screens/berlin-day/search-bots.png
+  .agent-runs/screens/berlin-day/faucet.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/room-deleted.png
+  .agent-runs/screens/berlin-night/room-buttons.png
+  .agent-runs/screens/berlin-night/room-bot.png
+  .agent-runs/screens/berlin-night/room-seen.png
+  .agent-runs/screens/berlin-night/room-typing.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/search.png
+  .agent-runs/screens/berlin-night/search-jump.png
+  .agent-runs/screens/berlin-night/search-empty.png
+  .agent-runs/screens/berlin-night/search-no-results.png
+  .agent-runs/screens/berlin-night/search-bots.png
+  .agent-runs/screens/berlin-night/faucet.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+EXIT=0
+```
+
+What I saw in the new PNGs:
+
+- `berlin-day/room-bot.png`, `berlin-night/room-bot.png`: header "pcdtestjaia.98" with the `Sparkles` badge (AI agent), the line "Answers staking questions and checks your rewards" under it; the greeting row "Hi! I explain staking on Polkadot. Type / to see what I can do." as a centred block; the command menu open over the composer with "/" typed: `/staking`, `/rewards`, `/validators`, `/start`, `/help` with descriptions, the first row selected. The chat list shows the badge after the name and "Draft: /" for the room while the "/" is in the field (it is cleared after the shot). The M8 url strip of the room-buttons shot is still open above the greeting.
+- `berlin-day/faucet.png`, `berlin-night/faucet.png`: the Faucet second in the list with the `Bot` badge and "Test funds for devnet"; the room with the same header, the greeting block, the keyboard "Get test funds" (external-link icon) and "Copy my address", the confirm strip "Open faucet.polkadot.io in your browser?", and the line "The Faucet has no chat. Use the buttons above." instead of a composer.
+- `berlin-day/search-bots.png`, `berlin-night/search-bots.png`: the query "test" shows one section, "Bots": Faucet (by its description), "Captain Dot" (pcdpirate.81, which now sends `botInfo`; its description says "Test bot on devnet") and "Staking Helper" (pcdtestjaia.98, by its username), each with its badge and description. The global search had no other hit for "test".
+- `search.png` (M7b) changed: pcdpirate.81 now sent `botInfo`, so it is under "Bots" as "Captain Dot", not under "Chats and contacts". The script accepts either section now; ↓↓ still lands on the first global row.
+
+Earlier run of the same command (same session): `search.png` missed in both themes (the script waited for the "Chats and contacts" section, and the pirate bot had moved to "Bots") and `berlin-night/faucet.png` missed ("no Faucet row in the chat list"; the script clicked before the list was back after Esc). Both fixed in the script (either section; wait up to 10 s for the row). The greeting row was also below the command menu in that run's `room-bot.png`; the script now scrolls it to the top after the menu opens. The run above is the committed code.
+
+### Faucet URL
+
+One `curl https://faucet.polkadot.io/` returned the SvelteKit shell only; no query parameters are documented there. The faucet's source on this machine (`~/Documents/GitHub/polkadot-testnet-faucet`, cddfc83) reads `parachain` and `address` in `client/src/lib/components/Faucet.svelte`, and `/` is Paseo (chain 1000 = Asset Hub). So the button uses `https://faucet.polkadot.io/?parachain=1000&address=<ss58, prefix 0>`. (docs/decisions.md M10.)
+
+### Not run / not seen
+
+- "Open" on the Faucet's confirm strip was not pressed (it would start the browser), so the prefilled address on the live faucet page is not seen; the parameter names come from the faucet's source, not from the live site.
+- "Copy my address" was not pressed in the automation (it would write the machine's clipboard); the copy row is covered by `faucet.spec.ts`.
+- The automatic `/start` was not seen live: every running pca bot now sends `botInfo` with the accept, so none qualifies. It is covered by `manager.messaging.spec.ts` (two clients, one in-memory store: exactly one `/start`, none to a peer without a bot sign, none after `botInfo`).
+- The Assistant's `/reset` and `/model` were not run in the app; they are covered by `assistant.spec.ts`.

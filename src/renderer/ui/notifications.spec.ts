@@ -23,10 +23,12 @@ describe('shouldNotify', () => {
     expect(shouldNotify({ ...base, windowFocused: false, selectedPeer: '0xaa' })).toBe(true);
   });
 
-  it('never notifies for own messages, system rows, the Assistant, a muted room, or with notifications off', () => {
+  it('never notifies for own messages, system rows, the Assistant or the Faucet, a muted room, or with notifications off', () => {
     expect(shouldNotify({ ...base, row: { ...base.row, direction: 'outgoing' } })).toBe(false);
     expect(shouldNotify({ ...base, row: { ...base.row, direction: 'system' } })).toBe(false);
     expect(shouldNotify({ ...base, row: { ...base.row, peerAccountId: 'local:assistant' } })).toBe(false);
+    // The Faucet's keyboard is a local incoming row, written on every start.
+    expect(shouldNotify({ ...base, row: { ...base.row, peerAccountId: 'local:faucet' } })).toBe(false);
     expect(shouldNotify({ ...base, muted: true })).toBe(false);
     expect(shouldNotify({ ...base, enabled: false })).toBe(false);
   });

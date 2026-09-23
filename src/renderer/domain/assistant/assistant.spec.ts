@@ -12,7 +12,7 @@ import type {
   AssistantSettings,
 } from '../../../shared/desktop-api';
 
-import { ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat, replyContent } from './assistant';
+import { ASSISTANT_COMMANDS, ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat, replyContent } from './assistant';
 
 /** A stand-in for `window.desktop.assistant`: records requests, lets the test emit events. */
 const fakeApi = (options: { refuse?: boolean; engine?: AssistantEngineId } = {}) => {
@@ -55,7 +55,7 @@ const fakeApi = (options: { refuse?: boolean; engine?: AssistantEngineId } = {})
       onDone: subscribe(listeners.done),
       onError: subscribe(listeners.error),
       onActivity: subscribe(listeners.activity),
-      getSettings: async () => ({ engine: settings.engine }) as AssistantSettings,
+      getSettings: async () => ({ engine: settings.engine, model: 'auto/test-model' }) as AssistantSettings,
     },
   };
 };
@@ -100,6 +100,43 @@ describe('buildContext', () => {
       row(4, { direction: 'system', status: 'received' }),
     ]);
     expect(context.map(m => m.content)).toEqual([SYSTEM_PROMPT, 'turn 0', 'turn 2']);
+  });
+});
+
+describe('the Assistant command menu (M10 step 3)', () => {
+  it('offers exactly /reset and /model', () => {
+    expect(ASSISTANT_COMMANDS.map(command => command.name)).toEqual(['reset', 'model']);
+  });
+
+  // `/reset` must really forget: a model that still sees the old turns after
+  // "New conversation" would contradict the notice.
+  it('/reset runs locally, and the next question goes without the earlier turns', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await db.messages.bulkAdd([row(0), row(1)]);
+    await chat.send('/reset');
+    expect(fake.sent).toHaveLength(0);
+    const notice = (await listMessages(ASSISTANT_PEER)).at(-1);
+    expect(notice?.direction).toBe('system');
+    expect(text(notice)).toContain('New conversation');
+    await chat.send('fresh start');
+    expect(fake.sent[0]?.messages).toEqual([
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: 'fresh start' },
+    ]);
+    chat.dispose();
+  });
+
+  it('/model names the proxy model, or says a CLI engine picks its own, without asking the engine', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('/model');
+    expect(text((await listMessages(ASSISTANT_PEER)).at(-1))).toBe('Model: auto/test-model, through the LLM proxy. Change it in Settings.');
+    fake.settings.engine = 'claude';
+    await chat.send(' /model ');
+    expect(text((await listMessages(ASSISTANT_PEER)).at(-1))).toBe('Engine: claude. The engine picks its own model. Change it in Settings.');
+    expect(fake.sent).toHaveLength(0);
+    chat.dispose();
   });
 });
 

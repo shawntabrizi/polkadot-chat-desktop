@@ -7,6 +7,7 @@ import { type ConnectionSnapshot, createConnectionTracker } from '../app/connect
 import { getPeopleConnection } from '../app/statementStore';
 import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
+import { ensureFaucet } from '../domain/faucet/faucet';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
 import { type IdentityLookup, createIdentityLookup } from '../domain/identity/lookup';
@@ -19,7 +20,7 @@ import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/de
 
 import { Shell } from './Shell';
 import { SignUp } from './SignUp';
-import { plainError } from './format';
+import { plainError, toSs58 } from './format';
 
 type Boot = {
   username: string;
@@ -104,6 +105,13 @@ export const App = () => {
   const identity = boot?.identity ?? null;
   const deviceKeys = boot?.deviceKeys ?? null;
   const profileId = boot?.profileId ?? null;
+
+  // The Faucet (M10 step 6) is local, but its link carries this identity's address.
+  useEffect(() => {
+    if (!identity) return;
+    ensureFaucet(toSs58(identity.identityAccountId)).catch((cause: unknown) => console.error('[app] the Faucet room failed', cause));
+  }, [identity]);
+
   useEffect(() => {
     if (!identity || !deviceKeys || !profileId) return;
     let active = true;

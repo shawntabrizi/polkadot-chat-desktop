@@ -23,6 +23,14 @@ export const chatMatches = (name: string, query: string): boolean => {
   return needle === '' || name.toLowerCase().includes(needle);
 };
 
+/**
+ * A bot (spec 0008) matches when its username, its own name or its
+ * description contains the query: "faucet" and "test funds" both find the
+ * Faucet.
+ */
+export const botMatches = (bot: { username: string; name: string; description: string }, query: string): boolean =>
+  chatMatches(bot.username, query) || chatMatches(bot.name, query) || chatMatches(bot.description, query);
+
 /** The query the network search takes, or null while it is too short. */
 export const globalQuery = (query: string): string | null => {
   const prefix = normalizeQuery(query);
@@ -32,8 +40,10 @@ export const globalQuery = (query: string): string | null => {
 export type ChatHit = { key: string; peer: string };
 export type MessageHit = { messageId: string };
 
-export type Sections<C extends ChatHit, M extends MessageHit> = {
+export type Sections<C extends ChatHit, B extends ChatHit, M extends MessageHit> = {
   chats: C[];
+  /** Peers that sent `botInfo` (M10 step 5). */
+  bots: B[];
   global: SearchResult[];
   messages: M[];
   /** Keyboard order: every row of every section, top to bottom. */
@@ -42,22 +52,32 @@ export type Sections<C extends ChatHit, M extends MessageHit> = {
 
 export const resultKey = {
   chat: (hit: ChatHit): string => `chat:${hit.key}`,
+  bot: (hit: ChatHit): string => `bot:${hit.key}`,
   global: (hit: SearchResult): string => `global:${hit.candidateAccountId}`,
   message: (hit: MessageHit): string => `message:${hit.messageId}`,
 };
 
 /**
- * Chats and contacts first, then global hits that are not already in the
- * first section (the same person twice reads as two people), then messages.
+ * Chats and contacts first, then bots, then global hits that are in neither
+ * (the same person twice reads as two people), then messages. A bot shows
+ * under Bots only, not under Chats as well.
  */
-export const assembleSections = <C extends ChatHit, M extends MessageHit>(chats: C[], global: SearchResult[], messages: M[]): Sections<C, M> => {
-  const local = new Set(chats.map(hit => hit.peer));
+export const assembleSections = <C extends ChatHit, B extends ChatHit, M extends MessageHit>(
+  chats: C[],
+  bots: B[],
+  global: SearchResult[],
+  messages: M[],
+): Sections<C, B, M> => {
+  const botPeers = new Set(bots.map(hit => hit.peer));
+  const people = chats.filter(hit => !botPeers.has(hit.peer));
+  const local = new Set([...people.map(hit => hit.peer), ...botPeers]);
   const others = global.filter(hit => !local.has(bytesToHex(hit.accountId)));
   return {
-    chats,
+    chats: people,
+    bots,
     global: others,
     messages,
-    order: [...chats.map(resultKey.chat), ...others.map(resultKey.global), ...messages.map(resultKey.message)],
+    order: [...people.map(resultKey.chat), ...bots.map(resultKey.bot), ...others.map(resultKey.global), ...messages.map(resultKey.message)],
   };
 };
 

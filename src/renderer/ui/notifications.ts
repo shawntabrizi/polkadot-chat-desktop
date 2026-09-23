@@ -2,15 +2,14 @@
  * Native notifications for new incoming messages and chat requests (M6
  * step 7). Rows are watched as Dexie creates them (after the write commits),
  * so a replayed statement, whose row already exists, never notifies twice.
- * Never for own messages, system rows or the Assistant; never for a muted
+ * Never for own messages, system rows or the local contacts (Assistant, Faucet); never for a muted
  * room; never while that room is open in the focused window.
  */
 
 import { useEffect, useRef } from 'react';
 
 import { readChatPrefs } from '../app/chatPrefs';
-import { type MessageRow, type PeerId, type RequestRow, db } from '../app/database';
-import { isAssistantPeer } from '../domain/assistant/assistant';
+import { type MessageRow, type PeerId, type RequestRow, db, isLocalPeer } from '../app/database';
 import { previewOf } from '../domain/chat/content';
 
 import type { DesktopAppApi } from '../../shared/desktop-api';
@@ -42,7 +41,7 @@ export const shouldNotify = ({
   now: number;
 }): boolean => {
   if (!enabled || muted) return false;
-  if (row.direction !== 'incoming' || isAssistantPeer(row.peerAccountId)) return false;
+  if (row.direction !== 'incoming' || isLocalPeer(row.peerAccountId)) return false;
   if (now - row.timestamp > STALE_MS) return false;
   return !windowFocused || selectedPeer !== row.peerAccountId;
 };
@@ -59,7 +58,7 @@ export const useNotifications = (app: DesktopAppApi | null, selectedPeer: PeerId
       const [prefs, room, contact] = await Promise.all([
         readChatPrefs(),
         db.rooms.get(row.peerAccountId),
-        isAssistantPeer(row.peerAccountId) ? undefined : db.contacts.get(row.peerAccountId),
+        isLocalPeer(row.peerAccountId) ? undefined : db.contacts.get(row.peerAccountId),
       ]);
       const ok = shouldNotify({
         row,

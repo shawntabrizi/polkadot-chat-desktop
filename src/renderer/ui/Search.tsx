@@ -7,20 +7,24 @@ import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 
 
 import { type HexString, bytesToHex } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
-import type { MessageRow, PeerId } from '../app/database';
+import { type MessageRow, type PeerId, isLocalPeer } from '../app/database';
 import type { NetworkProfile } from '../app/network';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
+import type { BotInfo } from '../domain/chat/content';
 import type { ChatManager } from '../domain/chat/manager';
 import { searchMessages } from '../domain/chat/messages';
+import { FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { IdentityLookup } from '../domain/identity/lookup';
 import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { BotBadge } from './BotBadge';
 import { type ChatSelection, type ChatTarget, type ListData, type Row, useChatRows } from './ChatList';
 import { ChatRow } from './ChatRow';
 import { Composer } from './Composer';
+import { FaucetAvatar } from './FaucetRoom';
 import { messagePreview } from './MessageBubble';
 import { RoomHeader } from './RoomHeader';
 import { formatListTime, plainError } from './format';
@@ -29,6 +33,7 @@ import {
   GLOBAL_SEARCH_DELAY_MS,
   RECENT_LIMIT,
   assembleSections,
+  botMatches,
   chatMatches,
   globalQuery,
   moveHighlight,
@@ -71,9 +76,26 @@ const SectionHeader = ({ children }: { children: ReactNode }) => (
 
 const peerNameOf = (data: ListData | undefined, peer: PeerId): string => {
   if (peer === ASSISTANT_PEER) return ASSISTANT_USERNAME;
+  if (peer === FAUCET_PEER) return FAUCET_USERNAME;
   const contact = data?.contacts.find(row => row.accountId === peer);
   if (contact) return contact.username;
   return data?.requests.find(row => row.peerAccountId === peer)?.peerUsername ?? 'Unknown';
+};
+
+/** A peer that described itself (spec 0008), for the Bots section. */
+type BotHit = { key: string; peer: PeerId; username: string; info: BotInfo };
+
+/** Every contact (and the Faucet) with a `botInfo`, matched on username, name or description. */
+const botHits = (data: ListData | undefined, query: string): BotHit[] => {
+  if (!data) return [];
+  const hits: BotHit[] = [];
+  for (const row of data.peerInfo.values()) {
+    if (!row.botInfo) continue;
+    const username = row.peerId === FAUCET_PEER ? FAUCET_USERNAME : data.contacts.find(contact => contact.accountId === row.peerId)?.username;
+    if (username === undefined) continue;
+    if (botMatches({ username, name: row.botInfo.name, description: row.botInfo.description }, query)) hits.push({ key: row.peerId, peer: row.peerId, username, info: row.botInfo });
+  }
+  return hits.sort((a, b) => a.username.localeCompare(b.username));
 };
 
 /**
@@ -154,15 +176,16 @@ export const SearchPane = ({
   const chats = useChatRows(selected, onOpenTarget);
   const messageHits = useLiveQuery(() => searchMessages(query), [query]) ?? [];
 
-  const recent: Row[] = adding && typed === '' ? (chats?.rows ?? []).filter(row => row.target.kind === 'room' && row.target.peer !== ASSISTANT_PEER).slice(0, RECENT_LIMIT) : [];
+  const recent: Row[] = adding && typed === '' ? (chats?.rows ?? []).filter(row => row.target.kind === 'room' && !isLocalPeer(row.target.peer)).slice(0, RECENT_LIMIT) : [];
   const chatHits = typed === '' ? [] : (chats?.rows ?? []).filter(row => chatMatches(row.name, query)).map(row => ({ key: row.key, peer: row.target.peer, row }));
-  const sections = assembleSections(chatHits, current?.results ?? [], typed === '' ? [] : messageHits);
+  const sections = assembleSections(chatHits, typed === '' ? [] : botHits(chats?.data, query), current?.results ?? [], typed === '' ? [] : messageHits);
   const order = typed === '' ? recent.map(row => resultKey.chat({ key: row.key, peer: row.target.peer })) : sections.order;
   const highlighted = highlight.query === query ? highlight.key : null;
 
   const openers = new Map<string, () => void>();
   for (const row of recent) openers.set(resultKey.chat({ key: row.key, peer: row.target.peer }), () => onOpenTarget(row.target));
   for (const hit of sections.chats) openers.set(resultKey.chat(hit), () => onOpenTarget(hit.row.target));
+  for (const hit of sections.bots) openers.set(resultKey.bot(hit), () => onOpenTarget({ kind: 'room', peer: hit.peer }));
   for (const hit of sections.global) openers.set(resultKey.global(hit), () => onPickGlobal(hit));
   for (const hit of sections.messages) openers.set(resultKey.message(hit), () => onOpenMessage(hit.peerAccountId, hit.messageId));
 
@@ -246,6 +269,29 @@ export const SearchPane = ({
             <section aria-label="Chats and contacts" className="flex flex-col gap-0.5" data-testid="search-chats">
               <SectionHeader>Chats and contacts</SectionHeader>
               {sections.chats.map(hit => hit.row.render(highlighted === resultKey.chat(hit)))}
+            </section>
+          ) : null}
+          {sections.bots.length > 0 ? (
+            <section aria-label="Bots" className="flex flex-col gap-0.5" data-testid="search-bots">
+              <SectionHeader>Bots</SectionHeader>
+              {sections.bots.map(hit => {
+                const key = resultKey.bot(hit);
+                return (
+                  <ChatRow
+                    key={key}
+                    testId="search-bot-row"
+                    avatar={hit.peer === FAUCET_PEER ? <FaucetAvatar /> : <PeerAvatar name={hit.username} />}
+                    name={hit.info.name || hit.username}
+                    badge={<BotBadge kind={hit.info.kind} />}
+                    time={null}
+                    preview={hit.info.description || hit.username}
+                    unread={0}
+                    selected={selected.kind === 'room' && selected.peer === hit.peer}
+                    highlighted={highlighted === key}
+                    onClick={() => onOpenTarget({ kind: 'room', peer: hit.peer })}
+                  />
+                );
+              })}
             </section>
           ) : null}
           {sections.global.length > 0 || searching || current?.failed ? (

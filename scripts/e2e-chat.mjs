@@ -16,6 +16,11 @@
 // --buttons (M8 screenshots): after the reply (and the live frame), sends one
 // spec 0006 keyboard (kind 242) with two rows: callback, command, url, and a
 // reserved tx button. The test identity acts as the operator flag here.
+// --botinfo (M10 screenshots): after the keyboard, sends one spec 0008
+// `botInfo` (kind 244, an AI agent with a description, a greeting and five
+// commands) on the identity channel, as a bot does after it accepts. The
+// test identity acts as the operator flag here; a person's client never
+// sends it.
 // --seen (M9 screenshots): after all of the above, the script stays and reads
 // the room like an open app window: every second, a new message from the
 // peer is marked read (manager.markRead), which sends spec 0005 `seen`.
@@ -62,8 +67,9 @@ const liveFrameRun = args.includes('--live-frame');
 const buttonsRun = args.includes('--buttons');
 const seenRun = args.includes('--seen');
 const typingRun = args.includes('--typing');
+const botInfoRun = args.includes('--botinfo');
 if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--seen] [--typing]');
+  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--botinfo] [--seen] [--typing]');
   process.exit(2);
 }
 if (profile !== 'devnet' && profile !== 'paseo') {
@@ -327,6 +333,28 @@ if (buttonsRun) {
     (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.content.type === 'buttons' && row.status === 'delivered'),
   );
   console.log(`BUTTONS_SENT ${sent ? 'delivered' : 'not acked'}`);
+}
+if (botInfoRun) {
+  const info = {
+    kind: 1,
+    name: 'Staking Helper',
+    description: 'Answers staking questions and checks your rewards',
+    greeting: 'Hi! I explain staking on Polkadot. Type / to see what I can do.',
+    commands: [
+      { name: 'staking', description: 'How staking works' },
+      { name: 'rewards', description: 'Your rewards this era' },
+      { name: 'validators', description: 'Pick validators to nominate' },
+      { name: 'start', description: 'Start over' },
+      { name: 'help', description: 'What I can do' },
+    ],
+    version: 1,
+  };
+  try {
+    await manager.sendBotInfo(peerAccountHex, info);
+  } catch (error) {
+    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
+  }
+  console.log(`BOTINFO_SENT commands=${info.commands.length}`);
 }
 if (seenRun || typingRun) {
   const LINGER_MS = 15 * 60_000;

@@ -555,3 +555,69 @@ describe('chat manager: typing and seen (spec 0005)', () => {
     expect(transport.received.some(m => m.content.tag === 'typing')).toBe(false);
   });
 });
+
+describe('chat manager: spec 0008 botInfo and the automatic /start (M10)', () => {
+  const guideInfo = {
+    kind: 1,
+    name: 'Guide',
+    description: 'Polkadot support guide',
+    greeting: 'Hi! Ask me about Polkadot.',
+    commands: [{ name: 'staking', description: 'Staking basics' }],
+    version: 1,
+  };
+
+  it('stores a botInfo from the identity channel with its greeting row, never a bubble, and sends no /start', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+
+    // As pca does: botInfo on the identity channel right after the accept.
+    await transport.channel.post({ tag: 'botInfo', value: guideInfo });
+    const info = await waitFor(async () => (await db.peerInfo.get(peerKey))?.botInfo ?? undefined);
+    expect(info).toEqual(guideInfo);
+    const rows = await listMessages(peerKey);
+    expect(rows.filter(row => row.content.type === 'botGreeting')).toHaveLength(1);
+    expect(rows.some(row => row.direction === 'incoming' && row.content.type !== 'text')).toBe(false);
+
+    await manager.roomOpened(peerKey);
+    expect((await listMessages(peerKey)).some(row => row.direction === 'outgoing')).toBe(false);
+  });
+
+  // An older bot answers the request on the identity channel but sends no
+  // botInfo: it gets exactly one `/start`, however often the room opens.
+  it('sends /start once to a peer that acts like a bot and has not described itself', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+
+    // Before any bot sign: a person, no /start.
+    await manager.roomOpened(peerKey);
+    expect((await listMessages(peerKey)).some(row => row.direction === 'outgoing')).toBe(false);
+
+    await transport.channel.post({ tag: 'text', value: 'Welcome! I am a bot.' });
+    await waitFor(async () => (await db.peerInfo.get(peerKey))?.botSignalAt ?? undefined);
+    await Promise.all([manager.roomOpened(peerKey), manager.roomOpened(peerKey)]);
+    await manager.roomOpened(peerKey);
+    const sent = (await listMessages(peerKey)).filter(row => row.direction === 'outgoing');
+    expect(sent.map(row => (row.content.type === 'text' ? row.content.text : row.content.type))).toEqual(['/start']);
+    await waitFor(() => transport?.received.find(message => message.content.tag === 'text' && message.content.value === '/start'));
+  });
+
+  it('sendBotInfo puts this client’s botInfo on the identity channel (the test-script operator flag)', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await manager.sendBotInfo(peerKey, guideInfo);
+    const event = await waitFor(() => transport?.events.find(entry => entry.tag === 'message' && entry.content.tag === 'botInfo'));
+    expect(event.tag === 'message' ? event.content : null).toEqual({ tag: 'botInfo', value: guideInfo });
+  });
+});

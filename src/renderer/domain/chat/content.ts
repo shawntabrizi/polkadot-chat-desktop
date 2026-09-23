@@ -12,7 +12,7 @@
 
 import { openableUrl } from '../../../shared/openUrl';
 
-import { BUTTONS_KIND, type ButtonWire, type ChatContent } from './identityEvents';
+import { BUTTONS_KIND, type BotInfoWire, type ButtonWire, type ChatContent } from './identityEvents';
 
 /** Spec 0005 `TypingContent.kind`, by wire value. */
 export type TypingKind = 'composing' | 'working' | 'stopped';
@@ -43,6 +43,22 @@ export const MAX_BUTTONS_PER_ROW = 4;
 export const MAX_BUTTON_LABEL = 40;
 export const MAX_CALLBACK_BYTES = 256;
 
+/** Spec 0008 `Command`: `name` without the slash. */
+export type BotCommand = { name: string; description: string };
+
+/**
+ * Spec 0008 `BotInfo` as this client stores it. `kind` is the wire byte: 0
+ * bot, 1 agent, 2 person-operated service; a later kind is kept as read.
+ */
+export type BotInfo = {
+  kind: number;
+  name: string;
+  description: string;
+  greeting: string;
+  commands: BotCommand[];
+  version: number;
+};
+
 /** What a message row holds. Reactions and edits are not rows; they mutate one. */
 export type MessageContent =
   | { type: 'text'; text: string }
@@ -60,7 +76,9 @@ export type MessageContent =
    */
   | { type: 'buttons'; text: string; rows: ChatButton[][]; oneShot: boolean; pressed: { row: number; index: number } | null }
   /** System row: the peer pressed a button of a keyboard we sent (spec 0006). */
-  | { type: 'buttonPressed'; label: string };
+  | { type: 'buttonPressed'; label: string }
+  /** System-style row: a bot's spec 0008 greeting, once, when its info first arrives. */
+  | { type: 'botGreeting'; text: string };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -78,7 +96,9 @@ export type OutgoingContent =
   /** Spec 0005: an ephemeral typing hint; never a row. */
   | { type: 'typing'; kind: TypingKind; until: number }
   /** Spec 0005: a read receipt for the peer's messages up to `upTo`; never a row. */
-  | { type: 'seen'; upTo: string; at: number };
+  | { type: 'seen'; upTo: string; at: number }
+  /** Spec 0008: a bot describes itself. A person's client never sends it; test scripts do. */
+  | { type: 'botInfo'; info: BotInfo };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -88,6 +108,7 @@ export type IncomingEffect =
   | { kind: 'buttonPress'; messageId: string; row: number; index: number }
   | { kind: 'typing'; typing: TypingKind; until: number }
   | { kind: 'seen'; upTo: string; at: number }
+  | { kind: 'botInfo'; info: BotInfo }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -118,8 +139,19 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'typing', value: { until: BigInt(content.until), kind: TYPING_KINDS.indexOf(content.kind) } };
     case 'seen':
       return { tag: 'seen', value: { upTo: content.upTo, at: BigInt(content.at) } };
+    case 'botInfo':
+      return { tag: 'botInfo', value: botInfoWire(content.info) };
   }
 };
+
+const botInfoWire = (info: BotInfo): BotInfoWire['value'] => ({
+  kind: info.kind,
+  name: info.name,
+  description: info.description,
+  greeting: info.greeting,
+  commands: info.commands.map(command => ({ name: command.name, description: command.description })),
+  version: info.version,
+});
 
 /** Cut to `max` characters (code points, so an emoji is not split). */
 const clip = (text: string, max: number): string => {
@@ -201,10 +233,13 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
     }
     case 'seen':
       return { kind: 'seen', upTo: content.value.upTo, at: Number(content.value.at) };
+    case 'botInfo':
+      // Spec 0008: never a bubble; the manager stores it per peer.
+      return { kind: 'botInfo', info: { ...content.value, commands: content.value.commands.map(command => ({ ...command })) } };
     case 'undecodable':
       // A keyboard we cannot read (an action tag above 3) is still a message
-      // the peer sent: the unsupported bubble. A press, typing or seen we
-      // cannot read is nothing.
+      // the peer sent: the unsupported bubble. A press, typing, seen or
+      // botInfo we cannot read is nothing.
       return content.value.kind === BUTTONS_KIND ? { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } } : { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };
@@ -262,6 +297,8 @@ export const previewOf = (content: MessageContent): string => {
       return content.text;
     case 'buttonPressed':
       return `Pressed ${content.label}`;
+    case 'botGreeting':
+      return content.text;
   }
 };
 

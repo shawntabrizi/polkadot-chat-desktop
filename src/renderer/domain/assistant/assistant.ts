@@ -15,7 +15,7 @@
 import { randomId } from '../../app/bytes';
 import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
 import { readSetting, writeSetting } from '../../app/settings';
-import { type MessageContent, keyboardOf, previewOf } from '../chat/content';
+import { type BotCommand, type MessageContent, keyboardOf, previewOf } from '../chat/content';
 import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '../chat/messages';
 import { parseButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
@@ -47,6 +47,18 @@ export const replyContent = (text: string): MessageContent => {
 /** How many earlier messages of the room go with a new one as context. */
 export const CONTEXT_TURNS = 30;
 
+/**
+ * The Assistant's fixed command menu (M10 step 3). Both run here, in the
+ * app; neither goes to the engine.
+ */
+export const ASSISTANT_COMMANDS: readonly BotCommand[] = [
+  { name: 'reset', description: 'Start a new conversation' },
+  { name: 'model', description: 'Show the engine and model' },
+];
+
+/** The notice `/reset` leaves in the room; the context starts after the last one. */
+const RESET_ROW_PREFIX = 'assistant-reset:';
+
 export const isAssistantPeer = (peer: string): peer is AssistantPeerId => peer === ASSISTANT_PEER;
 
 /**
@@ -55,8 +67,10 @@ export const isAssistantPeer = (peer: string): peer is AssistantPeerId => peer =
  * streaming or broke off, and the room's notices, are not context.
  */
 export const buildContext = (rows: MessageRow[]): AssistantChatMessage[] => {
-  const turns = [...rows]
-    .sort((a, b) => a.timestamp - b.timestamp)
+  const sorted = [...rows].sort((a, b) => a.timestamp - b.timestamp);
+  const lastReset = sorted.findLastIndex(row => row.messageId.startsWith(RESET_ROW_PREFIX));
+  const turns = sorted
+    .slice(lastReset + 1)
     .filter(row => row.direction !== 'system' && (row.content.type === 'text' || row.content.type === 'buttons') && row.content.text.trim() !== '')
     .filter(row => !(row.direction === 'incoming' && row.status !== 'received'))
     .slice(-CONTEXT_TURNS)
@@ -258,8 +272,49 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
     return engine === stored.engine ? stored.sessionId : null;
   };
 
+  /** A notice row in the room (not context, not unread). */
+  const notice = async (messageId: string, text: string): Promise<void> => {
+    const last = (await listMessages(ASSISTANT_PEER)).at(-1);
+    await addMessage(
+      {
+        messageId,
+        peerAccountId: ASSISTANT_PEER,
+        timestamp: Math.max(now(), (last?.timestamp ?? 0) + 1),
+        direction: 'system',
+        status: 'received',
+        content: { type: 'text', text },
+        reactions: [],
+        editedAt: null,
+      },
+      { read: true },
+    );
+  };
+
+  /** `/reset` and `/model` (ASSISTANT_COMMANDS). True when `text` was one of them. */
+  const runCommand = async (text: string): Promise<boolean> => {
+    const command = text.trim();
+    if (command === '/reset') {
+      // The CLI session holds the old turns too; do not resume it.
+      await writeSetting('assistant.session', '');
+      await notice(`${RESET_ROW_PREFIX}${randomId()}`, 'New conversation. The Assistant does not see the messages above.');
+      return true;
+    }
+    if (command === '/model') {
+      const settings = await api.getSettings();
+      await notice(
+        randomId(),
+        settings.engine === 'proxy'
+          ? `Model: ${settings.model}, through the LLM proxy. Change it in Settings.`
+          : `Engine: ${settings.engine}. The engine picks its own model. Change it in Settings.`,
+      );
+      return true;
+    }
+    return false;
+  };
+
   return {
     send: async text => {
+      if (await runCommand(text)) return;
       const earlier = await listMessages(ASSISTANT_PEER);
       const outgoing: MessageRow = {
         messageId: randomId(),

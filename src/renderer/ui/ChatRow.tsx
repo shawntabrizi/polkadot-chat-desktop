@@ -27,9 +27,11 @@ type Props = {
   testId?: string;
   /** A room row: muted state and its toggle. Absent for search results and requests. */
   mute?: { muted: boolean; toggle: () => void };
+  /** A spec 0008 bot badge after the name. */
+  badge?: ReactNode;
 };
 
-export const ChatRow = ({ avatar, name, time, preview, previewTone = 'secondary', unread, selected, highlighted = false, onClick, testId, mute }: Props) => {
+export const ChatRow = ({ avatar, name, time, preview, previewTone = 'secondary', unread, selected, highlighted = false, onClick, testId, mute, badge }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <div
@@ -51,6 +53,7 @@ export const ChatRow = ({ avatar, name, time, preview, previewTone = 'secondary'
           <span className="flex items-baseline gap-2">
             <span className="flex min-w-0 flex-1 items-center gap-1">
               <span className="truncate text-label-l text-fg-primary">{name}</span>
+              {badge}
               {mute?.muted ? <BellOff className="size-3.5 shrink-0 text-fg-tertiary" aria-label="Muted" data-testid="muted-icon" /> : null}
             </span>
             {time ? <span className={cn('shrink-0 text-caption text-fg-tertiary', mute && 'group-hover/row:invisible', menuOpen && 'invisible')}>{time}</span> : null}

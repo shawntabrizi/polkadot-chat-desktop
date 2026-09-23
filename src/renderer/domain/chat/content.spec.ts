@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { bytesToHex } from '../../app/bytes';
 
 import { fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, toWire } from './content';
-import { type ChatContent, ChatMessageCodec } from './identityEvents';
+import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
 const viaWire = (content: ChatContent): ChatContent =>
@@ -286,6 +286,76 @@ describe('kinds 240/241: spec 0005 typing and seen', () => {
   });
 });
 
+describe('kind 244: spec 0008 botInfo', () => {
+  /*
+   * The vector of docs/spec/vectors-0008.md, produced by the pca codec
+   * (bot-core/vendor/app-chat-codec.mjs `encodeOpaqueBotInfoMessage`, branch
+   * desktop/rfc-0003) and pinned there too. A description the desktop reads
+   * differently is a bot with the wrong badge, name or command menu.
+   */
+  const VECTOR =
+    '0x010214424f542d310030fd779001000000f40114477569646558506f6c6b61646f7420737570706f7274206775696465684869212041736b206d652061626f757420506f6c6b61646f742e081c7374616b696e67385374616b696e672062617369637328676f7665726e616e636544486f77204f70656e476f7620776f726b730100';
+  const opaque = Bytes();
+  const info = {
+    kind: 1,
+    name: 'Guide',
+    description: 'Polkadot support guide',
+    greeting: 'Hi! Ask me about Polkadot.',
+    commands: [
+      { name: 'staking', description: 'Staking basics' },
+      { name: 'governance', description: 'How OpenGov works' },
+    ],
+    version: 1,
+  };
+  const message = {
+    messageId: 'BOT-1',
+    timestamp: 1720000000000n,
+    versioned: { tag: 'v1' as const, value: { tag: 'botInfo' as const, value: info } },
+  };
+
+  it('decodes the pca vector byte for byte to the pinned values', () => {
+    expect(ChatMessageCodec.dec(opaque.dec(VECTOR))).toEqual(message);
+  });
+
+  it('encodes the pinned values to the same bytes', () => {
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(message)))).toBe(VECTOR);
+    expect(viaWire(toWire({ type: 'botInfo', info }))).toEqual({ tag: 'botInfo', value: info });
+  });
+
+  it('is an effect the manager stores, never a bubble', () => {
+    expect(fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR)).versioned.value)).toEqual({ kind: 'botInfo', info });
+  });
+
+  it('keeps a kind byte this build does not know (a later revision may add kinds)', () => {
+    expect(fromWire(viaWire(toWire({ type: 'botInfo', info: { ...info, kind: 7 } })))).toEqual({ kind: 'botInfo', info: { ...info, kind: 7 } });
+  });
+
+  // pca's decoder bounds (vectors-0008.md): over a bound the whole document is
+  // unreadable, so both codecs agree on which descriptions exist.
+  it('reads a document over a bound, or a truncated one, as nothing', () => {
+    const over = [
+      { ...info, name: 'n'.repeat(BOT_INFO_BOUNDS.name + 1) },
+      { ...info, description: 'd'.repeat(BOT_INFO_BOUNDS.description + 1) },
+      { ...info, commands: Array.from({ length: BOT_INFO_BOUNDS.commands + 1 }, (_, i) => ({ name: `c${i}`, description: '' })) },
+      { ...info, commands: [{ name: 'c'.repeat(BOT_INFO_BOUNDS.commandName + 1), description: '' }] },
+    ];
+    for (const value of over) {
+      const decoded = ChatMessageCodec.dec(ChatMessageCodec.enc({ ...message, versioned: { tag: 'v1', value: { tag: 'botInfo', value } } }));
+      expect(decoded.versioned.value.tag).toBe('undecodable');
+      expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'ignore' });
+    }
+    // At the bound it still reads.
+    const atBound = { ...info, name: 'n'.repeat(BOT_INFO_BOUNDS.name) };
+    expect(ChatMessageCodec.dec(ChatMessageCodec.enc({ ...message, versioned: { tag: 'v1', value: { tag: 'botInfo', value: atBound } } })).versioned.value.tag).toBe('botInfo');
+    const bytes = opaque.dec(VECTOR);
+    expect(fromWire(ChatMessageCodec.dec(bytes.slice(0, bytes.length - 1)).versioned.value)).toEqual({ kind: 'ignore' });
+  });
+
+  it('does not decode with the plain SDK codec', () => {
+    expect(() => SdkChatMessage.dec(opaque.dec(VECTOR))).toThrow();
+  });
+});
+
 describe('keyboardOf (what a received keyboard may contain)', () => {
   const label = (n: number) => `b${n}`;
   const command = (n: number) => ({ label: label(n), action: { tag: 'command' as const, value: `/c${n}` } });
@@ -417,5 +487,6 @@ describe('previewOf', () => {
     expect(previewOf({ type: 'contactAdded' })).toBe('Chat accepted');
     expect(previewOf({ type: 'unsupported', tag: 'send' })).toBe('Unsupported message (send)');
     expect(previewOf({ type: 'deleted' })).toBe('Message deleted');
+    expect(previewOf({ type: 'botGreeting', text: 'Hi!' })).toBe('Hi!');
   });
 });

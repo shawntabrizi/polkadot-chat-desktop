@@ -10,7 +10,7 @@
 import Dexie, { type Table } from 'dexie';
 
 import type { HexString } from './bytes';
-import type { MessageContent } from '../domain/chat/content';
+import type { BotInfo, MessageContent } from '../domain/chat/content';
 
 export const DEVICE_ROW_ID = 'self';
 
@@ -104,9 +104,14 @@ export type RequestRow = {
 
 /** The built-in assistant's room and message key: local, not an account on chain. */
 export type AssistantPeerId = 'local:assistant';
+/** The built-in Faucet's room (M10): local, nothing on the wire. */
+export type FaucetPeerId = 'local:faucet';
 
-/** Who a room is with: a contact's identity account, or the local assistant. */
-export type PeerId = HexString | AssistantPeerId;
+/** Who a room is with: a contact's identity account, or a local contact. */
+export type PeerId = HexString | AssistantPeerId | FaucetPeerId;
+
+/** A contact that lives in this app only (the Assistant, the Faucet): no account, no wire. */
+export const isLocalPeer = (peer: string): peer is AssistantPeerId | FaucetPeerId => peer === 'local:assistant' || peer === 'local:faucet';
 
 /** One chat per contact. Unread counts what arrived while the room was not open. */
 export type RoomRow = {
@@ -159,6 +164,26 @@ export type MessageRow = {
  */
 export type PendingDeletionRow = { peerAccountId: PeerId; messageId: string; createdAt: number };
 
+/**
+ * What this client knows about a peer beyond the contact row (M10). Written
+ * for a contact when the first of these arrives, and for the local Faucet.
+ */
+export type PeerInfoRow = {
+  peerId: PeerId;
+  /** Spec 0008: the latest `botInfo` (highest `version`); null until one arrives. */
+  botInfo: BotInfo | null;
+  /** When a `botInfo` last arrived, a repeat of the stored version too. */
+  botInfoAt: number | null;
+  /**
+   * When the peer first sent content on the identity channel. Phones never
+   * do (they send only the accept and the roster there); pca bots send their
+   * welcome text there. The only sign of an older bot that sends no `botInfo`.
+   */
+  botSignalAt: number | null;
+  /** When this client sent `/start` on its own (M10 step 4); at most once. */
+  startSentAt: number | null;
+};
+
 export const DB_NAME = 'polkadot-chat-web';
 
 const dexie = new Dexie(DB_NAME);
@@ -182,6 +207,9 @@ dexie.version(4).stores({
 dexie.version(5).stores({
   pendingDeletions: '[peerAccountId+messageId], [peerAccountId+createdAt]',
 });
+dexie.version(6).stores({
+  peerInfo: 'peerId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -197,6 +225,7 @@ export const db: {
   messages: Table<MessageRow, string>;
   drafts: Table<DraftRow, PeerId>;
   pendingDeletions: Table<PendingDeletionRow, [PeerId, string]>;
+  peerInfo: Table<PeerInfoRow, PeerId>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -208,4 +237,5 @@ export const db: {
   messages: dexie.table('messages'),
   drafts: dexie.table('drafts'),
   pendingDeletions: dexie.table('pendingDeletions'),
+  peerInfo: dexie.table('peerInfo'),
 };

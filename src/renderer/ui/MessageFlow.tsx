@@ -9,7 +9,7 @@ import { isLiveFrame } from '../domain/chat/content';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
 
-import { type BubbleActions, DateSeparator, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
+import { type BubbleActions, DateSeparator, GreetingRow, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
 import { formatDay } from './format';
 
 type Props = {
@@ -202,7 +202,7 @@ export const MessageFlow = ({
                     return (
                       <div key={row.messageId}>
                         {separator}
-                        <SystemRow text={systemText(row, peerName, requests)} />
+                        {row.content.type === 'botGreeting' ? <GreetingRow text={row.content.text} /> : <SystemRow text={systemText(row, peerName, requests)} />}
                       </div>
                     );
                   }

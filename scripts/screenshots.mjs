@@ -45,6 +45,15 @@
 // sends "Are you working on it?", which starts a 20 s agent turn on the peer
 // (`typing{working}` every 4 s): the header shows "working…" with the pulse.
 //
+// M10 (spec 0008): room-bot.png is the room with the room peer after its
+// `e2e-chat.mjs --botinfo` described it as an AI agent: the badge after the
+// name, the description under it, the greeting row, and the command menu
+// open over the composer ("/" typed). faucet.png is the built-in Faucet with
+// its keyboard and the confirm strip of "Get test funds" (never opened, and
+// "Copy my address" is never pressed: it would write the machine's
+// clipboard). search-bots.png searches "test": the Faucet (by its
+// description) and the room peer (by its username) under "Bots".
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -202,7 +211,7 @@ const launch = async profile => {
   };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
-  return { evaluate, waitFor, exists, click, clickText, type, capture, setTheme, quit, send, key, clearField };
+  return { evaluate, waitFor, exists, click, clickText, type, capture, setTheme, quit, send, key, clearField, settle };
 };
 
 // ── Sign-up (a fresh profile per theme) ──────────────────────────────────
@@ -229,7 +238,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -283,7 +292,7 @@ app.whenReady().then(() => {
   const roomPeer = roomWith ? JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${roomWith}`, 'identity.json'), 'utf8')).username : BOT;
   const roomLog = roomWith ? openSync(join(outDir, 'room-peer.log'), 'w') : null;
   const roomPeerRun = roomWith
-    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
+    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--botinfo', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
 
   for (const theme of THEMES) {
@@ -409,6 +418,26 @@ app.whenReady().then(() => {
       const needsPeer = what => {
         if (!roomWith) throw new Error(`no ${what}: set PCD_SCREENSHOT_ROOM_WITH`);
       };
+
+      // Before room-typing: a "working…" hint takes the header line for 20 s.
+      await shot('room-bot', async () => {
+        needsPeer('botInfo');
+        if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+        if (!(await app.waitFor(`${app.exists('header [data-testid=bot-badge]')} && ${app.exists('[data-testid=bot-description]')} && ${app.exists('[data-testid=bot-greeting]')}`, 120_000))) {
+          throw new Error(`no botInfo from ${roomPeer} (see .agent-runs/screens/room-peer.log)`);
+        }
+        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('header [data-testid=bot-description]').textContent`)));
+        await app.type('textarea[aria-label=Message]', '/');
+        if (!(await app.waitFor(`document.querySelectorAll('[data-testid=command-option]').length > 0`, 5_000))) throw new Error('"/" opened no command menu');
+        // The greeting at the top of the list, above the menu.
+        await app.evaluate(`document.querySelector('[data-testid=bot-greeting]').scrollIntoView({ block: 'start' }); true`);
+        log('command menu:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=command-option]')].map(o => o.textContent)`)));
+        await app.settle();
+      });
+      // The menu goes with the "/" (Esc, then the field is emptied), so the next shots start clean.
+      await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+      if (await app.evaluate(app.exists('[data-testid=command-menu]'))) missing.push(`${theme}: Esc did not close the command menu`);
+      await app.clearField('textarea[aria-label=Message]');
 
       await shot(
         'room-seen',
@@ -538,12 +567,13 @@ app.whenReady().then(() => {
         await app.key(...ESC);
         await app.waitFor(app.exists('[data-testid=empty-room]'), 10_000);
         await app.type('[aria-label=Search]', QUERY);
-        const ready = `${app.exists('[data-testid=search-chats]')} && ${app.exists('[data-testid=search-messages]')} && [...document.querySelectorAll('[data-testid=search-global-row]')].some(r => r.textContent.includes(${JSON.stringify(BOT)})) && !document.querySelector('[data-testid=search-results]').textContent.includes('Searching…')`;
+        // M10: a bot that sent botInfo (the pirate bot does since pca 70d8a87) is under Bots, not Chats.
+        const ready = `(${app.exists('[data-testid=search-chats]')} || ${app.exists('[data-testid=search-bots]')}) && ${app.exists('[data-testid=search-messages]')} && [...document.querySelectorAll('[data-testid=search-global-row]')].some(r => r.textContent.includes(${JSON.stringify(BOT)})) && !document.querySelector('[data-testid=search-results]').textContent.includes('Searching…')`;
         if (!(await app.waitFor(ready, 60_000))) {
           const seen = await app.evaluate(`document.querySelector('[data-testid=search-results]')?.innerText ?? 'no results view'`);
           throw new Error(`the three sections did not fill: ${JSON.stringify(seen)}`);
         }
-        // ↓ twice: from the contact row across into the first global row.
+        // ↓ twice: from the pirate row (Chats, or Bots since M10) into the first global row.
         await app.key('ArrowDown', 'ArrowDown', { windowsVirtualKeyCode: 40 });
         await app.key('ArrowDown', 'ArrowDown', { windowsVirtualKeyCode: 40 });
         if (!(await app.waitFor(`document.querySelector('[data-highlighted=true]')?.dataset && document.querySelector('[data-highlighted=true] [data-testid=search-global-row]') != null`, 5_000))) {
@@ -602,6 +632,35 @@ app.whenReady().then(() => {
           throw new Error(`no "No results" line: ${JSON.stringify(seen)}`);
         }
       });
+      await app.key(...ESC);
+
+      await shot('search-bots', async () => {
+        await app.evaluate(`document.querySelector('[aria-label=Search]').focus(); true`);
+        await app.type('[aria-label=Search]', 'test');
+        const both = `[...document.querySelectorAll('[data-testid=search-bot-row]')].length >= 2`;
+        if (!(await app.waitFor(`${both} && !document.querySelector('[data-testid=search-results]').textContent.includes('Searching…')`, 60_000))) {
+          const seen = await app.evaluate(`document.querySelector('[data-testid=search-results]')?.innerText ?? 'no results view'`);
+          throw new Error(`the Bots section did not show both bots: ${JSON.stringify(seen)}`);
+        }
+        log('bots:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=search-bot-row]')].map(r => r.innerText.replace(/\\s+/g, ' '))`)));
+        log('sections:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=search-results] section')].map(s => s.getAttribute('aria-label'))`)));
+      });
+      await app.key(...ESC);
+
+      await shot('faucet', async () => {
+        await app.key(...ESC);
+        if (!(await app.waitFor(app.exists('[data-testid=chat-row-faucet]'), 10_000)) || !(await app.click('[data-testid=chat-row-faucet]'))) {
+          const pane = await app.evaluate(`document.querySelector('aside')?.innerText.slice(0, 300) ?? 'no left pane'`);
+          throw new Error(`no Faucet row in the chat list: ${JSON.stringify(pane)}`);
+        }
+        if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === 'Faucet' && ${app.exists('[data-testid=keyboard]')}`, 10_000))) {
+          throw new Error('the Faucet room did not open with its keyboard');
+        }
+        await app.evaluate(`document.querySelector('[data-testid=keyboard] [data-action=url]').click(); true`);
+        if (!(await app.waitFor(app.exists('[data-testid=url-confirm]'), 5_000))) throw new Error('no confirm strip for "Get test funds"');
+        log('faucet strip:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=url-confirm]').textContent`)));
+      });
+      // Leave the strip unanswered: Open would start the browser.
       await app.key(...ESC);
       await app.waitFor(app.exists('[data-testid=new-requests]'), 5_000);
 

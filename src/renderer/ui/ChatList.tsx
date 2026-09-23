@@ -2,15 +2,18 @@ import { MessagesSquare } from 'lucide-react';
 import { type ReactNode, useSyncExternalStore } from 'react';
 
 import type { HexString } from '../app/bytes';
-import { type ContactRow, type DraftRow, type MessageRow, type PeerId, type RequestRow, type RoomRow, db } from '../app/database';
+import { type ContactRow, type DraftRow, type MessageRow, type PeerId, type PeerInfoRow, type RequestRow, type RoomRow, db } from '../app/database';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import { isLiveFrame } from '../domain/chat/content';
 import { draftPreview } from '../domain/chat/drafts';
 import { setRoomMuted } from '../domain/chat/messages';
+import { FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { PeerTyping, TypingStore } from '../domain/chat/signals';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { BotBadge } from './BotBadge';
 import { ChatRow } from './ChatRow';
+import { FaucetAvatar } from './FaucetRoom';
 import { messagePreview, systemText } from './MessageBubble';
 import { typingText } from './RoomHeader';
 import { formatListTime } from './format';
@@ -36,10 +39,18 @@ export type ListData = {
   lastMessages: Map<PeerId, MessageRow>;
   requests: RequestRow[];
   drafts: Map<PeerId, DraftRow>;
+  /** Spec 0008 info per peer: the bot badge and the search's Bots section. */
+  peerInfo: Map<PeerId, PeerInfoRow>;
 };
 
 const loadList = async (): Promise<ListData> => {
-  const [contacts, rooms, requests, drafts] = await Promise.all([db.contacts.toArray(), db.rooms.toArray(), db.requests.toArray(), db.drafts.toArray()]);
+  const [contacts, rooms, requests, drafts, peerInfo] = await Promise.all([
+    db.contacts.toArray(),
+    db.rooms.toArray(),
+    db.requests.toArray(),
+    db.drafts.toArray(),
+    db.peerInfo.toArray(),
+  ]);
   const lastMessages = new Map<PeerId, MessageRow>();
   await Promise.all(
     rooms.map(async room => {
@@ -56,7 +67,14 @@ const loadList = async (): Promise<ListData> => {
     lastMessages,
     requests,
     drafts: new Map(drafts.map(draft => [draft.peerId, draft])),
+    peerInfo: new Map(peerInfo.map(row => [row.peerId, row])),
   };
+};
+
+/** The badge of a peer that described itself (spec 0008). */
+const badgeOf = (data: ListData, peer: PeerId) => {
+  const info = data.peerInfo.get(peer)?.botInfo;
+  return info ? <BotBadge kind={info.kind} /> : undefined;
 };
 
 /** One line without markdown marks: a list item or **bold** reads as text. */
@@ -97,7 +115,7 @@ const previewWithDraft = (data: ListData, peer: PeerId, fallback: string): strin
   draftPreview(data.drafts.get(peer), data.lastMessages.get(peer)?.timestamp) ?? fallback;
 
 /**
- * The Assistant first (local, always there), then contacts and the requests
+ * The Assistant first and the Faucet second (local, always there), then contacts and the requests
  * this user sent that wait for an answer, newest activity first. Shared by
  * the list and the ⌘↑/⌘↓/⌘1…9 shortcuts, so both see one order.
  */
@@ -132,6 +150,35 @@ const buildRows = (
     ),
   };
 
+  // The Faucet exists once App seeded its room (M10 step 6).
+  const faucetRoom = data.rooms.get(FAUCET_PEER);
+  const faucetLast = data.lastMessages.get(FAUCET_PEER);
+  const faucetTarget: ChatTarget = { kind: 'room', peer: FAUCET_PEER };
+  const faucetRow: Row | null = faucetRoom
+    ? {
+        key: FAUCET_PEER,
+        name: FAUCET_USERNAME,
+        at: Number.POSITIVE_INFINITY,
+        target: faucetTarget,
+        render: highlighted => (
+          <ChatRow
+            key={FAUCET_PEER}
+            testId="chat-row-faucet"
+            avatar={<FaucetAvatar />}
+            name={FAUCET_USERNAME}
+            badge={<BotBadge kind={FAUCET_INFO.kind} />}
+            time={faucetLast ? formatListTime(faucetLast.timestamp) : null}
+            preview={FAUCET_INFO.description}
+            unread={faucetRoom.unreadCount}
+            selected={selected.kind === 'room' && selected.peer === FAUCET_PEER}
+            highlighted={highlighted}
+            onClick={() => open(faucetTarget)}
+            mute={muteOf(faucetRoom)}
+          />
+        ),
+      }
+    : null;
+
   const contactRows: Row[] = data.contacts.map(contact => {
     const room = data.rooms.get(contact.accountId);
     const last = data.lastMessages.get(contact.accountId);
@@ -153,6 +200,7 @@ const buildRows = (
             testId="chat-row"
             avatar={<PeerAvatar name={contact.username} />}
             name={contact.username}
+            badge={badgeOf(data, contact.accountId)}
             time={last ? formatListTime(last.timestamp) : null}
             preview={preview}
             previewTone={status ? 'tertiary' : 'secondary'}
@@ -195,7 +243,7 @@ const buildRows = (
     });
 
   const others = [...contactRows, ...outgoingRows].sort((a, b) => b.at - a.at);
-  return { rows: [assistantRow, ...others], others: others.length };
+  return { rows: [assistantRow, ...(faucetRow ? [faucetRow] : []), ...others], others: others.length };
 };
 
 /** The list's order, for the keyboard shortcuts. */

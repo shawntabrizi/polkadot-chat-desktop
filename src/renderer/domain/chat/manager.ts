@@ -26,7 +26,7 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
-import { type MessageContent, type OutgoingContent, type TypingKind, fromWire, keyboardOf, toWire } from './content';
+import { type BotInfo, type MessageContent, type OutgoingContent, type TypingKind, fromWire, keyboardOf, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { ButtonWire, IdentityChannelEvent } from './identityEvents';
 import {
@@ -44,6 +44,7 @@ import {
   setMessageStatus,
   tombstoneMessage,
 } from './messages';
+import { applyBotInfo, getPeerInfo, markBotSignal, markStartSent, shouldSendStart } from './peerInfo';
 import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
 import { type TypingStore, createPendingSeen, createSeenSender, createTypingSender, createTypingStore } from './signals';
@@ -105,6 +106,18 @@ export type ChatManager = {
    * agent's `working` hint). No screen calls it in M9; test scripts do.
    */
   sendTyping: (peer: HexString, kind: TypingKind, until: number) => Promise<void>;
+  /**
+   * The room with `peer` is open (M10 step 4). Sends `/start` once, as a
+   * plain text, if the peer acts like a bot and has sent no `botInfo`
+   * (`shouldSendStart`). Call again when the peer's info changes.
+   */
+  roomOpened: (peer: HexString) => Promise<void>;
+  /**
+   * Spec 0008: describe this client as a bot, on the identity channel as a
+   * bot does. No screen calls it: a person's client never sends `botInfo`.
+   * Test scripts use it as the operator flag.
+   */
+  sendBotInfo: (peer: HexString, info: BotInfo) => Promise<void>;
   dispose: VoidFunction;
 };
 
@@ -207,6 +220,10 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         return;
       case 'seen':
         if ((await applySeen(peer, effect.upTo, effect.at)) === 'unknown') pendingSeen.add(peer, effect.upTo, effect.at);
+        return;
+      case 'botInfo':
+        // Spec 0008: stored per peer, never a bubble, never answered.
+        await applyBotInfo(peer, effect.info, message.timestamp);
         return;
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
@@ -328,11 +345,18 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         await removePeerDevice(peer, event.statementAccountId);
         return;
       case 'message':
-        // A bot answers a request with its welcome text on the identity session.
+        // A bot answers a request with its welcome text on the identity
+        // session; a phone never sends content there. That is the only sign
+        // of an older bot (the automatic `/start`, M10 step 4).
+        await markBotSignal(peer, event.timestamp);
         await handleIncoming(peer, event);
         return;
     }
   };
+
+  // Peers whose automatic `/start` is on its way: a second call while the
+  // first one still runs must not send it twice.
+  const starting = new Set<HexString>();
 
   const requireRequest = async (requestId: string, direction: RequestRow['direction']): Promise<RequestRow> => {
     const request = await getRequest(requestId);
@@ -568,6 +592,25 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     typing,
 
     sendTyping: (peer, kind, until) => submit(peer, { type: 'typing', kind, until }, { messageId: randomId(), timestamp: Date.now() }),
+
+    roomOpened: async peer => {
+      if (starting.has(peer) || !sessions.has(peer)) return;
+      starting.add(peer);
+      try {
+        if (!shouldSendStart(await getPeerInfo(peer))) return;
+        // Marked first: a failed send is not tried again on its own (the row stays, with Retry).
+        await markStartSent(peer, Date.now());
+        await sendMessage(peer, { type: 'text', text: '/start' });
+      } finally {
+        starting.delete(peer);
+      }
+    },
+
+    sendBotInfo: async (peer, info) => {
+      const contact = await getContact(peer);
+      if (!contact) throw new Error('no contact to describe this client to');
+      await ensureChannel(hexToBytes(peer), contact.chatPublicKey).post(toWire({ type: 'botInfo', info }));
+    },
 
     dispose: () => {
       disposed = true;

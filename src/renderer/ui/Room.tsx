@@ -6,18 +6,20 @@ import type { HexString } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { BANNER_DELAY_MS, type ConnectionSnapshot, showsBanner } from '../app/connectionState';
 import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/database';
-import { ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
+import { ASSISTANT_COMMANDS, ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
 import { isLiveFrame } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { PeerTyping } from '../domain/chat/signals';
 import type { ChatManager } from '../domain/chat/manager';
 import { listMessages, markButtonPressed, markRoomRead, setRoomMuted } from '../domain/chat/messages';
+import { getPeerInfo } from '../domain/chat/peerInfo';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { AssistantSettings } from '../../shared/desktop-api';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { BotBadge } from './BotBadge';
 import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
@@ -106,6 +108,8 @@ export const Room = (props: Props) => {
   const room = useLiveQuery(() => db.rooms.get(peer), [peer]);
   const requests = useLiveQuery(() => db.requests.where('peerAccountId').equals(peer).toArray(), [peer]);
   const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
+  const peerInfo = useLiveQuery(() => (manager ? getPeerInfo(peer) : Promise.resolve(undefined)), [peer, manager]);
+  const botInfo = peerInfo?.botInfo ?? null;
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<Mode>({ mode: 'new' });
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +179,15 @@ export const Room = (props: Props) => {
     // Set once, off the render path.
     void Promise.resolve().then(() => setFirstUnreadId(anchor));
   }, [messages, room, firstUnreadId]);
+
+  // M10 step 4: a bot that has not described itself gets `/start` once. Asked
+  // again whenever what we know about the peer changes while the room is open
+  // (its welcome text may land just after the room opened).
+  const contactKnown = contact !== undefined;
+  useEffect(() => {
+    if (!manager || !contactKnown) return;
+    manager.roomOpened(peer as HexString).catch((cause: unknown) => console.warn('[room] /start failed', cause));
+  }, [manager, contactKnown, peer, peerInfo]);
 
   // One assistant reply at a time: Send waits until it ends or is stopped.
   const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
@@ -365,6 +378,7 @@ export const Room = (props: Props) => {
       <RoomHeader
         avatar={assistant ? <AssistantAvatar /> : <PeerAvatar name={name || '?'} />}
         name={name}
+        badge={botInfo ? <BotBadge kind={botInfo.kind} /> : undefined}
         status={
           assistant ? (
             assistantSettings ? (
@@ -378,6 +392,10 @@ export const Room = (props: Props) => {
             <span className="text-fg-warning">No device of this contact is known yet, so messages cannot be delivered.</span>
           ) : peerTyping ? (
             <TypingLine typing={peerTyping} />
+          ) : botInfo && botInfo.description !== '' ? (
+            <span data-testid="bot-description" title={botInfo.description}>
+              {botInfo.description}
+            </span>
           ) : undefined
         }
       >
@@ -417,6 +435,8 @@ export const Room = (props: Props) => {
         sendLabel={mode.mode === 'edit' ? 'Save' : 'Send'}
         sendKey={prefs.sendKey}
         onEditLast={lastOwnText ? () => startEdit(lastOwnText) : undefined}
+        // Commands only for a new message: an edit or a reply is not one.
+        commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
       />
     </>
   );

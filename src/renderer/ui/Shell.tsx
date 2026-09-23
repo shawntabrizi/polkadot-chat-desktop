@@ -16,6 +16,7 @@ import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
+import { FAUCET_PEER } from '../domain/faucet/faucet';
 import type { ChatManager } from '../domain/chat/manager';
 import type { IdentityLookup } from '../domain/identity/lookup';
 import type { SearchResult } from '../domain/identity/search';
@@ -31,8 +32,10 @@ import { PeerAvatar } from './Avatar';
 import { ChatList, type ChatSelection, type ChatTarget, useChatOrder } from './ChatList';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
 import { Room } from './Room';
+import { FaucetRoom } from './FaucetRoom';
 import { DraftRoom, SearchPane } from './Search';
 import { Settings } from './Settings';
+import { toSs58 } from './format';
 import { useNotifications } from './notifications';
 import { useLiveQuery } from './useLiveQuery';
 
@@ -220,6 +223,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             />
           ) : null;
         }
+        if (selection.peer === FAUCET_PEER) return <FaucetRoom key={FAUCET_PEER} address={toSs58(identity.identityAccountId)} />;
         return runtime ? (
           <Room
             key={selection.peer}

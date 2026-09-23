@@ -7,6 +7,8 @@ type Props = {
   name: string;
   /** A quiet line under the name; nothing when there is nothing to say. */
   status?: ReactNode;
+  /** A spec 0008 bot badge after the name. */
+  badge?: ReactNode;
   /** Right-aligned actions. */
   children?: ReactNode;
 };
@@ -26,13 +28,16 @@ export const TypingLine = ({ typing }: { typing: PeerTyping }) => (
   </span>
 );
 
-export const RoomHeader = ({ avatar, name, status, children }: Props) => (
+export const RoomHeader = ({ avatar, name, status, badge, children }: Props) => (
   <header className="flex h-16 shrink-0 items-center gap-3 px-4">
     {avatar}
     <div className="min-w-0 flex-1">
-      <h2 className="truncate text-heading-m text-fg-primary" data-testid="room-title">
-        {name}
-      </h2>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h2 className="truncate text-heading-m text-fg-primary" data-testid="room-title">
+          {name}
+        </h2>
+        {badge}
+      </div>
       {status ? <p className="truncate text-body-s text-fg-secondary">{status}</p> : null}
     </div>
     {children}
