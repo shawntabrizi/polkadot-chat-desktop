@@ -19,7 +19,7 @@ import { readUserIdentity } from './userIdentity';
 const makeSecrets = (): { secrets: RendererSecrets; accountId: Uint8Array } => {
   const statementSeed = generateStatementAccountSeed();
   return {
-    secrets: { statementSeed, chatPrivateKey: generateEncryptionPrivateKey() },
+    secrets: { statementSeed, chatPrivateKey: generateEncryptionPrivateKey(), deviceEncryptionPrivateKey: generateEncryptionPrivateKey() },
     accountId: deriveStatementAccountPublicKey(statementSeed),
   };
 };
@@ -30,17 +30,26 @@ beforeEach(async () => {
 });
 
 describe('seedSelfIdentity', () => {
-  // Single device: peers reach this app at the identity account and encrypt to
-  // the identity chat key, so the device keys must be exactly those.
-  it('makes the device keys the identity wallet and chat keys', async () => {
+  // Single device: peers reach this app at the identity account, as they reach
+  // a mobile app. The encryption key is the device's own: equal to the chat
+  // key, the device session would sit on the identity session's topics, where
+  // bot-core decrypts with the identity key and drops every message.
+  it('makes the statement account the identity wallet and keeps the device encryption key apart', async () => {
     const { secrets, accountId } = makeSecrets();
     await seedSelfIdentity(secrets, accountId);
 
     const device = await getDeviceKeys();
     expect(device.statementAccountSeed).toEqual(secrets.statementSeed);
     expect(device.statementAccountPublicKey).toEqual(accountId);
-    expect(device.encryptionPrivateKey).toEqual(secrets.chatPrivateKey);
-    expect(device.encryptionPublicKey).toEqual(deriveEncryptionPublicKey(secrets.chatPrivateKey));
+    expect(device.encryptionPrivateKey).toEqual(secrets.deviceEncryptionPrivateKey);
+    expect(device.encryptionPublicKey).toEqual(deriveEncryptionPublicKey(secrets.deviceEncryptionPrivateKey));
+    expect(device.encryptionPrivateKey).not.toEqual(secrets.chatPrivateKey);
+  });
+
+  it('refuses a device encryption key equal to the chat key', async () => {
+    const { secrets, accountId } = makeSecrets();
+    await expect(seedSelfIdentity({ ...secrets, deviceEncryptionPrivateKey: secrets.chatPrivateKey }, accountId)).rejects.toThrow(/must not be/);
+    expect(await db.secrets.count()).toBe(0);
   });
 
   it('writes the identity row as its own peer device', async () => {
@@ -53,7 +62,7 @@ describe('seedSelfIdentity', () => {
       rootAccountId: accountId,
       identityChatPrivateKey: secrets.chatPrivateKey,
       identityChatPublicKey: deriveEncryptionPublicKey(secrets.chatPrivateKey),
-      peerDeviceEncPubKey: deriveEncryptionPublicKey(secrets.chatPrivateKey),
+      peerDeviceEncPubKey: deriveEncryptionPublicKey(secrets.deviceEncryptionPrivateKey),
       peerStatementAccountId: accountId,
     });
   });
@@ -93,6 +102,18 @@ describe('ensureSelfIdentitySeeded', () => {
     const fetchSecrets = vi.fn(async () => secrets);
     await ensureSelfIdentitySeeded({ username: 'alicebob.07', accountHex: bytesToHex(accountId), profile: 'devnet' }, fetchSecrets);
     expect(fetchSecrets).not.toHaveBeenCalled();
+  });
+
+  // M1 seeded the chat key as the device key; such an install must move to
+  // its own device key on the next start, or bots keep dropping its messages.
+  it('re-seeds when the device encryption key is still the chat key', async () => {
+    const { secrets, accountId } = makeSecrets();
+    await seedSelfIdentity(secrets, accountId);
+    await db.secrets.put({ id: 'device.encryptionPrivateKey', bytes: secrets.chatPrivateKey });
+    const fetchSecrets = vi.fn(async () => secrets);
+    await ensureSelfIdentitySeeded({ username: 'alicebob.07', accountHex: bytesToHex(accountId), profile: 'devnet' }, fetchSecrets);
+    expect(fetchSecrets).toHaveBeenCalledOnce();
+    expect((await db.secrets.get('device.encryptionPrivateKey'))?.bytes).toEqual(secrets.deviceEncryptionPrivateKey);
   });
 
   it('re-seeds when Dexie holds a different identity', async () => {

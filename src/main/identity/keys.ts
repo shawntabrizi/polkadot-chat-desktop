@@ -4,6 +4,8 @@
  * - the `//wallet` sr25519 pair: the account the backend attests, and (single
  *   device) the account that signs this app's statements;
  * - the X25519 chat key, whose public half is the published identifier key.
+ * The desktop adds a third, not in register.mjs: this device's X25519
+ * encryption key (see `deviceEncryptionPrivateKey`).
  */
 
 import { blake2b } from '@noble/hashes/blake2.js';
@@ -25,6 +27,15 @@ export type IdentityKeys = {
   walletSecret64: Uint8Array;
   chatPrivateKey: Uint8Array;
   chatPublicKey: Uint8Array;
+  /**
+   * This device's X25519 key (the `deviceEncPubKey` peers address), apart
+   * from the chat key, as the mobile app keeps them apart. When the two are
+   * equal, the device session's topics are the identity session's topics,
+   * and bot-core reads a device statement with the identity key and drops it
+   * (BOT_SESSION_DECODE_FAILED, docs/decisions.md M2). Derived, not random,
+   * so a re-seed after a wiped IndexedDB gives back the key peers know.
+   */
+  deviceEncryptionPrivateKey: Uint8Array;
   /** RFC-0004 container published on chain: `0x00 || chatPublicKey || 32 zero bytes`. */
   identifierKey65: Uint8Array;
   /** Entropy for the lite-person proof. */
@@ -34,6 +45,8 @@ export type IdentityKeys = {
 
 /** A new 12-word English BIP39 mnemonic (128 bits), the length the Polkadot app uses. */
 export const generateMnemonic = (): string => bip39Generate(wordlist, 128);
+
+const DEVICE_KEY_CONTEXT = new TextEncoder().encode('polkadot-chat-desktop/device-encryption');
 
 export const deriveIdentityKeys = (mnemonic: string): IdentityKeys => {
   const rootSeed = mnemonicToMiniSecret(mnemonic);
@@ -45,6 +58,7 @@ export const deriveIdentityKeys = (mnemonic: string): IdentityKeys => {
     walletSecret64: wallet.privateKey,
     chatPrivateKey,
     chatPublicKey,
+    deviceEncryptionPrivateKey: blake2b(rootSeed, { key: DEVICE_KEY_CONTEXT, dkLen: 32 }),
     identifierKey65: encodeAccountEcdhKey(chatPublicKey),
     liteEntropy: blake2b(mnemonicToEntropy(mnemonic), { dkLen: 32 }),
     sign: wallet.sign,

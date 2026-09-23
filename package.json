@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "smoke": "npm run build && electron out/main/index.js --smoke",
     "prepare": "papi generate",
-    "identity:register": "node scripts/identity-register.mjs"
+    "identity:register": "node scripts/identity-register.mjs",
+    "e2e:chat": "node scripts/e2e-chat.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",

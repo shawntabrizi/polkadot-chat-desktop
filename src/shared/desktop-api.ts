@@ -45,6 +45,8 @@ export type RendererSecrets = {
   statementSeed: Uint8Array;
   /** 32-byte X25519 identity chat private key. */
   chatPrivateKey: Uint8Array;
+  /** 32-byte X25519 private key of this device, apart from the chat key. */
+  deviceEncryptionPrivateKey: Uint8Array;
 };
 
 export type DesktopIdentityApi = {

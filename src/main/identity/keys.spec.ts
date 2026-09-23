@@ -53,6 +53,16 @@ describe('deriveIdentityKeys', () => {
     expect(deriveSr25519PublicKey(keys.walletSecret64)).toEqual(keys.accountId);
   });
 
+  // bot-core reads a statement on the identity-session topic with the identity
+  // key; with the device key equal to the chat key the device session lands on
+  // that topic and every message to a bot fails to decrypt there.
+  it('gives the device its own encryption key, stable for the mnemonic', () => {
+    const keys = deriveIdentityKeys(mnemonic);
+    expect(keys.deviceEncryptionPrivateKey).toHaveLength(32);
+    expect(keys.deviceEncryptionPrivateKey).not.toEqual(keys.chatPrivateKey);
+    expect(deriveIdentityKeys(mnemonic).deviceEncryptionPrivateKey).toEqual(keys.deviceEncryptionPrivateKey);
+  });
+
   it('signs with the wallet key', () => {
     const keys = deriveIdentityKeys(mnemonic);
     expect(keys.sign(new Uint8Array([1, 2, 3]))).toHaveLength(64);

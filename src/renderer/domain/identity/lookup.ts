@@ -8,12 +8,11 @@
  * re-read on every app start, and a rotated key must not be served from disk.
  */
 
-import { AccountId } from '@polkadot-api/substrate-bindings';
 import { type IdentityRepository, createIdentityRepository, createIdentityRpcAdapter } from '@novasamatech/host-papp';
 import type { LazyClient } from '@novasamatech/statement-store';
 import { errAsync, okAsync } from 'neverthrow';
 
-import { hexToBytes } from '../../app/bytes';
+import { bytesToHex, hexToBytes } from '../../app/bytes';
 
 export type PeerIdentity = {
   accountId: Uint8Array;
@@ -46,15 +45,16 @@ const createMemoryStorage = (): StorageAdapter => {
   };
 };
 
-const ss58 = AccountId(0);
-
 export const createIdentityLookup = (lazyClient: LazyClient): IdentityLookup =>
   fromRepository(createIdentityRepository({ adapter: createIdentityRpcAdapter(lazyClient), storage: createMemoryStorage() }));
 
 /** Exposed for tests, which pass a stub repository instead of a chain. */
 export const fromRepository = (repository: IdentityRepository): IdentityLookup => ({
   getPeerIdentity: async accountId => {
-    const result = await repository.getIdentity(ss58.dec(accountId)).orElse(error => {
+    // The SDK's account string is the 0x-hex public key: its RPC adapter runs it
+    // through polkadot-api `AccountId().dec`, which reads hex and throws
+    // "Invalid public key length" on an SS58 address (every lookup failed so).
+    const result = await repository.getIdentity(bytesToHex(accountId)).orElse(error => {
       console.warn('[identity] lookup failed', error.message);
       return errAsync(error);
     });

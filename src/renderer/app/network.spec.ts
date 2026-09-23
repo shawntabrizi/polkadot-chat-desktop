@@ -17,7 +17,7 @@ describe('network profiles', () => {
 
   it('builds the username search URL the identity backend expects', () => {
     expect(usernameSearchUrl(NETWORK_PROFILES.paseo, 'ali')).toBe(
-      'https://identity-backend-next.parity-testnet.parity.io/api/v1/usernames?prefix=ali&status=ASSIGNED',
+      'https://identity-backend-next.parity-testnet.parity.io/api/v1/usernames/search?prefix=ali&limit=50',
     );
   });
 

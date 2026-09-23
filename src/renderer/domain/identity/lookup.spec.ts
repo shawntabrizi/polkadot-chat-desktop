@@ -1,5 +1,6 @@
 import type { Identity, IdentityRepository } from '@novasamatech/host-papp';
 import { errAsync, okAsync } from 'neverthrow';
+import { AccountId } from 'polkadot-api';
 import { NEVER } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 
@@ -24,6 +25,16 @@ const identity = (overrides: Partial<Identity>): Identity => ({
 });
 
 describe('identity lookup', () => {
+  // host-papp's RPC adapter decodes the account with polkadot-api
+  // `AccountId().dec`, which takes hex; an SS58 string made every live lookup fail.
+  it('asks the repository with the account as 0x-hex, which the SDK adapter can decode', async () => {
+    const asked: string[] = [];
+    const recording: IdentityRepository = { ...repo(identity({})), getIdentity: accountId => (asked.push(accountId), okAsync(identity({}))) };
+    await fromRepository(recording).getPeerIdentity(account);
+    expect(asked).toEqual([`0x${'33'.repeat(32)}`]);
+    expect(() => AccountId().dec(asked[0]!)).not.toThrow();
+  });
+
   // The SDK already unwraps the RFC-0004 container: what comes back is the
   // 32-byte X25519 key, used as-is.
   it('returns the username and the 32-byte chat key the SDK unwrapped', async () => {

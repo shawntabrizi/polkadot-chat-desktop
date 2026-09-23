@@ -69,11 +69,16 @@ export const registerIpc = (): void => {
 
   // The only channel that carries secrets. It exists so the renderer can seed
   // its Dexie device and identity rows (single device: the identity wallet is
-  // the statement account). It sends derived keys, never the mnemonic.
+  // the statement account; the device has its own encryption key). It sends
+  // derived keys, never the mnemonic.
   ipcMain.handle(IPC.identitySecretsForRenderer, (): RendererSecrets => {
     const identity = loadIdentity();
     if (!identity) throw new Error('This computer has no identity yet.');
     const keys = deriveIdentityKeys(identity.mnemonic);
-    return { statementSeed: keys.walletSecret64, chatPrivateKey: keys.chatPrivateKey };
+    return {
+      statementSeed: keys.walletSecret64,
+      chatPrivateKey: keys.chatPrivateKey,
+      deviceEncryptionPrivateKey: keys.deviceEncryptionPrivateKey,
+    };
   });
 };
