@@ -3,8 +3,8 @@ import { join, resolve } from 'node:path';
 /**
  * Absolute path of a file shipped in `resources/`.
  *
- * A packaged app gets the folder under `process.resourcesPath` (M3 copies it
- * there with electron-builder `extraResources`). Every other run reads the repo
+ * A packaged app gets the folder as `process.resourcesPath/resources`
+ * (electron-builder `extraResources` copies `resources/` there). Every other run reads the repo
  * folder: this module sits two levels below the repo root both as source
  * (`src/main/resources.ts`, run by tsx) and when bundled (`out/main/index.js`).
  *
@@ -14,6 +14,6 @@ import { join, resolve } from 'node:path';
  */
 export const resourcePath = (name: string): string => {
   const packaged = Boolean(process.versions.electron) && !process.defaultApp;
-  const base = packaged ? process.resourcesPath : resolve(import.meta.dirname, '../../resources');
+  const base = packaged ? join(process.resourcesPath, 'resources') : resolve(import.meta.dirname, '../../resources');
   return join(base, name);
 };

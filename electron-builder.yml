@@ -1,0 +1,22 @@
+# macOS Apple Silicon package (M3). Unsigned: no code signing, notarization or
+# auto-update in v1. Shape taken from .refs/polkadot-desktop/electron-builder.js.
+appId: dev.shawntabrizi.polkadot-chat
+productName: Polkadot Chat
+directories:
+  output: dist
+# The bundles electron-vite builds; electron-builder adds the production
+# node_modules (main keeps its dependencies external) on its own.
+files:
+  - out/**
+  - package.json
+# resources/summit-bandersnatch-cli.wasm, read by src/main/resources.ts from
+# process.resourcesPath/resources in the packaged app.
+extraResources:
+  - from: resources
+    to: resources
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.social-networking
+  identity: null

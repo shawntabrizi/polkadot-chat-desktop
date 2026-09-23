@@ -4,7 +4,7 @@
  * the main process so it survives a wiped IndexedDB; the renderer never sees it.
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { app, safeStorage } from 'electron';
@@ -73,4 +73,12 @@ export const loadIdentity = (): StoredIdentity | null => {
   requireEncryption();
   const mnemonic = safeStorage.decryptString(Buffer.from(file.mnemonicEncrypted, 'base64'));
   return { username: file.username, accountHex: file.accountHex, profile: file.profile, mnemonic };
+};
+
+/**
+ * Removes the identity from this computer. There is no backup in v1, so the
+ * mnemonic, and with it the claimed username, is gone for good.
+ */
+export const deleteIdentity = (): void => {
+  rmSync(identityPath(), { force: true });
 };

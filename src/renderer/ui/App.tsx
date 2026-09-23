@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 
 import type { HexString } from '../app/bytes';
+import { appDatabase } from '../app/database';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionStatus, getPeopleConnection } from '../app/statementStore';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
 import { type IdentityLookup, createIdentityLookup } from '../domain/identity/lookup';
+import { resetIdentity } from '../domain/identity/reset';
 import { ensureSelfIdentitySeeded } from '../domain/identity/selfIdentity';
 import { type UserIdentity, readUserIdentity } from '../domain/identity/userIdentity';
 import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
@@ -99,7 +101,7 @@ export const App = () => {
     void Promise.resolve().then(() => {
       if (active) setConnection(connection.status());
     });
-    const lookup = createIdentityLookup(connection.lazyClient);
+    const lookup = createIdentityLookup(connection);
     createChatManager({
       identity,
       deviceKeys,
@@ -125,10 +127,13 @@ export const App = () => {
   }, [identity, deviceKeys, profileId]);
 
   const signedUp = (result: CreateIdentityResponse) => {
+    // Confirmed = in a best block; finality is shown, not awaited (PLAN.md "Best block first").
     setNotice(
-      result.confirmed
-        ? `Signed up as ${result.username}.`
-        : `Signed up as ${result.username}. The network has not confirmed it yet; others may not find you for a few minutes.`,
+      !result.confirmed
+        ? `Signed up as ${result.username}. The network has not confirmed it yet; others may not find you for a few minutes.`
+        : result.finalized
+          ? `Signed up as ${result.username}. Confirmed.`
+          : `Signed up as ${result.username}. Confirmed, finalizing.`,
     );
     setNeedsSignUp(false);
     setStartCount(count => count + 1);
@@ -181,6 +186,11 @@ export const App = () => {
               identity={boot.identity}
               deviceKeys={boot.deviceKeys}
               profileId={boot.profileId}
+              onReset={async () => {
+                const desktop = window.desktop;
+                if (!desktop) throw new Error('This app runs only inside Polkadot Chat Desktop.');
+                await resetIdentity({ identityApi: desktop.identity, database: appDatabase, reload: () => window.location.reload() });
+              }}
             />
           ) : null}
         </>

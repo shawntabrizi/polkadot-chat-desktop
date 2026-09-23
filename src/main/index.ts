@@ -2,13 +2,19 @@ import { app, BrowserWindow } from 'electron';
 import { join } from 'node:path';
 
 import { registerIpc } from './ipc';
+import { setMetadataCacheDir } from './metadataCache';
+import { loadWindowBounds, rememberWindowBounds } from './windowState';
 
 const SMOKE_TIMEOUT_MS = 30_000;
 
+// Tests run the app against a throwaway profile (identity, IndexedDB, window
+// state) so they never touch the owner's. Must be set before `ready`.
+const userDataOverride = process.env.PCD_USER_DATA_DIR;
+if (userDataOverride) app.setPath('userData', userDataOverride);
+
 function createWindow(smoke: boolean): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    ...loadWindowBounds(),
     show: !smoke,
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.js'),
@@ -19,6 +25,7 @@ function createWindow(smoke: boolean): BrowserWindow {
   });
 
   if (smoke) watchSmoke(win);
+  else rememberWindowBounds(win);
 
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) {
@@ -50,6 +57,7 @@ function watchSmoke(win: BrowserWindow): void {
 }
 
 void app.whenReady().then(() => {
+  setMetadataCacheDir(join(app.getPath('userData'), 'metadata'));
   registerIpc();
   createWindow(process.argv.includes('--smoke'));
 });

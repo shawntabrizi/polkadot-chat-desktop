@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import type { DeviceKeys } from '../domain/device/keys';
 import type { UserIdentity } from '../domain/identity/userIdentity';
@@ -9,15 +11,36 @@ type Props = {
   identity: UserIdentity;
   deviceKeys: DeviceKeys;
   profileId: NetworkProfileId;
+  /** Deletes the identity from this computer and reloads into sign-up. */
+  onReset: () => Promise<void>;
 };
+
+const RESET_CONFIRM =
+  'Reset identity?\n\nThis deletes your username, keys and chats from this computer. ' +
+  'There is no backup: the username cannot be used again. This cannot be undone.';
+
+// The IPC layer wraps errors as "Error invoking remote method '…': Error: <message>".
+const plainError = (error: unknown): string =>
+  (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 
 /**
  * The self-owned identity this computer created. The identity account and
  * identifier-key container are what a bot-core test client needs to address
  * this identity (docs/acceptance.md).
  */
-export const Settings = ({ username, identity, deviceKeys, profileId }: Props) => {
+export const Settings = ({ username, identity, deviceKeys, profileId, onReset }: Props) => {
   const accountHex = `0x${toHex(identity.identityAccountId)}`;
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const reset = () => {
+    if (!window.confirm(RESET_CONFIRM)) return;
+    setResetting(true);
+    setResetError(null);
+    onReset().catch((cause: unknown) => {
+      setResetError(plainError(cause));
+      setResetting(false);
+    });
+  };
   return (
     <section>
       <h2>Identity</h2>
@@ -46,6 +69,12 @@ export const Settings = ({ username, identity, deviceKeys, profileId }: Props) =
         <dt>This device (statement account)</dt>
         <dd>{toSs58(deviceKeys.statementAccountPublicKey)}</dd>
       </dl>
+      <h2>Reset</h2>
+      <p>Delete this identity and its chats from this computer.</p>
+      <button type="button" onClick={reset} disabled={resetting} data-testid="reset-identity">
+        {resetting ? 'Resetting…' : 'Reset identity'}
+      </button>
+      {resetError ? <p role="alert">{resetError}</p> : null}
     </section>
   );
 };

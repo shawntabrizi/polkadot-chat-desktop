@@ -12,17 +12,25 @@
  * The WS provider reconnects on its own, but raw `statement_subscribeStatement`
  * subscriptions do not survive a reconnect, so the connection status is
  * observable and the chat manager rebuilds its sessions on `connected`.
+ *
+ * The polkadot-api client gets the runtime-metadata cache (in Electron: the
+ * main process's `<userData>/metadata`, through `window.desktop.chain`), so
+ * the first chain read after a start does not wait for a public node to
+ * serve the metadata.
  */
 
 import {
   type LazyClient,
   type StatementStoreAdapter,
-  createLazyClient,
   createPapiStatementStoreAdapter,
 } from '@novasamatech/statement-store';
-import { type StatusChange, WsEvent, getWsProvider } from 'polkadot-api/ws';
+import { type CreateClientOptions, type PolkadotClient, createClient } from 'polkadot-api';
+import { type StatusChange, type WsJsonRpcProvider, WsEvent, getWsProvider } from 'polkadot-api/ws';
 
 import type { NetworkProfile, NetworkProfileId } from './network';
+
+/** The `{ getMetadata, setMetadata }` pair polkadot-api's `createClient` takes. */
+export type MetadataCache = Required<CreateClientOptions>;
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -31,11 +39,53 @@ export type PeopleConnection = {
   lazyClient: LazyClient;
   adapter: StatementStoreAdapter;
   status: () => ConnectionStatus;
+  /** Moves the socket to the profile's next endpoint (a read timed out on this one). */
+  switchEndpoint: () => void;
   /** Fires on every status change with the new status. */
   onStatus: (listener: (status: ConnectionStatus) => void) => VoidFunction;
 };
 
 let current: PeopleConnection | null = null;
+let metadataCacheOverride: MetadataCache | null = null;
+
+/** For the Node e2e script, which has no `window.desktop`. Set before the first connection. */
+export const setMetadataCache = (cache: MetadataCache | null): void => {
+  metadataCacheOverride = cache;
+};
+
+const metadataCache = (): MetadataCache | null =>
+  metadataCacheOverride ?? (typeof window !== 'undefined' ? (window.desktop?.chain ?? null) : null);
+
+// Copied from @novasamatech/statement-store 0.10.2 dist/adapter/lazyClient.js on
+// 2026-09-23; changes: TypeScript; `createClient` gets the metadata cache (the
+// SDK's createLazyClient takes a provider only).
+const createCachedLazyClient = (provider: WsJsonRpcProvider, cache: MetadataCache | null): LazyClient => {
+  let client: PolkadotClient | null = null;
+  const getClient = (): PolkadotClient => {
+    client ??= createClient(provider, cache ?? {});
+    return client;
+  };
+  return {
+    getClient,
+    getRequestFn() {
+      const c = getClient();
+      return (method, params) => c._request(method, params);
+    },
+    getSubscribeFn() {
+      const c = getClient();
+      return (method, params, onMessage, onError) => {
+        // statement_subscribeStatement -> statement_unsubscribeStatement
+        const unsubscribeMethod = method.replace('subscribe', 'unsubscribe');
+        const subscription = c._subscribe(method, unsubscribeMethod, params).subscribe({ next: onMessage, error: onError });
+        return () => subscription.unsubscribe();
+      };
+    },
+    disconnect() {
+      client?.destroy();
+      client = null;
+    },
+  };
+};
 
 /**
  * "No heartbeat": the statement subscriptions can stay quiet for a long time,
@@ -71,12 +121,13 @@ const connect = (profile: NetworkProfile): PeopleConnection => {
       for (const listener of listeners) listener(next);
     },
   });
-  const lazyClient = createLazyClient(provider);
+  const lazyClient = createCachedLazyClient(provider, metadataCache());
   return {
     profileId: profile.id,
     lazyClient,
     adapter: createPapiStatementStoreAdapter(lazyClient),
     status: () => status,
+    switchEndpoint: () => provider.switch(),
     onStatus: listener => {
       listeners.add(listener);
       return () => listeners.delete(listener);

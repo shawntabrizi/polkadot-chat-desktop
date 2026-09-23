@@ -116,6 +116,39 @@ describe('ensureSelfIdentitySeeded', () => {
     expect((await db.secrets.get('device.encryptionPrivateKey'))?.bytes).toEqual(secrets.deviceEncryptionPrivateKey);
   });
 
+  // Restart safety: identity.json in the main process is the source of truth.
+  // A start that finds Dexie short of any piece rebuilds it from there instead
+  // of showing Chats with keys that cannot sign or decrypt.
+  it.each(['device.statementSeed', 'device.encryptionPrivateKey', 'identity.chatPrivateKey'] as const)(
+    'restores the identity on start when the %s secret is missing',
+    async missing => {
+      const { secrets, accountId } = makeSecrets();
+      await seedSelfIdentity(secrets, accountId);
+      await db.secrets.delete(missing);
+      forgetCachedDeviceKeys();
+      const fetchSecrets = vi.fn(async () => secrets);
+      await ensureSelfIdentitySeeded({ username: 'alicebob.07', accountHex: bytesToHex(accountId), profile: 'devnet' }, fetchSecrets);
+      expect(fetchSecrets).toHaveBeenCalledOnce();
+      expect(await db.secrets.count()).toBe(3);
+      const device = await getDeviceKeys();
+      expect(device.statementAccountPublicKey).toEqual(accountId);
+      expect(device.encryptionPrivateKey).toEqual(secrets.deviceEncryptionPrivateKey);
+    },
+  );
+
+  it('restores the identity on start when the userIdentity row is missing, and keeps the chats', async () => {
+    const { secrets, accountId } = makeSecrets();
+    await seedSelfIdentity(secrets, accountId);
+    const peer = `0x${'44'.repeat(32)}` as const;
+    await db.contacts.put({ accountId: peer, username: 'peer.01', chatPublicKey: new Uint8Array(32), devices: [], createdAt: 1, updatedAt: 1 });
+    await db.userIdentity.clear();
+    const fetchSecrets = vi.fn(async () => secrets);
+    await ensureSelfIdentitySeeded({ username: 'alicebob.07', accountHex: bytesToHex(accountId), profile: 'devnet' }, fetchSecrets);
+    expect(fetchSecrets).toHaveBeenCalledOnce();
+    expect((await readUserIdentity())?.identityAccountId).toEqual(accountId);
+    expect(await db.contacts.get(peer)).toBeDefined();
+  });
+
   it('re-seeds when Dexie holds a different identity', async () => {
     const old = makeSecrets();
     await seedSelfIdentity(old.secrets, old.accountId);

@@ -11,6 +11,9 @@
     "test": "vitest run",
     "lint": "eslint .",
     "smoke": "npm run build && electron out/main/index.js --smoke",
+    "package": "npm run build && electron-builder --mac --arm64",
+    "smoke:packaged": "bash scripts/smoke-packaged.sh",
+    "postinstall": "node -e \"const fs = require('fs'); const d = 'node_modules/electron/dist'; process.exit(fs.existsSync(d) && fs.readdirSync(d).length > 0 ? 0 : 1)\" || node node_modules/electron/install.js",
     "prepare": "papi generate",
     "identity:register": "node scripts/identity-register.mjs",
     "e2e:chat": "node scripts/e2e-chat.mjs"
@@ -48,6 +51,7 @@
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.1",
     "electron": "44.4.1",
+    "electron-builder": "26.15.3",
     "electron-vite": "6.0.0-beta.1",
     "eslint": "10.9.1",
     "eslint-plugin-react-hooks": "7.1.1",

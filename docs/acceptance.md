@@ -304,3 +304,130 @@ Not checked in the GUI: an incoming request from a person (needs a second client
 ### `git status --short`
 
 Empty after the commit (checked before the report).
+
+## M3
+
+Run 2026-09-23 (about 15:30–15:50 UTC) on the final code of this commit.
+
+### `npm run check` (last 10 lines)
+
+```
+
+
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+
+
+ Test Files  27 passed (27)
+      Tests  169 passed (169)
+   Start at  11:45:34
+   Duration  1.10s (transform 1.12s, setup 502ms, import 8.10s, tests 2.89s, environment 1ms)
+
+```
+
+eslint printed nothing (no findings).
+
+### `npm run package` (last lines; the long "duplicate dependency references" line is cut)
+
+```
+  • installing native dependencies  arch=arm64
+  • completed installing native dependencies
+  • packaging       platform=darwin arch=arm64 electron=44.4.1 appOutDir=dist/mac-arm64
+  • downloaded      label=electron progress=100%
+  • downloaded electron zip extracted successfully  output=/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/dist/mac-arm64
+  • searching for node modules  pm=npm searchDir=/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+  • default Electron icon is used  reason=application icon is not set
+  • skipped macOS code signing  reason=identity explicitly is set to null
+  • building        target=DMG arch=arm64 file=dist/Polkadot Chat-0.1.0-arm64.dmg
+  • building block map  blockMapFile=dist/Polkadot Chat-0.1.0-arm64.dmg.blockmap
+```
+
+```
+$ ls -la dist/*.dmg
+-rw-r--r--@ 1 shawntabrizi  staff  165540327 Sep 23 11:45 dist/Polkadot Chat-0.1.0-arm64.dmg
+```
+
+The dmg is 165,540,327 bytes (158 MiB). The app is 391 MB unpacked; 288 MB of it is the Electron framework, 100 MB is `app.asar` (the production `node_modules`, see decisions).
+
+### `npm run smoke:packaged`
+
+```
+
+> polkadot-chat-desktop@0.1.0 smoke:packaged
+> bash scripts/smoke-packaged.sh
+
+profile /var/folders/_1/q03733qd0pv42n1dvkcvyx0c0000gn/T/pcd-smoke.E85QVzQEVx
+SMOKE_OK
+```
+
+The packaged app finds the wasm where `resourcePath()` looks (`ELECTRON_RUN_AS_NODE=1` with the packaged binary, the same formula):
+
+```
+packaged true .../dist/mac-arm64/Polkadot Chat.app/Contents/Resources/resources/summit-bandersnatch-cli.wasm true
+```
+
+### `npm run e2e:chat -- pcdpeer.47` (after the chain-client changes)
+
+```
+
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7045332 (runtime ready in 1.9s)
+PEER 0x44195d1bc476ac9c1673ed9b266a929898e98a02d60f141712c5ae8fd819281d key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Echo: 
+PING_SENT ping 375a0a
+REPLY Echo: ping 375a0a
+REPLY_HAS_NONCE yes
+E2E_OK
+```
+
+The first e2e run after the change (empty metadata cache) printed `runtime ready in 12.1s` and passed; every later run printed `runtime ready in 1.9s`. In M2 the same first read timed out after 120 s three times.
+
+### Restart, re-seed and reset (built app, throwaway profile)
+
+`npm run build`, then a scratch script (not committed) started `electron .` four times with `PCD_USER_DATA_DIR=<new temp folder>` and `--remote-debugging-port`, and drove the renderer through the Chrome DevTools protocol. The owner's profile (`~/Library/Application Support/polkadot-chat-desktop`) was not opened. Sign-up used the app's own IPC (`window.desktop.identity.create`) with a throwaway name on devnet. Output of the second run (the first run was the same, except that the reset took 30 s because the script itself held IndexedDB connections open; fixed in the script):
+
+```
+0.5s start 1 sign-up screen: true
+53.2s create -> username=pcdrestartapjv.06 confirmed=true finalized=true (52.7s from click to answer)
+53.2s progress: ["0.0s Creating keys","0.0s Claiming username","2.2s Waiting for the network","15.7s Waiting for the network",...] 15
+53.2s identity.json exists: true mnemonic stored encrypted (no plaintext field): true
+53.8s window.json after quit: {"x":264,"y":159,"width":1200,"height":800}
+54.6s start 2 shows username: true chat tabs: true
+54.6s Dexie secrets rows: 3
+55.8s start 3 after Dexie wipe shows username: true chat tabs: true
+55.8s Dexie secrets rows after re-seed: 3
+56.1s after reset sign-up screen: true
+56.1s identity.json exists after reset: false
+56.1s IndexedDB databases after reset: []
+57.3s start 4 sign-up screen: true
+```
+
+Start 3 cleared the `secrets` and `userIdentity` stores behind the app's back before the restart; the app re-seeded them from `identity.json` and opened into chats. The reset clicked Settings → "Reset identity" with `window.confirm` answered yes.
+
+The renderer reaches the metadata cache through IPC: `window.desktop.chain.getMetadata('0xd0f3…36df')` returned `Uint8Array 524446`; `getMetadata('../../etc/passwd')` returned `null`.
+
+### Timing: best-block reads and the metadata cache
+
+Scratch script (not committed) with the main-process code, devnet, 2026-09-23.
+
+| What | Before (M2 code) | After (M3 code) |
+|---|---|---|
+| Open the People directory + first read, fresh process | 9.7 s, 16.4 s (no cache; waits for the finalized block) | 13.6 s with an empty cache; 2.1–2.9 s (4 runs) with the cache filled |
+| Sign-up: claim sent → key seen by the app | 93.3 s (1 run; finalized head, poll 5 s) | 20.8 s, 21.5 s (empty cache), 47.7 s, 9.1 s (script); 52.7 s, 88.4 s (in the app, empty cache) |
+| Best-block confirmation → finalized head holds the key | — | 3.5 s, 24.5 s (2 runs) |
+
+The time the backend takes to put the claim in a block varies from about 9 s to more than 80 s between runs, so one sign-up against another is not a fair comparison. The parts M3 removes are measured directly: the finality lag (3.5 s and 24.5 s in two runs) and the metadata download on the first read after a start (about 11 s: 13.6 s cold against 2.1–2.9 s warm).
+
+### `git status --short`
+
+Empty after the commit (checked before the report).
+
+### Not run
+
+- Sign-up and restart **in the packaged app**. The packaged app has the name `polkadot-chat-desktop` (package.json `name`), so its `safeStorage` uses the keychain entry "polkadot-chat-desktop Safe Storage", which the dev Electron binary created. An unsigned binary that reads that entry makes macOS show a permission prompt, which an unattended run cannot answer and which would appear on the owner's screen. The restart test above ran the same code with the dev Electron binary. The packaged app was checked with `--smoke` in a throwaway profile, and the wasm path was checked in the packaged app. See docs/questions.md.
+- The reset confirm dialog was answered by replacing `window.confirm`; the native dialog itself was not clicked.
+- `docs/milestones/M3.check.sh` was not run by me (reviewer script). Its steps (check, package, dmg, smoke:packaged, M3 section) were each run above.

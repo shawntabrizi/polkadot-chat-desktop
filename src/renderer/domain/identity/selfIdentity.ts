@@ -55,10 +55,12 @@ export const seedSelfIdentity = async (secrets: RendererSecrets, accountId: Uint
 };
 
 /**
- * Makes Dexie hold the identity saved in the main process: seeds it when
- * there is no identity row, when the row belongs to another account (e.g. a
- * phone pairing from before), or when the device encryption key is still the
- * chat key (the M1 layout). `fetchSecrets` is only called then.
+ * Makes Dexie hold the identity saved in the main process, on every start
+ * before Chats shows. Seeds it when the identity row or any of the three
+ * secrets is missing (a wiped or half-written IndexedDB), when the row
+ * belongs to another account (e.g. a phone pairing from before), or when the
+ * device encryption key is still the chat key (the M1 layout). `fetchSecrets`
+ * is only called then.
  */
 export const ensureSelfIdentitySeeded = async (
   summary: IdentitySummary,
@@ -66,9 +68,11 @@ export const ensureSelfIdentitySeeded = async (
 ): Promise<void> => {
   const accountId = hexToBytes(summary.accountHex);
   const row = await db.userIdentity.get(DEVICE_ROW_ID);
+  const statementSeed = await db.secrets.get('device.statementSeed');
   const chatKey = await db.secrets.get('identity.chatPrivateKey');
   const deviceKey = await db.secrets.get('device.encryptionPrivateKey');
-  const current = row && chatKey && deviceKey && bytesEqual(row.identityAccountId, accountId) && !bytesEqual(deviceKey.bytes, chatKey.bytes);
+  const current =
+    row && statementSeed && chatKey && deviceKey && bytesEqual(row.identityAccountId, accountId) && !bytesEqual(deviceKey.bytes, chatKey.bytes);
   if (current) return;
   await seedSelfIdentity(await fetchSecrets(), accountId);
   await writeNetworkProfileId(summary.profile);

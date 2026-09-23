@@ -18,7 +18,8 @@ import { isNetworkProfileId } from '../shared/network';
 
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
-import { loadIdentity, saveIdentity } from './identity/store';
+import { deleteIdentity, loadIdentity, saveIdentity } from './identity/store';
+import { readMetadata, writeMetadata } from './metadataCache';
 
 // The mobile app's rule: lowercase letters only, 6 to 29 of them.
 const USERNAME = /^[a-z]{6,29}$/;
@@ -65,6 +66,20 @@ export const registerIpc = (): void => {
     } finally {
       creating = false;
     }
+  });
+
+  ipcMain.handle(IPC.identityReset, (): void => {
+    // A reset during a sign-up would race the save of the new mnemonic.
+    if (creating) throw new Error('A sign-up is running. Wait for it to end.');
+    deleteIdentity();
+  });
+
+  // Runtime metadata is public; the cache module checks the code hash and the size.
+  ipcMain.handle(IPC.chainMetadataGet, (_event, codeHash: unknown): Promise<Uint8Array | null> =>
+    typeof codeHash === 'string' ? readMetadata(codeHash) : Promise.resolve(null),
+  );
+  ipcMain.handle(IPC.chainMetadataSet, (_event, codeHash: unknown, metadata: unknown): void => {
+    if (typeof codeHash === 'string' && metadata instanceof Uint8Array) writeMetadata(codeHash, metadata);
   });
 
   // The only channel that carries secrets. It exists so the renderer can seed

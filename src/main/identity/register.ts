@@ -397,17 +397,22 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-/** Poll the directory until the account's identifier key is on chain. */
+/**
+ * Poll the directory until the account's identifier key is on chain. The
+ * directory reads the best block (PLAN.md "Best block first"), so this ends
+ * when the claim is in a block, not when it is finalized. `checkMs` bounds one
+ * check; it is longer than a directory read plus its retry on the next endpoint.
+ */
 export async function waitForAttestation(
   directory: AttestationDirectory,
   accountHex: string,
-  { timeoutMs = 180_000, pollMs = 5_000, onTick }: { timeoutMs?: number; pollMs?: number; onTick?: () => void } = {},
+  { timeoutMs = 180_000, pollMs = 3_000, checkMs = 40_000, onTick }: { timeoutMs?: number; pollMs?: number; checkMs?: number; onTick?: () => void } = {},
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let identifierKey: string | null = null;
     try {
-      identifierKey = await withTimeout(directory.identifierKeyFor(accountHex), pollMs, 'attestation check');
+      identifierKey = await withTimeout(directory.identifierKeyFor(accountHex), checkMs, 'attestation check');
     } catch {
       /* transient or timed out */
     }

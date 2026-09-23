@@ -18,7 +18,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { paseoPeopleNext, productsDevnetPeople } from '@polkadot-api/descriptors';
 import { AccountId } from '@polkadot-api/substrate-bindings';
-import { firstValueFrom } from 'rxjs';
 import { register } from 'tsx/esm/api';
 
 // One tsx loader for the whole process, so every module shares one instance
@@ -32,8 +31,6 @@ const STAGE_TIMEOUT_MS = 120_000;
 const POLL_MS = 1_000;
 /** How long a bot's own answer to the request may take to arrive. */
 const GREETING_WAIT_MS = 15_000;
-/** Covers the first read, which waits for the runtime metadata. */
-const READ_TIMEOUT_MS = 120_000;
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -73,12 +70,19 @@ const { createIdentity } = await load('src/main/identity/service.ts');
 const { deriveIdentityKeys } = await load('src/main/identity/keys.ts');
 const { NETWORK_PROFILES } = await load('src/renderer/app/network.ts');
 const { db } = await load('src/renderer/app/database.ts');
-const { getPeopleConnection, disposePeopleConnection } = await load('src/renderer/app/statementStore.ts');
+const { getPeopleConnection, disposePeopleConnection, setMetadataCache } = await load('src/renderer/app/statementStore.ts');
+const { metadataCache, setMetadataCacheDir } = await load('src/main/metadataCache.ts');
+const { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } = await load('src/shared/chainRead.ts');
 const { seedSelfIdentity } = await load('src/renderer/domain/identity/selfIdentity.ts');
 const { readUserIdentity } = await load('src/renderer/domain/identity/userIdentity.ts');
 const { getDeviceKeys } = await load('src/renderer/domain/device/repository.ts');
 const { createIdentityLookup } = await load('src/renderer/domain/identity/lookup.ts');
 const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
+
+// The app keeps runtime metadata under <userData>/metadata; the script keeps it
+// here, so only the first run after a runtime upgrade downloads it.
+setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
+setMetadataCache(metadataCache());
 
 // Everything that holds a socket, closed on every exit path.
 let manager = null;
@@ -115,7 +119,7 @@ if (saved) {
   console.log(`identity register ${base} on ${profile}`);
   try {
     const result = await createIdentity({ username: base, digits: null, profile, store, onProgress: (line) => console.log(`  ${line}`) });
-    console.log(`identity registered ${result.username} confirmed=${result.confirmed}`);
+    console.log(`identity registered ${result.username} confirmed=${result.confirmed} finalized=${result.finalized}`);
   } catch (error) {
     finish(1, `REGISTER_FAIL ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -133,16 +137,16 @@ console.log(`[ws] ${connection.status()}`);
 connection.onStatus((status) => console.log(`[ws] ${status}`));
 
 // Reads go to the best block (PLAN.md "Best block first"): a peer that just
-// registered is readable before finality. The first read downloads the
-// runtime metadata, which the public nodes can take a minute to serve.
+// registered is readable before finality. The runtime is loaded first (from
+// the metadata cache when it has it), so a read's deadline never covers the
+// metadata download; a timed-out step moves to the next endpoint once.
 const client = connection.lazyClient.getClient();
 const people = client.getTypedApi(profile === 'paseo' ? paseoPeopleNext : productsDevnetPeople);
 const best = { at: 'best' };
-const withTimeout = (promise, ms, label) =>
-  Promise.race([promise, delay(ms).then(() => Promise.reject(new Error(`${label} timed out after ${ms}ms`)))]);
+const read = (label, fn) => retryOnNextEndpoint(() => withTimeout(fn(), READ_TIMEOUT_MS, label), connection.switchEndpoint);
 /** The RFC-0004 identifier-key container (0x-hex) of an account, or null. */
 const identifierKeyOf = async (accountHex) => {
-  const value = await withTimeout(people.query.Resources.Consumers.getValue(ss58.dec(bytesOf(accountHex)), best), READ_TIMEOUT_MS, 'identifier lookup');
+  const value = await read('identifier lookup', () => people.query.Resources.Consumers.getValue(ss58.dec(bytesOf(accountHex)), best));
   return value?.identifier_key == null ? null : String(value.identifier_key).toLowerCase();
 };
 
@@ -151,12 +155,13 @@ const canonical = peerUsername.replace(/^@/, '').replace(/^([a-z0-9]+)\.(\d)$/i,
 let peerAccountHex;
 let peerKey;
 try {
-  const head = await withTimeout(firstValueFrom(client.bestBlocks$), READ_TIMEOUT_MS, 'best block');
-  console.log(`best block #${head[0]?.number}`);
+  const started = Date.now();
+  const head = await retryOnNextEndpoint(() => awaitBestRuntime(client), connection.switchEndpoint);
+  console.log(`best block #${head.number} (runtime ready in ${((Date.now() - started) / 1000).toFixed(1)}s)`);
   if ((await identifierKeyOf(saved.accountHex)) == null) {
     finish(1, 'SELF_NOT_ON_CHAIN (the peer cannot verify a request from an account without a chat key)');
   }
-  const owner = await withTimeout(people.query.Resources.UsernameOwnerOf.getValue(new TextEncoder().encode(canonical), best), READ_TIMEOUT_MS, 'username lookup');
+  const owner = await read('username lookup', () => people.query.Resources.UsernameOwnerOf.getValue(new TextEncoder().encode(canonical), best));
   if (typeof owner !== 'string' || owner === '') finish(1, `PEER_NOT_FOUND ${canonical}`);
   peerAccountHex = hexOf(ss58.enc(owner));
   peerKey = await identifierKeyOf(peerAccountHex);
@@ -183,7 +188,7 @@ manager = await createChatManager({
   identity,
   deviceKeys,
   statementStore: connection.adapter,
-  lookup: createIdentityLookup(connection.lazyClient),
+  lookup: createIdentityLookup(connection),
   onConnectionStatus: connection.onStatus,
 });
 

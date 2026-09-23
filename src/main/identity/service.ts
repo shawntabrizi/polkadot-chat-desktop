@@ -44,8 +44,10 @@ export type CreateIdentityResult = {
   username: string;
   accountHex: string;
   identifierKeyHex: string;
-  /** False when the chain did not show the key within the wait; the claim stands and may land later. */
+  /** True when the best block holds the key. False when the wait ended first; the claim stands and may land later. */
   confirmed: boolean;
+  /** True when the finalized head also holds it; read once at the end, never awaited. */
+  finalized: boolean;
 };
 
 const ATTESTATION_TIMEOUT_MS = 180_000;
@@ -95,14 +97,21 @@ export async function createIdentity({
 
   onProgress('Waiting for the network');
   let confirmed = false;
+  let finalized = false;
   try {
-    confirmed = await withPeopleDirectory(profile, directory =>
-      waitForAttestation(directory, accountHex, { timeoutMs: attestationTimeoutMs, onTick: () => onProgress('Waiting for the network') }),
-    );
+    ({ confirmed, finalized } = await withPeopleDirectory(profile, async directory => {
+      const inBlock = await waitForAttestation(directory, accountHex, {
+        timeoutMs: attestationTimeoutMs,
+        onTick: () => onProgress('Waiting for the network'),
+      });
+      // Finality is reported, not awaited (PLAN.md "Best block first"): one read now.
+      const final = inBlock ? await directory.isFinalized(accountHex).catch(() => false) : false;
+      return { confirmed: inBlock, finalized: final };
+    }));
   } catch (error) {
     onProgress(`Could not reach the network: ${readable(error)}`);
   }
-  return { username: claimed, accountHex, identifierKeyHex: bytesToHex(keys.identifierKey65), confirmed };
+  return { username: claimed, accountHex, identifierKeyHex: bytesToHex(keys.identifierKey65), confirmed, finalized };
 }
 
 // One throwaway bearer per backend for availability checks, reused until it

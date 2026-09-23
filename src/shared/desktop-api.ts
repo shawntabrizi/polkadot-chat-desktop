@@ -10,6 +10,9 @@ export const IPC = {
   identityCreate: 'identity:create',
   identitySecretsForRenderer: 'identity:secretsForRenderer',
   identityProgress: 'identity:progress',
+  identityReset: 'identity:reset',
+  chainMetadataGet: 'chain:metadataGet',
+  chainMetadataSet: 'chain:metadataSet',
 } as const;
 
 /** The public part of the identity saved on this machine. */
@@ -35,8 +38,10 @@ export type CreateIdentityResponse = {
   username: string;
   accountHex: string;
   identifierKeyHex: string;
-  /** False when the chain had not shown the key before the wait ended. */
+  /** True when the best block holds the key; false when the wait ended first. */
   confirmed: boolean;
+  /** True when the finalized head also holds it. Shown as "finalizing" when false. */
+  finalized: boolean;
 };
 
 /** Key material the renderer needs to seed Dexie. Never the mnemonic. */
@@ -54,11 +59,27 @@ export type DesktopIdentityApi = {
   available: (username: string, profile: NetworkProfileId) => Promise<UsernameAvailability>;
   create: (request: CreateIdentityRequest) => Promise<CreateIdentityResponse>;
   secretsForRenderer: () => Promise<RendererSecrets>;
+  /**
+   * Deletes `identity.json` from this computer. The username stays claimed on
+   * chain, but without a backup (v1) it can never be used again. The caller
+   * then wipes the renderer database and reloads.
+   */
+  reset: () => Promise<void>;
   /** Progress lines of a running `create`. Returns the unsubscribe function. */
   onProgress: (listener: (line: string) => void) => () => void;
 };
 
-export type DesktopApi = { version: string; identity: DesktopIdentityApi };
+/**
+ * The runtime-metadata cache on disk (`<userData>/metadata/<codeHash>.bin`),
+ * in the shape polkadot-api's `createClient` takes. The renderer cannot
+ * write files, so its People connection reaches the cache through IPC.
+ */
+export type DesktopChainApi = {
+  getMetadata: (codeHash: string) => Promise<Uint8Array | null>;
+  setMetadata: (codeHash: string, metadata: Uint8Array) => void;
+};
+
+export type DesktopApi = { version: string; identity: DesktopIdentityApi; chain: DesktopChainApi };
 
 declare global {
   interface Window {
