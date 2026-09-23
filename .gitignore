@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+.refs/
+.agent-runs/
+.env
+.env.*
+*.log
+.DS_Store
