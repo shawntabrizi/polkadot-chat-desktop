@@ -52,7 +52,7 @@ ButtonPressContent = {
 }
 ```
 
-An unknown `Action` variant MUST render as a disabled button with its label. A client that does not implement this RFC decodes kind 242 as unsupported; under the compatibility rule a sender MUST NOT send it to such a peer and MUST send `text` alone instead (the same string, with the button labels appended as a numbered list so the choices remain readable).
+`Action` is a plain SCALE enum without a length prefix, so a decoder cannot skip an unknown tag: a message with an unknown action tag is undecodable and renders as the base spec's unsupported message. New action kinds are therefore introduced only by a spec revision that bumps the `buttons` kind, and forward-compatible growth lives inside the opaque `tx(Bytes)` payload. Only `tx` renders as a disabled button with its label until RFC 0007 defines it. A client that does not implement this RFC decodes kind 242 as unsupported; under the compatibility rule a sender MUST NOT send it to such a peer and MUST send `text` alone instead (the same string, with the button labels appended as a numbered list so the choices remain readable).
 
 ### Sender rules
 
@@ -67,6 +67,7 @@ An unknown `Action` variant MUST render as a disabled button with its label. A c
 - `callback`: send `buttonPress{messageId, row, index, payload}`; show nothing as a bubble; the UI marks the press on the button (spinner until the bot's next message or 10 s).
 - `url`: open in the system browser after confirmation with the host visible; never auto-open.
 - `tx`: disabled until RFC 0007; label shown, tooltip "This client cannot run chain actions yet".
+- Fenced-block authoring (bots and local agents): a reply ending with a ```buttons fence holding `{ "rows": [[{ "label", "action": { "command" | "callback" | "url" } }]], "oneShot"? }` becomes one `buttons` message; a `callback` string with the prefix `base64:` is raw bytes, any other string is UTF-8, max 256 bytes; invalid blocks stay text.
 - A `buttonPress` MUST be accepted only from the peer the `buttons` message was sent to, and only for a `messageId` the recipient sent. Duplicate presses are delivered as duplicates (bots dedupe by their own means).
 
 ### Compatibility (this spec set's rule)
