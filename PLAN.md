@@ -118,6 +118,7 @@ the bot `pcdpeer.47`, lives on `devnet`.
 | M4 | AI assistant contact via the LLM proxy | `npm run e2e:assistant` streams a reply through the proxy; the Assistant screen renders markdown |
 | M5 | UI pass on the Polkadot design system | `check:tokens` clean; screenshots of every screen in Berlin Day and Berlin Night reviewed |
 | M6 | Desktop conventions; local agent engines (Claude Code, Codex, OpenCode) for the Assistant | `npm run e2e:engines` answers on every installed CLI with tools off; shortcuts, drafts, unread, notifications, macOS menu in screenshots |
+| M7+ | Protocol milestones, see `docs/roadmap.md` | |
 
 Each milestone is one file in `docs/milestones/`. Its `.check.sh` is what the
 reviewer runs. A milestone is done when the check passes and the work is
