@@ -10,7 +10,7 @@
 
 ## Summary
 
-The protocol has delivery acknowledgement (a fetched statement is ACKed) but no signal that the peer is composing and no signal that the peer has *read* a message, so clients show "delivered" where every other messenger shows "seen", and a bot that takes ten seconds to answer looks dead. Two new `MessageContent` variants fix this without new infrastructure: `typing`, a short-lived hint that the sender is composing or an agent is working, and `seen`, a batched read receipt. Both are **ephemeral**: they MUST NOT be persisted, rendered as bubbles, ACKed as messages, or included in edit history or compaction. Both are **rate-limited** and **opt-in per client**, and under the compatibility rule of this spec set a client MUST NOT send either kind to a peer that has not sent an extension kind first.
+The protocol has delivery acknowledgement (a fetched statement is ACKed) but no signal that the peer is composing and no signal that the peer has *read* a message, so clients show "delivered" where every other messenger shows "seen", and a bot that takes ten seconds to answer looks dead. Two new `MessageContent` variants fix this without new infrastructure: `typing`, a short-lived hint that the sender is composing or an agent is working, and `seen`, a batched read receipt. Both are **ephemeral**: they MUST NOT be persisted, rendered as bubbles, ACKed as messages, or included in edit history or compaction. Both are **rate-limited** and switchable per client (read receipts default on in the desktop client).
 
 ## Motivation
 
@@ -54,9 +54,9 @@ Both ride in ordinary `Message` envelopes with their own fresh `messageId`, so t
 - **Recipient (the original sender).** On `seen{upTo}` from B: mark every own message to B with `timestamp <= timestamp(upTo)` as seen at `at`. Idempotent; a `seen` for an unknown `upTo` is applied to messages with a lower timestamp than the latest known and the rest deferred until `upTo` is known (or dropped after the session's pending window). Never persisted as a message; the *state* it produces (seenAt on own messages) is persisted.
 - **Ticks.** Delivery states become: pending → sent → delivered (statement ACK) → seen (`seen` received). Clients that sent no `seen` still show up to delivered.
 
-### Compatibility (this spec set's rule)
+### Compatibility
 
-Receiving both kinds is always implemented. A client MUST NOT send `typing` or `seen` to a peer until that peer has sent it any extension kind (240+ or 21) on the same session, or the operator enabled it explicitly for testing. Older clients decode an unknown kind as unsupported and would render a bubble; the rule prevents that.
+Development mode (see `README.md`): both kinds are sent freely; a client that does not know them shows the base spec's unsupported message. The rate limits above are part of the design and stay regardless of mode. When legacy clients exist upstream, the retired evidence rule or a capability advertisement (roadmap) can gate sending.
 
 ### Multi-device
 
