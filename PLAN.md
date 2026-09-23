@@ -116,6 +116,7 @@ the bot `pcdpeer.47`, lives on `devnet`.
 | M2 | Live chat with a bot and a person | `npm run e2e:chat -- pcdpeer.47` exchanges a request and a message round trip |
 | M3 | Persistence, restart, macOS package | `npm run package` builds a `.dmg`; the packaged app passes `--smoke` and restores identity |
 | M4 | AI assistant contact via the LLM proxy | `npm run e2e:assistant` streams a reply through the proxy; the Assistant screen renders markdown |
+| M5 | UI pass on the Polkadot design system | `check:tokens` clean; screenshots of every screen in Berlin Day and Berlin Night reviewed |
 
 Each milestone is one file in `docs/milestones/`. Its `.check.sh` is what the
 reviewer runs. A milestone is done when the check passes and the work is

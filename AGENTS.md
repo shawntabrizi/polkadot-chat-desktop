@@ -30,7 +30,9 @@ milestone file you were given in `docs/milestones/`. Do only that milestone.
 - Allowed runtime dependencies: `@novasamatech/*`, `polkadot-api`,
   `@polkadot-api/*`, `@polkadot-labs/hdkd-helpers`, `@noble/*`, `@scure/*`,
   `scale-ts`, `rxjs`, `dexie`, `neverthrow`, `markdown-it`, `dompurify`,
-  `react`, `react-dom`, `electron`. Anything else needs a line in
+  `react`, `react-dom`, `electron`, and for the UI: `tailwindcss`, `@tailwindcss/vite`,
+  `lucide-react`, `class-variance-authority`, `clsx`, `tailwind-merge`, `sonner`,
+  and the `@radix-ui/*` packages that `npx shadcn add` installs. Anything else needs a line in
   `docs/decisions.md` with the reason. Never `@polkadot/api` or
   `@polkadot/util-crypto`.
 - Pin exact versions in `package.json` (no `^`, no `~`).
