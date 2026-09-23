@@ -98,7 +98,7 @@ newest version older than three days and record it in `docs/decisions.md`.
 Same two profiles as `polkadot-chat-web/src/renderer/app/network.ts`. Default
 `devnet`: People chain `wss://people-paseo.rotko.net` (+ two fallbacks), identity
 backend `https://polkadot-app.api.polkadotcommunity.foundation`. The test peer,
-the bot `hishawn.84`, lives on `devnet`.
+the bot `pcdpeer.47`, lives on `devnet`.
 
 ## Milestones
 
@@ -106,7 +106,7 @@ the bot `hishawn.84`, lives on `devnet`.
 |---|---|---|
 | M0 | Electron shell around the web client | `npm run check` green; `npm run smoke` prints `SMOKE_OK` |
 | M1 | Own identity: create a username without a phone | `npm run identity:register -- <name>` registers on devnet; the People chain holds the account with an X25519 key |
-| M2 | Live chat with a bot and a person | `npm run e2e:chat -- hishawn.84` exchanges a request and a message round trip |
+| M2 | Live chat with a bot and a person | `npm run e2e:chat -- pcdpeer.47` exchanges a request and a message round trip |
 | M3 | Persistence, restart, macOS package | `npm run package` builds a `.dmg`; the packaged app passes `--smoke` and restores identity |
 | M4 | AI assistant contact via the LLM proxy | `npm run e2e:assistant` streams a reply through the proxy; the Assistant screen renders markdown |
 
