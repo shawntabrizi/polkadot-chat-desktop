@@ -1879,3 +1879,163 @@ Earlier attempt (for the record): the first screenshot run missed `room-buttons.
 ### git status --short
 
 This file is part of the commit, so the result of `git status --short` after it is in the M11 hand-off report, not here.
+
+## M11b
+
+Run 2026-09-23 on this machine, headless, devnet. Bots `pcdfaucet.77`, `pcdmeter.01` (restarted by the pca agent with a balance hint) and `pcdflip.44` were running (pca commit 061b470). Vector: `docs/spec/vectors-0008b.md` decodes to the pinned values and the values encode to the same 258 bytes (`content.spec.ts`); `vectors-0008.md` (v1) still decodes and encodes byte for byte.
+
+### npm run check (last lines)
+
+Final run, after the last script edit.
+
+```
+ Test Files  50 passed (50)
+      Tests  408 passed (408)
+   Start at  18:58:51
+   Duration  3.73s (transform 1.99s, setup 871ms, import 8.49s, tests 9.39s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (126 files)
+EXIT 0
+```
+
+### npm run smoke
+
+```
+✓ built in 207ms
+SMOKE_OK
+EXIT 0
+```
+
+### npm run e2e:meter
+
+Final run, on the committed script: contract, selector, decimals and price come from pcdmeter's hint (no Meter constant anywhere).
+
+```
+
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connected
+people best block #7053480
+ASSET_HUB 0xd6eec261… account 5H4Lootcg7w7A4xgsPFDabSiEqFUTpdykagVckcwcx6kyQYW free 27.9692 PAS
+FOUND pcdfaucet.77 0xe018148187403b5980aa5d91d38e108af1aadcb91ce5bc47f104ef04554e680f
+DRIP_SENT via=request to=pcdfaucet.77 (/drip 15zdx99gXuCabbyCq2JDikGs6TF8A8C7q5Qyn3cJB38H9sMf)
+DRIP_OK status=inBlock block=13621733 note="Dripped 1 PAS" hash=0x9ff65c660c0c3f044a820de38640fbfbea9d01ab60f934738d50551193ca992f at=11.7s
+FOUND pcdmeter.01 0x9eb681bc39734224669e4e261c271d628e8d87e4c3cb25636c0e248267ea2967
+REQUEST_SENT pcdmeter
+ACCEPTED pcdmeter at=52.1s
+HINT label="with Meter" contract=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 selector=0x70a08231 decimals=18 unit=PAS perReply=100000000000000000 chain=0xd6eec261…
+BALANCE_BEFORE with Meter: 2.9 PAS (~29 replies)
+SENT /topup
+BUTTON "Top up 1 PAS" text="Add 1 PAS to your balance. Each reply costs 0.1 PAS." intent: Top up 1 PAS; calls=1 kind=1 to=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 value=10000000000
+DRYRUN ok=true fee=0.0014 PAS (14510503 planck) mapsAccount=false value=10000000000
+SIGNED hash=0x8a170d0683ab5ef6e0bba10435600760c6aa304a1d8d02a3aa3372c6e787a4d9 at=60.5s
+TOPUP_OK status=inBlock block=13621759 row="Top up (1 PAS)" at=64.5s
+BALANCE with Meter: 3.9 PAS (~39 replies) (3900000000000000000 PAS units; before with Meter: 2.9 PAS (~29 replies))
+ANSWER 1 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate, 
+BALANCE with Meter: 3.8 PAS (~38 replies) (-0.1 PAS) reference="balance: 38000000000" inBlock at=72.3s
+ANSWER 2 A parachain is an independent blockchain that runs on the Polkadot network, sharing security with other parach
+BALANCE with Meter: 3.7 PAS (~37 replies) (-0.1 PAS) reference="balance: 37000000000" inBlock at=80.9s
+ANSWER 3 Asset Hub is a Polkadot parachain that provides a common platform for creating, managing, and trading custom a
+BALANCE with Meter: 3.6 PAS (~36 replies) (-0.1 PAS) reference="balance: 36000000000" inBlock at=88.2s
+METERED_OK 3 answers charged: 3.9 → 3.6 PAS
+TOPUP_REFERENCE inBlock (finality is shown when it comes; nothing waited for it)
+METER_OK
+EXIT 0
+```
+
+Notes: two earlier runs of this milestone also ended `METER_OK` (18:39 and 18:57); in both the third BALANCE line named the previous charge's reference, because the script took a reference already in the window. It now waits for the reference whose `balance:` equals the value read from the chain (above: 38, 37, 36 × 10^9 planck, each matching). The first run (18:27) ended `NO_BALANCE_HINT botInfo=null` (exit 1): pcdmeter was not yet restarted with the hint.
+
+### npm run e2e:flip
+
+```
+
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 h160=0x469a4447be834da00d85582ce51c33fb132a553b
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b h160=0xe3b96e51d6f5a5d1e8c56998e88657ae382bafd8
+[a] ASSET_HUB account 5H4Lootcg7w7A4xgsPFDabSiEqFUTpdykagVckcwcx6kyQYW free 25.9863 PAS
+[b] ASSET_HUB account 5FBqEq8YU9CnopdeYycmYobNs8fAJZWoZudXUnz7Fu9YyfFE free 26 PAS
+[a] FOUND pcdfaucet.77
+[b] FOUND pcdfaucet.77
+[a] DRIP_SENT via=request to=pcdfaucet.77 attempt=1
+[b] DRIP_SENT via=request to=pcdfaucet.77 attempt=1
+[a] DRIP_OK status=inBlock block=13621120 note="Dripped 1 PAS"
+[a] FOUND pcdflip.44
+[a] REQUEST_SENT pcdflip
+[a] ACCEPTED pcdflip.44
+[a] HINT label="your stake" contract=0x68b113b3ad6abbe9177997ea4645313c72656b58 selector=0x42623360 decimals=18 unit=PAS
+[a] READY username=pcdecejakd.11 h160=0x469a4447be834da00d85582ce51c33fb132a553b pending=0x0000000000000000000000000000000000000000 hint="your stake: 0 PAS"
+[b] DRIP_REFUSED The transfer did not go through. Please try again later.
+[b] DRIP_SENT via=message to=pcdfaucet.77 attempt=2
+[b] DRIP_OK status=inBlock block=13621144 note="Dripped 1 PAS"
+[b] FOUND pcdflip.44
+[b] REQUEST_SENT pcdflip
+[b] ACCEPTED pcdflip.44
+[b] HINT label="your stake" contract=0x68b113b3ad6abbe9177997ea4645313c72656b58 selector=0x42623360 decimals=18 unit=PAS
+[b] READY username=pcdeceb.89 h160=0xe3b96e51d6f5a5d1e8c56998e88657ae382bafd8 pending=0x0000000000000000000000000000000000000000 hint="your stake: 0 PAS"
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 pending=0x0000000000000000000000000000000000000000 at=60.6s
+[a] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.0017 PAS mapsAccount=false
+[a] SIGNED hash=0x7e563ad7e2c1bfb4c327aec2ded0ae7aff00bea2333871ce6a80e95b57b475ce
+[a] STAKED a hash=0x7e563ad7e2c1bfb4c327aec2ded0ae7aff00bea2333871ce6a80e95b57b475ce block=13621148 free_before=26.9863 PAS
+STAKED a hash=0x7e563ad7e2c1bfb4c327aec2ded0ae7aff00bea2333871ce6a80e95b57b475ce
+[a] HINT_VALUE your stake: 0.5 PAS
+[b] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.002 PAS mapsAccount=false
+[b] SIGNED hash=0x1077a9864b129e0b958ae98970e38fa2458380fdc6b5674af305db9bd8fc78b2
+[b] STAKED b hash=0x1077a9864b129e0b958ae98970e38fa2458380fdc6b5674af305db9bd8fc78b2 block=13621151 free_before=27 PAS
+STAKED b hash=0x1077a9864b129e0b958ae98970e38fa2458380fdc6b5674af305db9bd8fc78b2 (settles the round)
+[b] HINT_VALUE your stake: 0 PAS
+[a] SETTLED winner=pcdecejakd.11 payout=1 PAS
+[a] HINT_VALUE your stake: 0 PAS
+[b] SETTLED winner=pcdecejakd.11 payout=1 PAS
+[a] BALANCE_WIN before=26.9863 PAS after=27.4794 PAS delta=0.493 PAS expected=(0.4, 0.5] ok=yes
+[b] HINT_VALUE your stake: 0 PAS
+[b] BALANCE_LOSE before=27 PAS after=26.4981 PAS delta=-0.5018 PAS
+SETTLED winner=pcdecejakd.11 payout=1 PAS
+WINNER a pcdecejakd.11: BALANCE_WIN before=26.9863 PAS after=27.4794 PAS delta=0.493 PAS expected=(0.4, 0.5] ok=yes
+[b] EXIT
+[a] EXIT
+FLIP_OK at=73.5s
+EXIT 0
+```
+
+Notes: this is the second run. The first run (flip-1) ended `CHILD_FAILED a exit=1 last="DRIP_REFUSED The transfer did not go through. Please try again later."`: both people asked the faucet bot in the same second and one transfer failed. The script now asks again after a pause (visible above as attempt=2 for b). The `[ws]` status lines of the children are not in this log (none printed). The winner's balance rose 0.493 PAS (1 PAS pot − 0.5 PAS stake − 0.0017 PAS fee − rounding of the 4-decimal display); the loser's fell 0.5018 PAS.
+
+### PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdbenchqmwk npm run screenshots
+
+M11b lines of the run (the full log lists all 46 PNGs and ends `SCREENSHOTS_OK`):
+
+```
+92.2s header: "with Meter: 2.4 PAS (~24 replies)"
+93.1s saved berlin-day/room-tx-done.png
+93.1s chip: "27.4784 PAS"
+93.6s pocket: "Asset Hub 27.4784 PAS | People chain 25 PAS | Copy | Get test funds"
+94.4s saved berlin-day/pocket.png
+99.2s flip strip: "Coin flip stake Stakes 0.5 PAS in a coin flip. The second staker triggers the flip; the winner takes 1 PAS. Amount 0.5 PAS Fee ≈ 0.0017 PAS Signs as pcdecejakd.11 After this: your stake: 0.5 PAS Cancel Sign"
+100.1s saved berlin-day/room-flip.png
+103.9s stake: "Coin flip stake (0.5 PAS) · in block #13621612"
+103.9s header: "your stake: 0.5 PAS"
+119.0s second player stakes
+125.3s settled: "Flip settled: pcdecejakd.11 won 1 PAS · in block #13621622"
+126.2s saved berlin-day/room-flip-done.png
+202.6s header: "with Meter: 2.4 PAS (~24 replies)"
+203.4s saved berlin-night/room-tx-done.png
+203.4s chip: "27.9706 PAS"
+204.0s pocket: "Asset Hub 27.9706 PAS | People chain 25 PAS | Copy | Get test funds"
+204.8s saved berlin-night/pocket.png
+206.1s flip strip: "Coin flip stake Stakes 0.5 PAS in a coin flip. The second staker triggers the flip; the winner takes 1 PAS. Amount 0.5 PAS Fee ≈ 0.0017 PAS Signs as pcdecejakd.11 After this: your stake: 0.5 PAS Cancel Sign"
+206.9s saved berlin-night/room-flip.png
+206.9s settled: "Flip settled: pcdecejakd.11 won 1 PAS · in block #13621622"
+207.8s saved berlin-night/room-flip-done.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+EXIT 0
+```
+
+I read the PNGs. `pocket.png` (both themes): the Pocket in the right pane, flat: Balances (Asset Hub 27.4784 PAS, People chain 25 PAS, amounts in mono), the address in mono with its QR code, Copy and Get test funds; the footer chip "27.4784 PAS" in mono. `room-flip.png`: pcdflip.44 with the bot badge, the header "your stake: 0 PAS · A two-player coin flip…", the Stake 0.5 PAS tx button and the strip under it (Amount 0.5 PAS, Fee ≈ 0.0017 PAS, Signs as pcdecejakd.11, "After this: your stake: 0.5 PAS", Cancel, Sign). `room-flip-done.png`: our reference "Coin flip stake (0.5 PAS) · in block #13621612" (finalized with the double tick in the night shot), the bot's "Flip settled: pcdecejakd.11 won 1 PAS · in block #13621622", and the chip up to 27.9715 PAS. `room-tx-done.png` now shows "with Meter: 2.4 PAS (~24 replies)" from the room peer's hint. Known flaw: with the chip in the footer, the username is cut to "pcdec…" (see the hand-off).
+
+Earlier attempts: two runs with `PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia` missed `room.png` and every later room-peer shot ("no message from pcdtestjaia.98"; the peer's log ends `E2E_TIMEOUT accept`). I stopped both. The likely cause is an older request from the same peer that the script accepts instead of the new one; `pcdbenchqmwk` (no old requests) worked at once.
+
+### git status --short
+
+This file is part of the commit, so the result of `git status --short` after it is in the M11b hand-off report.

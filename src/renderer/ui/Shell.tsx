@@ -33,6 +33,7 @@ import type { DesktopAssistantApi } from '../../shared/desktop-api';
 import { PeerAvatar } from './Avatar';
 import { ChatList, type ChatSelection, type ChatTarget, useChatOrder } from './ChatList';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
+import { BalanceChip, Pocket } from './Pocket';
 import { Room } from './Room';
 import { FaucetRoom } from './FaucetRoom';
 import { DraftRoom, SearchPane } from './Search';
@@ -48,7 +49,9 @@ export type Selection =
   | { kind: 'incoming'; requestId: string }
   | { kind: 'outgoing'; peer: HexString }
   | { kind: 'draft'; result: SearchResult }
-  | { kind: 'settings' };
+  | { kind: 'settings' }
+  /** M11b: the Pocket (balances and address), from the footer chip. */
+  | { kind: 'pocket' };
 
 type LeftView = 'chats' | 'requests';
 
@@ -286,6 +289,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
           />
         );
       case 'settings':
+      case 'pocket':
         return null;
     }
   })();
@@ -379,6 +383,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               {CONNECTION_LABEL[connection.state]}
             </p>
           </div>
+          <BalanceChip active={selection.kind === 'pocket'} onOpen={() => setSelection({ kind: 'pocket' })} />
           <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>
             <SettingsIcon className="size-5" />
           </IconButton>
@@ -387,6 +392,18 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
       {selection.kind === 'settings' ? (
         <main className="min-w-0 flex-1">
           <Settings username={username} identity={identity} profileId={profileId} onReset={onReset} assistantApi={assistantApi} />
+        </main>
+      ) : selection.kind === 'pocket' ? (
+        <main className="min-w-0 flex-1">
+          <Pocket
+            username={username}
+            address={toSs58(identity.identityAccountId)}
+            profileId={profileId}
+            onGetFunds={() => {
+              setLeft('chats');
+              setSelection({ kind: 'room', peer: FAUCET_PEER });
+            }}
+          />
         </main>
       ) : (
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-container bg-surface-container shadow-1">{right}</main>

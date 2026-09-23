@@ -9,7 +9,7 @@
  */
 
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
-import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, bool, createCodec, str, u16, u32, u64, u8 } from 'scale-ts';
+import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, bool, createCodec, str, u128, u16, u32, u64, u8 } from 'scale-ts';
 
 import { hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
@@ -56,13 +56,36 @@ export type SeenWire = { tag: 'seen'; value: { upTo: string; at: bigint } };
 /** Spec 0008 `Command`: `name` without the slash. */
 export type BotCommandWire = { name: string; description: string };
 /**
+ * Spec 0008 v2 `BalanceHint`: the contract view a client reads to show "your
+ * balance with this bot". `contract` is a 20-byte Revive address, `selector`
+ * a 4-byte ABI selector; `perReply` is in the smallest unit of the value.
+ */
+export type BalanceHintWire = {
+  chainId: string;
+  contract: Uint8Array;
+  selector: Uint8Array;
+  decimals: number;
+  unit: string;
+  perReply: bigint | undefined;
+  label: string;
+};
+/**
  * Spec 0008 `botInfo(BotInfo)`, provisional kind 244. `kind` is 0 bot, 1
  * agent, 2 person-operated service; any other byte is kept as read (a later
- * revision may add kinds). Never a row.
+ * revision may add kinds). `balance` is the v2 field: absent in a v1
+ * document. Never a row.
  */
 export type BotInfoWire = {
   tag: 'botInfo';
-  value: { kind: number; name: string; description: string; greeting: string; commands: BotCommandWire[]; version: number };
+  value: {
+    kind: number;
+    name: string;
+    description: string;
+    greeting: string;
+    commands: BotCommandWire[];
+    version: number;
+    balance?: BalanceHintWire | undefined;
+  };
 };
 
 /**
@@ -120,7 +143,13 @@ const TypingContentCodec = Struct({ until: u64, kind: u8 });
 const SeenContentCodec = Struct({ upTo: str, at: u64 });
 // Spec 0008 layout (docs/spec/vectors-0008.md).
 const BotCommandCodec = Struct({ name: str, description: str });
-const BotInfoContentCodec = Struct({ kind: u8, name: str, description: str, greeting: str, commands: Vector(BotCommandCodec), version: u16 });
+const BotInfoV1Fields = { kind: u8, name: str, description: str, greeting: str, commands: Vector(BotCommandCodec), version: u16 };
+const BotInfoContentCodec = Struct(BotInfoV1Fields);
+// Spec 0008 v2 (docs/spec/vectors-0008b.md): `balance: Option<BalanceHint>`
+// appended. A v1 document ends after `version`, which reads as no hint; an
+// encoder writes nothing there when it has no hint, so v1 bytes stay v1.
+const BalanceHintCodec = Struct({ chainId: str, contract: Bytes(), selector: Bytes(), decimals: u8, unit: str, perReply: Option(u128), label: str });
+const BotInfoV2ContentCodec = Struct({ ...BotInfoV1Fields, balance: Option(BalanceHintCodec) });
 // Spec 0007 layout (docs/spec/vectors-0007.md).
 const TransactionReferenceCodec = Struct({ chainId: str, hash: Bytes(), status: u8, block: Option(u32), note: str, intentMessageId: Option(str) });
 
@@ -129,7 +158,25 @@ const TransactionReferenceCodec = Struct({ chainId: str, hash: Bytes(), status: 
  * in bytes (4 per character of the spec's limit) and the command count. Over
  * a bound the message is undecodable.
  */
-export const BOT_INFO_BOUNDS = { name: 160, description: 1120, greeting: 1120, commandName: 128, commandDescription: 320, commands: 32 } as const;
+export const BOT_INFO_BOUNDS = {
+  name: 160,
+  description: 1120,
+  greeting: 1120,
+  commandName: 128,
+  commandDescription: 320,
+  commands: 32,
+  // v2 hint, the same as pca's: chainId 256 bytes, unit 16 and label 40 characters.
+  balanceChainId: 256,
+  balanceUnit: 64,
+  balanceLabel: 160,
+} as const;
+const withinHintBounds = (hint: BalanceHintWire | undefined): boolean =>
+  hint === undefined ||
+  (hint.contract.length === 20 &&
+    hint.selector.length === 4 &&
+    utf8Length(hint.chainId) <= BOT_INFO_BOUNDS.balanceChainId &&
+    utf8Length(hint.unit) <= BOT_INFO_BOUNDS.balanceUnit &&
+    utf8Length(hint.label) <= BOT_INFO_BOUNDS.balanceLabel);
 const utf8Length = (text: string): number => new TextEncoder().encode(text).length;
 const withinBotInfoBounds = (info: BotInfoWire['value']): boolean =>
   utf8Length(info.name) <= BOT_INFO_BOUNDS.name &&
@@ -138,7 +185,8 @@ const withinBotInfoBounds = (info: BotInfoWire['value']): boolean =>
   info.commands.length <= BOT_INFO_BOUNDS.commands &&
   info.commands.every(
     command => utf8Length(command.name) <= BOT_INFO_BOUNDS.commandName && utf8Length(command.description) <= BOT_INFO_BOUNDS.commandDescription,
-  );
+  ) &&
+  withinHintBounds(info.balance);
 
 /**
  * Spec 0007 decoder bounds, the same as pca's (vectors-0007.md): `hash` 1 to
@@ -165,6 +213,7 @@ const ButtonPressMessage = envelope(ButtonPressContentCodec);
 const TypingMessage = envelope(TypingContentCodec);
 const SeenMessage = envelope(SeenContentCodec);
 const BotInfoMessage = envelope(BotInfoContentCodec);
+const BotInfoV2Message = envelope(BotInfoV2ContentCodec);
 const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
@@ -213,7 +262,10 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
     case SEEN_KIND:
       return decodeWith(SeenMessage, bytes, value => ({ tag: 'seen', value })) ?? undecodable(header);
     case BOT_INFO_KIND: {
-      const decoded = decodeWith(BotInfoMessage, bytes, value => ({ tag: 'botInfo', value }));
+      // v2 first (a hint, or an explicit None byte), then a v1 document that ends at `version`.
+      const decoded =
+        decodeWith(BotInfoV2Message, bytes, value => ({ tag: 'botInfo', value })) ??
+        decodeWith(BotInfoMessage, bytes, value => ({ tag: 'botInfo', value: { ...value, balance: undefined } }));
       const value = decoded?.versioned.value;
       return decoded && value?.tag === 'botInfo' && withinBotInfoBounds(value.value) ? decoded : undecodable(header);
     }
@@ -250,7 +302,10 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
       case 'seen':
         return SeenMessage.enc({ ...head, kind: SEEN_KIND, content: content.value });
       case 'botInfo':
-        return BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value });
+        // No hint: the v1 bytes, so a document without one reads the same everywhere.
+        return content.value.balance === undefined
+          ? BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value })
+          : BotInfoV2Message.enc({ ...head, kind: BOT_INFO_KIND, content: { ...content.value, balance: content.value.balance } });
       case 'transactionReference':
         return TransactionReferenceMessage.enc({ ...head, kind: TRANSACTION_REFERENCE_KIND, content: content.value });
       case 'undecodable':

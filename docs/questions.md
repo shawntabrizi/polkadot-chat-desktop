@@ -86,3 +86,10 @@ Write the question, what you did meanwhile, and the date.
 - **Meter price and contract are constants in the app** (`src/shared/meter.ts`, from meter.md: 0.1 PAS per reply, contract `0x30b0…cf21`). If the bot's `BOT_METER_PRICE` changes, the header's "~N replies" is wrong. Should the bot publish its contract and price (for example in `botInfo`, or a `balance:` reference with the price), so the client needs no constants?
 - **`AutoMap` is on for devnet Asset Hub.** New accounts are mapped on creation, so `map_account` is never prepended for them. The rule and the check stay (for runtimes without AutoMap). Is that what you want, or should the app skip the mapping check when `Revive.AutoMap` is true?
 - **The faucet's 10-minute limit.** `npm run e2e:meter` drips to the e2e identity each run; a second run inside 10 minutes ends `DRIP_REFUSED` (exit 11), not a timeout. Should the e2e accept a recent drip (the account already funded) as a pass?
+
+## M11b (2026-09-23)
+
+- **Header line wording.** M11b step 1 says `label: value unit (~N replies)`; with pcdmeter's label that reads "with Meter: 2.4 PAS (~24 replies)". The roadmap's example is "0.8 PAS with Meter · ~4 replies" (value first, label after). I followed the milestone. Should the spec say which order, or should pcdmeter's label become a noun ("Prepaid")?
+- **`docs/spec/README.md` and `kinds.md`** do not yet say that 0008 v2 (`balance` hint) is implemented (desktop M11b, pca `061b470`). I may not edit `docs/spec/*.md`.
+- **Stakes left open in Flip.** The contract is global and `refund()` is owner-only after one hour. A stake left by a crashed run (or by anyone) pairs with the next person's stake. `e2e:flip` clears a stranger's stake with one extra stake. Should the bot show "someone is waiting" (the `pending()` view) before a person stakes?
+- **The faucet refuses two drips at once.** In the first flip run both identities asked `pcdfaucet.77` within the same second; one answer was "The transfer did not go through". `e2e:flip` now asks again after a pause. A nonce clash in the bot (two transfers from `//Alice` in one block)? That is a pca fix, not a client one.

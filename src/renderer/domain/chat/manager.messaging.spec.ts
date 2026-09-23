@@ -577,7 +577,8 @@ describe('chat manager: spec 0008 botInfo and the automatic /start (M10)', () =>
     // As pca does: botInfo on the identity channel right after the accept.
     await transport.channel.post({ tag: 'botInfo', value: guideInfo });
     const info = await waitFor(async () => (await db.peerInfo.get(peerKey))?.botInfo ?? undefined);
-    expect(info).toEqual(guideInfo);
+    // A v1 document (no hint) is stored with `balance: null`.
+    expect(info).toEqual({ ...guideInfo, balance: null });
     const rows = await listMessages(peerKey);
     expect(rows.filter(row => row.content.type === 'botGreeting')).toHaveLength(1);
     expect(rows.some(row => row.direction === 'incoming' && row.content.type !== 'text')).toBe(false);

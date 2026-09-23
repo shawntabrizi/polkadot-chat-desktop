@@ -324,11 +324,12 @@ describe('kind 244: spec 0008 botInfo', () => {
   });
 
   it('is an effect the manager stores, never a bubble', () => {
-    expect(fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR)).versioned.value)).toEqual({ kind: 'botInfo', info });
+    // A v1 document: stored with no balance hint.
+    expect(fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR)).versioned.value)).toEqual({ kind: 'botInfo', info: { ...info, balance: null } });
   });
 
   it('keeps a kind byte this build does not know (a later revision may add kinds)', () => {
-    expect(fromWire(viaWire(toWire({ type: 'botInfo', info: { ...info, kind: 7 } })))).toEqual({ kind: 'botInfo', info: { ...info, kind: 7 } });
+    expect(fromWire(viaWire(toWire({ type: 'botInfo', info: { ...info, kind: 7 } })))).toEqual({ kind: 'botInfo', info: { ...info, kind: 7, balance: null } });
   });
 
   // pca's decoder bounds (vectors-0008.md): over a bound the whole document is
@@ -354,6 +355,94 @@ describe('kind 244: spec 0008 botInfo', () => {
 
   it('does not decode with the plain SDK codec', () => {
     expect(() => SdkChatMessage.dec(opaque.dec(VECTOR))).toThrow();
+  });
+});
+
+describe('kind 244 v2: spec 0008 balance hint (M11b)', () => {
+  // The Meter of docs/spec/contracts/meter.md, as pcdmeter declares it: a
+  // client that reads the wrong contract or selector shows someone else's
+  // number under the bot's name.
+  const METER_HINT = {
+    chainId: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
+    contract: '0x30b0c001431a1addb8c11a060ada4d6a7033cf21',
+    selector: '0x70a08231',
+    decimals: 18,
+    unit: 'PAS',
+    perReply: '100000000000000000',
+    label: 'with Meter',
+  };
+  const info = { kind: 1, name: 'Meter', description: 'Pay per reply', greeting: '', commands: [], version: 2, balance: METER_HINT };
+  const message = (value: ChatContent) => ({ messageId: 'BOT-2', timestamp: 1720000000000n, versioned: { tag: 'v1' as const, value } });
+
+  /*
+   * docs/spec/vectors-0008b.md, produced by the pca codec (BOT_INFO_BALANCE_VECTOR
+   * in bot-core/test/codec.test.mjs): the BOT-1 document of vectors-0008 plus
+   * the Meter hint.
+   */
+  const VECTOR_B =
+    '0x010414424f542d310030fd779001000000f40114477569646558506f6c6b61646f7420737570706f7274206775696465684869212041736b206d652061626f757420506f6c6b61646f742e081c7374616b696e67385374616b696e672062617369637328676f7665726e616e636544486f77204f70656e476f7620776f726b7301000109013078643665656332363133353330356138616432353761323064303033333537323834633861613033643062646232623335376162306132323337316531316566325030b0c001431a1addb8c11a060ada4d6a7033cf211070a08231120c5041530100008a5d7845630100000000000000002877697468204d65746572';
+  const BOT_1 = {
+    kind: 1,
+    name: 'Guide',
+    description: 'Polkadot support guide',
+    greeting: 'Hi! Ask me about Polkadot.',
+    commands: [
+      { name: 'staking', description: 'Staking basics' },
+      { name: 'governance', description: 'How OpenGov works' },
+    ],
+    version: 1,
+    balance: METER_HINT,
+  };
+
+  it('decodes the pca vector (vectors-0008b) to the pinned values and encodes them to the same bytes', () => {
+    const opaque = Bytes();
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_B));
+    expect(decoded.messageId).toBe('BOT-1');
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'botInfo', info: BOT_1 });
+    const encoded = ChatMessageCodec.enc({ messageId: 'BOT-1', timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire({ type: 'botInfo', info: BOT_1 }) } });
+    expect(bytesToHex(opaque.enc(encoded))).toBe(VECTOR_B);
+  });
+
+  it('reads any byte after `version` other than 0x00 or 0x01 as nothing (vectors-0008b rule)', () => {
+    const v1 = ChatMessageCodec.enc(message(toWire({ type: 'botInfo', info: { ...info, balance: null } })));
+    expect(ChatMessageCodec.dec(new Uint8Array([...v1, 2])).versioned.value.tag).toBe('undecodable');
+  });
+
+  it('round-trips a hint: stored as hex and a decimal string, sent as bytes', () => {
+    expect(fromWire(viaWire(toWire({ type: 'botInfo', info })))).toEqual({ kind: 'botInfo', info });
+  });
+
+  it('writes Some + the hint after `version`, and nothing there without one (v1 bytes stay v1)', () => {
+    const withHint = ChatMessageCodec.enc(message(toWire({ type: 'botInfo', info })));
+    const without = ChatMessageCodec.enc(message(toWire({ type: 'botInfo', info: { ...info, balance: null } })));
+    expect(withHint.length).toBeGreaterThan(without.length);
+    expect(withHint.slice(0, without.length)).toEqual(without);
+    expect(withHint[without.length]).toBe(1);
+  });
+
+  it('reads an explicit None byte after `version` as no hint', () => {
+    const v1 = ChatMessageCodec.enc(message(toWire({ type: 'botInfo', info: { ...info, balance: null } })));
+    const withNone = new Uint8Array([...v1, 0]);
+    expect(fromWire(ChatMessageCodec.dec(withNone).versioned.value)).toEqual({ kind: 'botInfo', info: { ...info, balance: null } });
+  });
+
+  // pca's bounds: a contract is 20 bytes and a selector 4; anything else is a
+  // document this client must not act on, so the whole botInfo is unreadable.
+  it('reads a hint with a wrong-size contract or selector, or an over-long label, as nothing', () => {
+    const bad = [
+      { ...METER_HINT, contract: '0x30b0c001431a1addb8c11a060ada4d6a7033cf' },
+      { ...METER_HINT, selector: '0x70a0823100' },
+      { ...METER_HINT, label: 'l'.repeat(BOT_INFO_BOUNDS.balanceLabel + 1) },
+    ];
+    for (const balance of bad) {
+      const decoded = ChatMessageCodec.dec(ChatMessageCodec.enc(message(toWire({ type: 'botInfo', info: { ...info, balance } }))));
+      expect(decoded.versioned.value.tag).toBe('undecodable');
+    }
+  });
+
+  it('keeps a hint without a price (no "~N replies")', () => {
+    const stake = { ...info, balance: { ...METER_HINT, perReply: null, label: 'your stake' } };
+    expect(fromWire(viaWire(toWire({ type: 'botInfo', info: stake })))).toEqual({ kind: 'botInfo', info: stake });
   });
 });
 

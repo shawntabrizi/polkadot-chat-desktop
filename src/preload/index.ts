@@ -39,7 +39,9 @@ const api: DesktopApi = {
     sign: dryRunId => ipcRenderer.invoke(IPC.chainSign, dryRunId),
     watch: hash => ipcRenderer.invoke(IPC.chainWatch, hash),
     onTxStatus: listen(IPC.chainTxStatus),
-    contractRead: (address, calldata) => ipcRenderer.invoke(IPC.chainContractRead, address, calldata),
+    contractRead: (chainId, address, calldata) => ipcRenderer.invoke(IPC.chainContractRead, chainId, address, calldata),
+    balance: () => ipcRenderer.invoke(IPC.chainBalance),
+    onBestBlock: listen(IPC.chainBestBlock),
   },
   assistant: {
     getSettings: () => ipcRenderer.invoke(IPC.assistantGetSettings),

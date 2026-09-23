@@ -33,6 +33,8 @@ export const IPC = {
   chainWatch: 'chain:watch',
   chainTxStatus: 'chain:txStatus',
   chainContractRead: 'chain:contractRead',
+  chainBalance: 'chain:balance',
+  chainBestBlock: 'chain:bestBlock',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -119,9 +121,23 @@ export type DesktopChainApi = {
   watch: (hash: string) => Promise<TxStatusEvent | null>;
   /** Every state change of the transactions this app submits. Returns the unsubscribe function. */
   onTxStatus: (listener: (event: TxStatusEvent) => void) => () => void;
-  /** A read-only contract call at the best block (`ReviveApi_call`): the return data. */
-  contractRead: (address: string, calldata: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * A read-only contract call at the best block (`ReviveApi_call`) on the
+   * chain `chainId` (a genesis hash; Asset Hub is the one this app reads):
+   * the return data.
+   */
+  contractRead: (chainId: string, address: string, calldata: Uint8Array) => Promise<Uint8Array>;
+  /** The identity's account on Asset Hub at the best block (M11b balance chip). */
+  balance: () => Promise<AccountBalance>;
+  /** Every new Asset Hub best block, once the chain is open. Returns the unsubscribe function. */
+  onBestBlock: (listener: (block: BestBlock) => void) => () => void;
 };
+
+/** An account's balances at the best block, planck as decimal strings. */
+export type AccountBalance = { chainId: string; free: string; reserved: string; frozen: string };
+
+/** A new best block of a chain (`chainId`: its genesis hash). */
+export type BestBlock = { chainId: string; number: number };
 
 /**
  * The result of a spec 0007 dry-run. Amounts are planck as decimal strings.

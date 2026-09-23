@@ -26,7 +26,7 @@ import { getWsProvider } from 'polkadot-api/ws';
 import type { Subscription } from 'rxjs';
 
 import { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } from '../../shared/chainRead';
-import type { TxDryRun, TxStatusEvent } from '../../shared/desktop-api';
+import type { AccountBalance, BestBlock, TxDryRun, TxStatusEvent } from '../../shared/desktop-api';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 import { CALL_KIND_REVIVE, type TxCall, type TxIntent, decodeTxIntent, formatUnits, intentProblem } from '../../shared/txIntent';
 import { metadataCache } from '../metadataCache';
@@ -190,8 +190,16 @@ export type TxService = {
   /** The latest known state of a transaction this service submitted. */
   status: (hash: string) => TxStatusEvent | null;
   onStatus: (listener: (event: TxStatusEvent) => void) => () => void;
-  /** `ReviveApi_call` of `calldata` on `address` from the signer, at the best block: the return data. */
-  contractRead: (address: string, calldata: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * `ReviveApi_call` of `calldata` on `address` from the signer, at the best
+   * block: the return data. `chainId` must be this chain's genesis hash (a
+   * spec 0008 hint names the chain it reads).
+   */
+  contractRead: (chainId: string, address: string, calldata: Uint8Array) => Promise<Uint8Array>;
+  /** The signer's account at the best block, planck as decimal strings (M11b balance chip). */
+  balance: () => Promise<AccountBalance>;
+  /** Every new best block of this chain (number), once each; returns the unsubscribe function. */
+  onBestBlock: (listener: (block: BestBlock) => void) => () => void;
   address: string;
   dispose: () => void;
 };
@@ -320,7 +328,8 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     });
   };
 
-  const contractRead = async (address: string, calldata: Uint8Array): Promise<Uint8Array> => {
+  const contractRead = async (chainId: string, address: string, calldata: Uint8Array): Promise<Uint8Array> => {
+    if (chainId.toLowerCase() !== chain.genesis.toLowerCase()) throw new Error('This app is not connected to that network.');
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error('not a contract address');
     const estimate = await estimateRevive(chain, origin, {
       kind: CALL_KIND_REVIVE,
@@ -335,9 +344,37 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     return estimate.returnData;
   };
 
+  const balance = async (): Promise<AccountBalance> => {
+    const account = await read(chain, 'balance', () => chain.api.query.System.Account.getValue(origin, AT_BEST));
+    return {
+      chainId: chain.genesis,
+      free: String(account.data.free),
+      reserved: String(account.data.reserved),
+      frozen: String(account.data.frozen),
+    };
+  };
+
+  // One subscription to the chain's best blocks, shared by every listener.
+  const blockListeners = new Set<(block: BestBlock) => void>();
+  let lastBest = -1;
+  const blocks = chain.client.bestBlocks$.subscribe({
+    next: best => {
+      const head = best[0];
+      if (!head || head.number === lastBest) return;
+      lastBest = head.number;
+      for (const listener of blockListeners) listener({ chainId: chain.genesis, number: head.number });
+    },
+    error: (cause: unknown) => console.warn('[asset-hub] best blocks stopped', cause),
+  });
+
   return {
     dryRun,
     sign,
+    balance,
+    onBestBlock: listener => {
+      blockListeners.add(listener);
+      return () => blockListeners.delete(listener);
+    },
     status: hash => statuses.get(hash.toLowerCase()) ?? statuses.get(hash) ?? null,
     onStatus: listener => {
       listeners.add(listener);
@@ -349,6 +386,8 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
       for (const subscription of watches) subscription.unsubscribe();
       watches.clear();
       listeners.clear();
+      blocks.unsubscribe();
+      blockListeners.clear();
     },
   };
 }

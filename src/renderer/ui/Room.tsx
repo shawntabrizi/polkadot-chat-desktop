@@ -18,8 +18,8 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { AssistantSettings } from '../../shared/desktop-api';
-import { BALANCE_NOTE, METER, balanceOfCalldata, decodeUint256, isMeterTopUp, repliesFor, reviveAddressOf, unitsToPlanck } from '../../shared/meter';
-import { type TxIntent, decodeTxIntent, formatUnits } from '../../shared/txIntent';
+import { type BalanceHint, decodeUint256, hintCalldata, hintLine, hintParts, planckInHintUnits, reviveAddressOf } from '../../shared/balanceHint';
+import { CALL_KIND_REVIVE, type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
 import { BotBadge } from './BotBadge';
@@ -30,6 +30,7 @@ import { RoomHeader, TypingLine } from './RoomHeader';
 import { type StripPhase, TxStrip } from './Transactions';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
+import { useBestBlock } from './useChain';
 import { useLiveQuery } from './useLiveQuery';
 
 /**
@@ -46,7 +47,7 @@ type Props = ({ peer: HexString; manager: ChatManager } | { peer: AssistantPeerI
   scrollRequest?: number;
   /** Spec 0007: signs `tx` buttons and reports the states (contact rooms). */
   transactions?: TxRunner | null;
-  /** The identity: its account (the Meter balance) and username (the strip's "Signs as"). */
+  /** The identity: its account (the bot's balance hint) and username (the strip's "Signs as"). */
   self?: { accountId: Uint8Array; username: string } | null;
 };
 
@@ -66,16 +67,23 @@ const PRESS_FLASH_MS = 1_000;
 /** The one signing strip of the room (spec 0007 rate limit): which button, the intent, where it is. */
 type Strip = { messageId: string; row: number; index: number; bytes: Uint8Array; intent: TxIntent; state: StripPhase; outcome: string | null };
 
-/** The Meter balance line reads again at most this often while nothing new arrives. */
-const METER_REFRESH_MS = 15_000;
-
-/** Reads the identity's Meter balance at the best block, in planck; null when the chain cannot tell. */
-const readMeterBalance = async (accountId: Uint8Array): Promise<bigint | null> => {
+/**
+ * Spec 0008 v2: reads `hint.selector(caller)` on the hint's contract at the
+ * best block; the value in the hint's units, or null when the chain cannot tell.
+ */
+const readHintValue = async (hint: BalanceHint, accountId: Uint8Array): Promise<bigint | null> => {
   const chain = window.desktop?.chain;
   if (!chain) return null;
-  const data = await chain.contractRead(METER.address, balanceOfCalldata(reviveAddressOf(accountId)));
-  const units = decodeUint256(data);
-  return units === null ? null : unitsToPlanck(units);
+  return decodeUint256(await chain.contractRead(hint.chainId, hint.contract, hintCalldata(hint.selector, reviveAddressOf(accountId))));
+};
+
+/** The value a call sends to the hint's contract, in the hint's units; null when it sends none there. */
+const valueToHint = (intent: TxIntent, hint: BalanceHint): bigint | null => {
+  const contract = hint.contract.toLowerCase();
+  const sent = intent.calls
+    .filter(call => call.kind === CALL_KIND_REVIVE && call.to && `0x${Array.from(call.to, b => b.toString(16).padStart(2, '0')).join('')}` === contract)
+    .reduce((sum, call) => sum + call.value, 0n);
+  return sent > 0n ? planckInHintUnits(hint, sent) : null;
 };
 
 /** The last pressed button of the room; `since` is the newest incoming message at the press. */
@@ -133,6 +141,7 @@ export const Room = (props: Props) => {
   const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
   const peerInfo = useLiveQuery(() => (manager ? getPeerInfo(peer) : Promise.resolve(undefined)), [peer, manager]);
   const botInfo = peerInfo?.botInfo ?? null;
+  const balanceHint = manager && self ? (botInfo?.balance ?? null) : null;
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<Mode>({ mode: 'new' });
   const [error, setError] = useState<string | null>(null);
@@ -142,7 +151,7 @@ export const Room = (props: Props) => {
   const [strip, setStrip] = useState<Strip | null>(null);
   // The `tx` button each keyboard started a transaction from (this session).
   const [txButtons, setTxButtons] = useState<ReadonlyMap<string, { row: number; index: number }>>(() => new Map());
-  const [meterBalance, setMeterBalance] = useState<bigint | null>(null);
+  const [hintValue, setHintValue] = useState<bigint | null>(null);
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
@@ -276,10 +285,11 @@ export const Room = (props: Props) => {
       update({ state: { phase: 'refused', reason: 'This app cannot run chain actions here.', dryRun: null } });
       return;
     }
-    const topUp = intent.calls.find(isMeterTopUp);
-    Promise.all([chain.dryRun(bytes), topUp && self ? readMeterBalance(self.accountId).catch(() => null) : Promise.resolve(null)])
-      .then(([dryRun, balance]) => {
-        const outcome = topUp && balance !== null ? `Balance after: ${formatUnits(balance + topUp.value)} PAS` : null;
+    // A call that pays into the bot's declared contract: the strip says what the balance becomes.
+    const paid = balanceHint ? valueToHint(intent, balanceHint) : null;
+    Promise.all([chain.dryRun(bytes), paid !== null && balanceHint && self ? readHintValue(balanceHint, self.accountId).catch(() => null) : Promise.resolve(null)])
+      .then(([dryRun, current]) => {
+        const outcome = paid !== null && balanceHint && current !== null ? `After this: ${hintLine(balanceHint, current + paid)}` : null;
         update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
       })
       .catch((cause: unknown) => update({ state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } }));
@@ -469,42 +479,39 @@ export const Room = (props: Props) => {
           },
         };
 
-  // ── Spec 0007 Meter (M11 step 5): a bot with a `balance` command, or one
-  // whose references carry `balance:`, gets the balance line under its name.
-  const meterPeer =
-    manager !== null &&
-    self !== null &&
-    ((botInfo?.commands.some(command => command.name === 'balance') ?? false) ||
-      (messages ?? []).some(row => row.direction === 'incoming' && row.content.type === 'transactionReference' && BALANCE_NOTE.test(row.content.reference.note)));
+  // ── Spec 0008 v2 (M11b step 1): a bot that declares a `balance` hint gets
+  // "label: value unit" under its name, read at the best block on every new
+  // best block while the room is open, and again when a transaction moves.
   const lastReferenceState = (messages ?? [])
     .filter(row => row.content.type === 'transactionReference')
     .map(row => (row.content.type === 'transactionReference' ? `${row.messageId}:${row.content.reference.status}` : ''))
     .join(',');
   const selfAccount = self?.accountId ?? null;
+  const bestBlock = useBestBlock();
+  const hintKey = balanceHint && selfAccount ? `${balanceHint.chainId}:${balanceHint.contract}:${balanceHint.selector}` : null;
   useEffect(() => {
-    if (!meterPeer || !selfAccount) return;
+    if (!balanceHint || !selfAccount) return;
     let active = true;
-    const refresh = () =>
-      readMeterBalance(selfAccount).then(
-        balance => {
-          if (active && balance !== null) setMeterBalance(balance);
-        },
-        (cause: unknown) => console.warn('[room] meter balance read failed', cause),
-      );
-    void refresh();
-    const timer = setInterval(() => void refresh(), METER_REFRESH_MS);
+    readHintValue(balanceHint, selfAccount).then(
+      value => {
+        if (active && value !== null) setHintValue(value);
+      },
+      (cause: unknown) => console.warn('[room] balance hint read failed', cause),
+    );
     return () => {
       active = false;
-      clearInterval(timer);
     };
-    // Read again when the bot answers (a reply is charged) or a transaction moves.
-  }, [meterPeer, selfAccount, lastIncomingId, lastReferenceState]);
-  const meterLine =
-    meterPeer && meterBalance !== null ? (
-      <span data-testid="meter-balance">
-        Balance: {formatUnits(meterBalance)} PAS · ~{String(repliesFor(meterBalance))} {repliesFor(meterBalance) === 1n ? 'reply' : 'replies'}
-      </span>
-    ) : null;
+    // The hint object is new on every read of the row; its key says when it changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hintKey, selfAccount, bestBlock, lastIncomingId, lastReferenceState]);
+  const balanceParts = balanceHint && hintValue !== null ? hintParts(balanceHint, hintValue) : null;
+  // Mono for the amount only (design system §7: balances line up as they change).
+  const balanceLine = balanceParts ? (
+    <span data-testid="bot-balance">
+      {balanceParts.label}: <span className="font-mono">{balanceParts.amount}</span>
+      {balanceParts.replies ? ` (${balanceParts.replies})` : ''}
+    </span>
+  ) : null;
 
   const noDevice = contact !== undefined && contact.devices.length === 0;
   const muted = room?.muted === true;
@@ -528,10 +535,10 @@ export const Room = (props: Props) => {
             <span className="text-fg-warning">No device of this contact is known yet, so messages cannot be delivered.</span>
           ) : peerTyping ? (
             <TypingLine typing={peerTyping} />
-          ) : meterLine ? (
+          ) : balanceLine ? (
             // The balance first (it is what changes), then the bot's own line.
             <>
-              {meterLine}
+              {balanceLine}
               {botInfo && botInfo.description !== '' ? (
                 <>
                   {' · '}

@@ -10,6 +10,7 @@
  * variants go to the contact, and the rest is dropped with a warning.
  */
 
+import type { BalanceHint } from '../../../shared/balanceHint';
 import { openableUrl } from '../../../shared/openUrl';
 import { decodeTxIntent } from '../../../shared/txIntent';
 import { bytesToHex, hexToBytes } from '../../app/bytes';
@@ -55,12 +56,16 @@ export const MAX_BUTTONS_PER_ROW = 4;
 export const MAX_BUTTON_LABEL = 40;
 export const MAX_CALLBACK_BYTES = 256;
 
+export type { BalanceHint };
+
 /** Spec 0008 `Command`: `name` without the slash. */
 export type BotCommand = { name: string; description: string };
 
 /**
  * Spec 0008 `BotInfo` as this client stores it. `kind` is the wire byte: 0
  * bot, 1 agent, 2 person-operated service; a later kind is kept as read.
+ * `balance`: the v2 hint; missing on rows stored before v2, so read it as
+ * `info.balance ?? null`.
  */
 export type BotInfo = {
   kind: number;
@@ -69,6 +74,7 @@ export type BotInfo = {
   greeting: string;
   commands: BotCommand[];
   version: number;
+  balance?: BalanceHint | null;
 };
 
 /** Spec 0007 `TransactionReference.status`, by wire value. */
@@ -217,6 +223,37 @@ const botInfoWire = (info: BotInfo): BotInfoWire['value'] => ({
   greeting: info.greeting,
   commands: info.commands.map(command => ({ name: command.name, description: command.description })),
   version: info.version,
+  balance: info.balance
+    ? {
+        chainId: info.balance.chainId,
+        contract: hexToBytes(info.balance.contract),
+        selector: hexToBytes(info.balance.selector),
+        decimals: info.balance.decimals,
+        unit: info.balance.unit,
+        perReply: info.balance.perReply === null ? undefined : BigInt(info.balance.perReply),
+        label: info.balance.label,
+      }
+    : undefined,
+});
+
+const botInfoOf = (value: BotInfoWire['value']): BotInfo => ({
+  kind: value.kind,
+  name: value.name,
+  description: value.description,
+  greeting: value.greeting,
+  commands: value.commands.map(command => ({ name: command.name, description: command.description })),
+  version: value.version,
+  balance: value.balance
+    ? {
+        chainId: value.balance.chainId,
+        contract: bytesToHex(value.balance.contract),
+        selector: bytesToHex(value.balance.selector),
+        decimals: value.balance.decimals,
+        unit: value.balance.unit,
+        perReply: value.balance.perReply === undefined ? null : value.balance.perReply.toString(),
+        label: value.balance.label,
+      }
+    : null,
 });
 
 /** Cut to `max` characters (code points, so an emoji is not split). */
@@ -305,7 +342,7 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       return { kind: 'seen', upTo: content.value.upTo, at: Number(content.value.at) };
     case 'botInfo':
       // Spec 0008: never a bubble; the manager stores it per peer.
-      return { kind: 'botInfo', info: { ...content.value, commands: content.value.commands.map(command => ({ ...command })) } };
+      return { kind: 'botInfo', info: botInfoOf(content.value) };
     case 'transactionReference': {
       const reference = referenceOf(content.value);
       return reference ? { kind: 'transactionReference', reference } : { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };

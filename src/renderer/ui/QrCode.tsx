@@ -6,13 +6,15 @@ import { useEffect, useState } from 'react';
 type Props = {
   value: string;
   size: number;
+  /** What the code holds, for screen readers. */
+  alt?: string;
 };
 
 /**
  * Encoding is async and `value` can change while a render is in flight, so a
  * result whose request was superseded is dropped.
  */
-export const QrCode = ({ value, size }: Props) => {
+export const QrCode = ({ value, size, alt = 'Pairing QR code' }: Props) => {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,5 +34,5 @@ export const QrCode = ({ value, size }: Props) => {
 
   // Hold the box before the first encode lands so the layout does not jump.
   if (!dataUrl) return <canvas width={size} height={size} aria-hidden />;
-  return <img src={dataUrl} width={size} height={size} alt="Pairing QR code" />;
+  return <img src={dataUrl} width={size} height={size} alt={alt} />;
 };

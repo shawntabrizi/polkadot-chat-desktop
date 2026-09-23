@@ -25,6 +25,7 @@
     "e2e:typing": "node scripts/e2e-typing.mjs",
     "e2e:botinfo": "node scripts/e2e-botinfo.mjs",
     "e2e:meter": "node scripts/e2e-meter.mjs",
+    "e2e:flip": "node scripts/e2e-flip.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {

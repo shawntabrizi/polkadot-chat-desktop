@@ -64,6 +64,17 @@
 // tick), and the header shows the Meter balance line. The seeded identity
 // must hold PAS (the faucet drip of `npm run e2e:meter`).
 //
+// M11b: pocket.png is the Pocket (the footer's balance chip clicked): the
+// Asset Hub and People chain balances, the address with Copy and its QR
+// code, and "Get test funds". room-flip.png is the room with the coin-flip
+// bot pcdflip.NN (found by search; a request the first time): its "Stake
+// 0.5 PAS" tx button pressed and the signing strip after the dry-run.
+// room-flip-done.png signs it (first theme only; the second theme shows the
+// same room): once the app's stake is in a best block, a second person
+// (`e2e-flip.mjs --role b` with PCD_SCREENSHOT_FLIP_WITH, default pcdeceb,
+// started at the beginning so its drip and accept are done) stakes too, and
+// the shot shows the bot's "Flip settled: … won 1 PAS" reference.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -100,6 +111,8 @@ const identitySource = process.env.PCD_SCREENSHOT_IDENTITY;
 const requester = process.env.PCD_SCREENSHOT_REQUESTER ?? 'pcdtestggji';
 const roomWith = process.env.PCD_SCREENSHOT_ROOM_WITH ?? null;
 const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
+const flipWith = process.env.PCD_SCREENSHOT_FLIP_WITH ?? 'pcdeceb';
+const FLIP_BOT = 'pcdflip';
 const DRAFT = 'Ask about the People chain later';
 const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
 
@@ -248,7 +261,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -304,6 +317,19 @@ app.whenReady().then(() => {
   const roomPeerRun = roomWith
     ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--botinfo', '--tx', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
+
+  // The second coin-flip player: drips, accepts pcdflip and waits for STAKE on its stdin.
+  writeFileSync(join(outDir, 'flip-peer.log'), '');
+  const flipErr = openSync(join(outDir, 'flip-peer.err.log'), 'w');
+  const flipPeer = spawn('node', ['scripts/e2e-flip.mjs', '--role', 'b', '--identity', flipWith], { cwd: root, stdio: ['pipe', 'pipe', flipErr] });
+  const flipLines = [];
+  flipPeer.stdout.on('data', chunk => {
+    for (const line of String(chunk).split('\n').filter(Boolean)) {
+      flipLines.push(line);
+      writeFileSync(join(outDir, 'flip-peer.log'), `${line}\n`, { flag: 'a' });
+    }
+  });
+  let flipSettled = false;
 
   for (const theme of THEMES) {
     const app = await launch(profile);
@@ -531,10 +557,84 @@ app.whenReady().then(() => {
         log('in block:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
         if (!(await app.waitFor(`${last}.dataset.status === 'finalized'`, 120_000))) throw new Error(`not finalized in 120 s: ${await app.evaluate(`${last}.innerText`)}`);
         log('finalized:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
-        if (!(await app.waitFor(app.exists('[data-testid=meter-balance]'), 60_000))) throw new Error('no Meter balance line in the header');
-        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=meter-balance]').textContent`)));
+        if (!(await app.waitFor(app.exists('[data-testid=bot-balance]'), 60_000))) throw new Error('no balance line (spec 0008 hint) in the header');
+        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=bot-balance]').textContent`)));
         // Centred: at the very end the composer's edge clips the last bubble.
         await app.evaluate(`${last}.scrollIntoView({ block: 'center' }); true`);
+      });
+
+      // M11b: the Pocket, from the footer chip.
+      await shot('pocket', async () => {
+        if (!(await app.waitFor(`/\\d PAS/.test(document.querySelector('[data-testid=balance-chip]')?.textContent ?? '')`, 60_000))) throw new Error('the balance chip shows no amount');
+        log('chip:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=balance-chip]').textContent`)));
+        await app.click('[data-testid=balance-chip]');
+        const read = row => `/PAS|No balance needed/.test(document.querySelector('[data-testid=${row}]')?.textContent ?? '')`;
+        if (!(await app.waitFor(`${read('pocket-asset-hub')} && ${read('pocket-people')} && ${app.exists('[data-testid=pocket] img')}`, 60_000))) {
+          throw new Error(`the Pocket did not read both balances: ${await app.evaluate(`document.querySelector('[data-testid=pocket]')?.innerText ?? 'no pocket'`)}`);
+        }
+        log('pocket:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid^=pocket-]')].filter(e => e.dataset.testid !== 'pocket-address').map(e => e.innerText.replace(/\\s+/g, ' ')).join(' | ')`)));
+      });
+
+      // M11b: the coin flip. The stake button and its strip; then the settlement.
+      const flipTitle = `/^${FLIP_BOT}\\.\\d{2}$/.test(document.querySelector('[data-testid=room-title]')?.textContent ?? '')`;
+      const stakeKeyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].filter(k => [...k.querySelectorAll('[data-action=tx]:not([disabled])')].some(b => b.textContent.includes('Stake'))).pop()`;
+      const settledRef = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=tx-reference]')].filter(r => r.textContent.includes('Flip settled')).pop()`;
+      await shot('room-flip', async () => {
+        const flipRow = `[...document.querySelectorAll('[data-testid=chat-row]')].find(r => /${FLIP_BOT}\\.\\d{2}/.test(r.textContent))`;
+        if (await app.evaluate(`!!${flipRow}`)) {
+          await app.evaluate(`${flipRow}.click()`);
+        } else {
+          await app.click('[aria-label="New chat"]');
+          await app.type('[aria-label=Search]', FLIP_BOT);
+          if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=search-global-row]')].some(b => /${FLIP_BOT}\\.\\d{2}/.test(b.textContent))`, 90_000))) throw new Error(`${FLIP_BOT} not found by search`);
+          await app.evaluate(`[...document.querySelectorAll('[data-testid=search-global-row]')].find(b => /${FLIP_BOT}\\.\\d{2}/.test(b.textContent)).click()`);
+          await app.waitFor(app.exists('textarea[aria-label=Message]'), 10_000);
+          await app.type('textarea[aria-label=Message]', 'Hi, I want to flip');
+          await app.clickText('button', 'Send Request');
+          log('request sent to', FLIP_BOT);
+        }
+        if (!(await app.waitFor(`${flipTitle} && ${app.exists('[aria-label=Send]')}`, 150_000))) throw new Error(`${FLIP_BOT} did not accept the request`);
+        if (!(await app.waitFor(`${stakeKeyboard} != null`, 90_000))) {
+          await app.type('textarea[aria-label=Message]', '/stake');
+          await app.click('[aria-label=Send]');
+          if (!(await app.waitFor(`${stakeKeyboard} != null`, 90_000))) throw new Error(`no Stake button from ${FLIP_BOT}`);
+        }
+        await app.evaluate(`${stakeKeyboard}.querySelector('[data-action=tx]').click(); true`);
+        if (!(await app.waitFor(`['ready', 'refused'].includes(document.querySelector('[data-testid=tx-strip]')?.dataset.phase)`, 60_000))) throw new Error('the stake strip did not finish its dry-run');
+        const strip = await app.evaluate(`document.querySelector('[data-testid=tx-strip]').innerText.replace(/\\s+/g, ' ')`);
+        log('flip strip:', JSON.stringify(strip));
+        if ((await app.evaluate(`document.querySelector('[data-testid=tx-strip]').dataset.phase`)) !== 'ready') throw new Error(`the dry-run refused the stake: ${strip}`);
+        await app.evaluate(`document.querySelector('[data-testid=tx-strip]').scrollIntoView({ block: 'end' }); true`);
+      });
+      await shot('room-flip-done', async () => {
+        if (!(await app.evaluate(flipTitle))) throw new Error('the flip room is not open');
+        if (!flipSettled) {
+          if (!(await app.evaluate(`document.querySelector('[data-testid=tx-strip]')?.dataset.phase === 'ready'`))) throw new Error('no stake strip to sign');
+          const before = await app.evaluate(`document.querySelectorAll('[data-testid=message-outgoing] [data-testid=tx-reference]').length`);
+          await app.click('[data-testid=tx-sign]');
+          const own = `[...document.querySelectorAll('[data-testid=message-outgoing] [data-testid=tx-reference]')][${before}]`;
+          if (!(await app.waitFor(`${own} != null && ['inBlock', 'finalized'].includes(${own}.dataset.status)`, 90_000))) throw new Error('the stake did not reach a block');
+          log('stake:', JSON.stringify(await app.evaluate(`${own}.innerText`)));
+          if (await app.waitFor(app.exists('[data-testid=bot-balance]'), 20_000)) log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=bot-balance]').textContent`)));
+          // A stake already waiting (someone else's) settles with ours; else the second player stakes.
+          if (!(await app.waitFor(`${settledRef} != null`, 15_000))) {
+            const ready = await (async () => {
+              for (let i = 0; i < 480 && !flipLines.some(line => /^READY /.test(line)); i++) await sleep(500);
+              return flipLines.some(line => /^READY /.test(line));
+            })();
+            if (!ready) throw new Error('the second player never got ready (see .agent-runs/screens/flip-peer.log)');
+            flipPeer.stdin.write('STAKE\n');
+            log('second player stakes');
+          }
+          if (!(await app.waitFor(`${settledRef} != null`, 180_000))) throw new Error('no "Flip settled" reference from the bot (see .agent-runs/screens/flip-peer.log)');
+          flipSettled = true;
+        } else {
+          // The second theme: the room as the first left it.
+          await app.evaluate(`[...document.querySelectorAll('[data-testid=tx-strip] button')].find(b => b.textContent.trim() === 'Cancel')?.click(); true`);
+          if (!(await app.waitFor(`${settledRef} != null`, 30_000))) throw new Error('the settlement reference is gone');
+        }
+        log('settled:', JSON.stringify(await app.evaluate(`${settledRef}.innerText`)));
+        await app.evaluate(`${settledRef}.scrollIntoView({ block: 'center' }); true`);
       });
 
       await shot('assistant', async () => {
@@ -739,6 +839,8 @@ app.whenReady().then(() => {
   }
   requesterRun.kill('SIGTERM');
   roomPeerRun?.kill('SIGTERM');
+  flipPeer.stdin.write('EXIT\n');
+  flipPeer.kill('SIGTERM');
   rmSync(profile, { recursive: true, force: true });
   log('seeded profile removed:', !existsSync(profile));
 }

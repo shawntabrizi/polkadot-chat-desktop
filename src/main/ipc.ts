@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { type BrowserWindow, Notification, app, ipcMain, shell } from 'electron';
 
 import {
+  type AccountBalance,
   type AssistantActivity,
   type AssistantChatMessage,
   type AssistantDone,
@@ -71,6 +72,7 @@ const MAX_CALLDATA_BYTES = 16 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const CONTRACT = /^0x[0-9a-fA-F]{40}$/;
+const GENESIS = /^0x[0-9a-fA-F]{64}$/;
 
 /**
  * Spec 0007: one Asset Hub connection and signing service for the identity
@@ -91,6 +93,10 @@ const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService>
     created.onStatus((event: TxStatusEvent) => {
       const win = getWindow();
       if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainTxStatus, event);
+    });
+    created.onBestBlock(block => {
+      const win = getWindow();
+      if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainBestBlock, block);
     });
     return created;
   });
@@ -267,11 +273,13 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (typeof hash !== 'string' || !TX_HASH.test(hash)) return null;
     return (await txServiceFor(getWindow)).status(hash);
   });
-  ipcMain.handle(IPC.chainContractRead, async (_event, address: unknown, calldata: unknown): Promise<Uint8Array> => {
+  ipcMain.handle(IPC.chainContractRead, async (_event, chainId: unknown, address: unknown, calldata: unknown): Promise<Uint8Array> => {
+    if (typeof chainId !== 'string' || !GENESIS.test(chainId)) throw new Error('Invalid chain id.');
     if (typeof address !== 'string' || !CONTRACT.test(address)) throw new Error('Invalid contract address.');
     if (!(calldata instanceof Uint8Array) || calldata.length > MAX_CALLDATA_BYTES) throw new Error('Invalid call data.');
-    return (await txServiceFor(getWindow)).contractRead(address, calldata);
+    return (await txServiceFor(getWindow)).contractRead(chainId, address, calldata);
   });
+  ipcMain.handle(IPC.chainBalance, async (): Promise<AccountBalance> => (await txServiceFor(getWindow)).balance());
 
   ipcMain.handle(IPC.assistantGetSettings, (): AssistantSettings => publicSettings());
   ipcMain.handle(IPC.assistantSetSettings, (_event, value: unknown): AssistantSettings => {

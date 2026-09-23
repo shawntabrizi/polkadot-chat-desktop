@@ -15,9 +15,13 @@
 //     (DRYRUN …, then TOPUP_OK once our reference is "in block").
 //  3. The Meter balance at the best block (BALANCE …), three questions, and
 //     the balance after each answer must drop (METERED_OK), then METER_OK.
+// M11b: nothing here knows the Meter. The contract, the view, the decimals
+// and the price per reply come from the `balance` hint of pcdmeter's spec
+// 0008 botInfo (HINT …), as the app's room header reads them.
 // Exit 0 METER_OK; 10 E2E_TIMEOUT <stage> on any timeout; 11 DRIP_REFUSED
 // (the faucet bot answered with a text, e.g. its 10 min limit); 3
-// PEER_KEY_UNSUPPORTED; 1 any other failure. Prints no secret.
+// PEER_KEY_UNSUPPORTED; 1 any other failure (NO_BALANCE_HINT: the bot's
+// botInfo declares no balance). Prints no secret.
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -43,6 +47,8 @@ const IN_BLOCK_WAIT_MS = 90_000;
 /** A Haiku turn, then the bot's charge in a best block. */
 const ANSWER_WAIT_MS = 150_000;
 const CHARGE_WAIT_MS = 90_000;
+/** The botInfo comes with the accept; a `/start` asks again. */
+const HINT_WAIT_MS = 30_000;
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -87,7 +93,7 @@ const { toSs58 } = await load('src/renderer/ui/format.ts');
 const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
 const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');
 const { decodeTxIntent, formatUnits } = await load('src/shared/txIntent.ts');
-const { METER, balanceOfCalldata, decodeUint256, reviveAddressOf, unitsToPlanck } = await load('src/shared/meter.ts');
+const { decodeUint256, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf } = await load('src/shared/balanceHint.ts');
 
 setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
 setMetadataCache(metadataCache());
@@ -214,9 +220,21 @@ if (!(await db.contacts.get(meter.accountHex))) {
 // Let the bot's own answer to the request land first.
 await delay(3_000);
 
-const readBalance = async () => unitsToPlanck(decodeUint256(await service.contractRead(METER.address, balanceOfCalldata(reviveAddressOf(selfKeys.accountId)))) ?? 0n);
+// The bot's spec 0008 v2 `balance` hint, as the app stores it (peerInfo).
+const storedHint = async () => (await db.peerInfo.get(meter.accountHex))?.botInfo?.balance ?? null;
+let hint = await waitFor(storedHint, HINT_WAIT_MS);
+if (!hint) {
+  await manager.sendMessage(meter.accountHex, { type: 'text', text: '/start' });
+  console.log('SENT /start (no botInfo with a balance hint yet)');
+  hint = await waitFor(storedHint, HINT_WAIT_MS * 2);
+}
+if (!hint) finish(1, `NO_BALANCE_HINT botInfo=${JSON.stringify((await db.peerInfo.get(meter.accountHex))?.botInfo ?? null)}`);
+console.log(`HINT label="${hint.label}" contract=${hint.contract} selector=${hint.selector} decimals=${hint.decimals} unit=${hint.unit} perReply=${hint.perReply} chain=${hint.chainId.slice(0, 10)}…`);
+
+/** The hint's view for our account at the best block, in the hint's units (what the room header reads). */
+const readBalance = async () => decodeUint256(await service.contractRead(hint.chainId, hint.contract, hintCalldata(hint.selector, reviveAddressOf(selfKeys.accountId)))) ?? 0n;
 const before = await readBalance();
-console.log(`BALANCE_BEFORE ${formatUnits(before)} PAS`);
+console.log(`BALANCE_BEFORE ${hintLine(hint, before)}`);
 
 const topupAsked = Date.now() - 1_000;
 await manager.sendMessage(meter.accountHex, { type: 'text', text: '/topup' });
@@ -259,8 +277,8 @@ console.log(`TOPUP_OK status=${inBlock.content.reference.status} block=${inBlock
 // ── 3. Balance, three questions, the balance drops ─────────────────────────
 
 const afterTopUp = await readBalance();
-console.log(`BALANCE ${formatUnits(afterTopUp)} PAS (${afterTopUp} planck; before ${formatUnits(before)} PAS) · ~${afterTopUp / METER.pricePlanck} replies`);
-if (afterTopUp < before + intent.calls[0].value) console.log('BALANCE_NOTE the top-up is not fully visible yet (a charge may have run meanwhile)');
+console.log(`BALANCE ${hintLine(hint, afterTopUp)} (${afterTopUp} ${hint.unit} units; before ${hintLine(hint, before)})`);
+if (afterTopUp < before + (planckInHintUnits(hint, intent.calls[0].value) ?? 0n)) console.log('BALANCE_NOTE the top-up is not fully visible yet (a charge may have run meanwhile)');
 
 const QUESTIONS = ['In one sentence: what is Polkadot?', 'In one sentence: what is a parachain?', 'In one sentence: what is Asset Hub?', 'In one sentence: what is a smart contract?'];
 let last = afterTopUp;
@@ -280,16 +298,17 @@ for (let n = 0; n < questionCount; n++) {
     return balance < last ? { balance } : null;
   }, CHARGE_WAIT_MS);
   if (!dropped) timeout(`charge after answer ${n + 1}`);
-  // The bot's charge reference names the new balance (`balance: <planck>`); it may land a moment later.
+  // The bot's charge reference names the new balance in planck (`balance: <planck>`, meter.md); it may land a moment later.
+  const notePlanck = dropped.balance / (planckInHintUnits(hint, 1n) ?? 1n);
   const charge = await waitFor(
-    async () => (await incomingAfter(meter.accountHex, asked)).find((row) => row.content.type === 'transactionReference' && row.content.reference.note === `balance: ${dropped.balance}`),
+    async () => (await incomingAfter(meter.accountHex, asked)).find((row) => row.content.type === 'transactionReference' && row.content.reference.note === `balance: ${notePlanck}`),
     10_000,
   );
-  console.log(`BALANCE ${formatUnits(dropped.balance)} PAS (-${formatUnits(last - dropped.balance)})${charge ? ` reference="${charge.content.reference.note}" ${charge.content.reference.status}` : ''} at=${at()}`);
+  console.log(`BALANCE ${hintLine(hint, dropped.balance)} (-${formatUnits(last - dropped.balance, hint.decimals)} ${hint.unit})${charge ? ` reference="${charge.content.reference.note}" ${charge.content.reference.status}` : ''} at=${at()}`);
   last = dropped.balance;
   drops += 1;
 }
-console.log(`METERED_OK ${drops} answers charged: ${formatUnits(afterTopUp)} → ${formatUnits(last)} PAS`);
+console.log(`METERED_OK ${drops} answers charged: ${formatUnits(afterTopUp, hint.decimals)} → ${formatUnits(last, hint.decimals)} ${hint.unit}`);
 const finalized = await waitFor(async () => ((await ownReference())?.content.reference.status === 'finalized' ? true : null), 1);
 console.log(`TOPUP_REFERENCE ${(await ownReference())?.content.reference.status}${finalized ? '' : ' (finality is shown when it comes; nothing waited for it)'}`);
 finish(0, 'METER_OK');

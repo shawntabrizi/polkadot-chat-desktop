@@ -21,8 +21,10 @@
 // commands) on the identity channel, as a bot does after it accepts. The
 // test identity acts as the operator flag here; a person's client never
 // sends it.
-// --tx (M11 screenshots): with --botinfo, the agent also lists a `balance`
-// command (the app then shows the Meter balance line); after the botInfo,
+// --tx (M11 screenshots): with --botinfo, the agent's botInfo also carries a
+// spec 0008 v2 `balance` hint (M11b) naming the Meter contract of
+// docs/spec/contracts/meter.md, so the app shows "with Meter: …" under the
+// name, read from the chain for the app's own account; after the botInfo,
 // sends one keyboard with a spec 0007 `tx` button: a plain
 // `Balances.transfer_keep_alive` of 0.01 PAS on devnet Asset Hub from the
 // peer's account to itself (kind 0 call data, encoded with the Asset Hub
@@ -353,10 +355,20 @@ if (botInfoRun) {
       { name: 'validators', description: 'Pick validators to nominate' },
       { name: 'start', description: 'Start over' },
       { name: 'help', description: 'What I can do' },
-      // M11: a bot with `balance` gets the Meter balance line in the app's header.
-      ...(txRun ? [{ name: 'balance', description: 'Your prepaid balance' }] : []),
     ],
-    version: txRun ? 2 : 1,
+    version: txRun ? 3 : 1,
+    // M11b: the hint pcdmeter declares (docs/spec/contracts/meter.md), as test data.
+    balance: txRun
+      ? {
+          chainId: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
+          contract: '0x30b0c001431a1addb8c11a060ada4d6a7033cf21',
+          selector: '0x70a08231',
+          decimals: 18,
+          unit: 'PAS',
+          perReply: '100000000000000000',
+          label: 'with Meter',
+        }
+      : null,
   };
   try {
     await manager.sendBotInfo(peerAccountHex, info);
