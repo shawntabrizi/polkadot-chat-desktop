@@ -3,12 +3,14 @@
 # e2e identity allowed (or the bot public) before running this.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# macOS has no `timeout`; run the command directly when neither timeout nor gtimeout exists.
+with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
 git log -1 --format=%s | grep -q '^M2:' || fail "last commit is not an M2 commit"
 [ -f scripts/e2e-chat.mjs ] || fail "scripts/e2e-chat.mjs missing"
 npm run check >/tmp/m2-check.log 2>&1 || { tail -40 /tmp/m2-check.log; fail "npm run check failed"; }
-out=$(timeout 420 npm run e2e:chat -- hishawn.84 2>&1 | tail -25) || true
+out=$(with_timeout 420 npm run e2e:chat -- hishawn.84 2>&1 | tail -25) || true
 echo "$out"
 echo "$out" | grep -q 'E2E_OK' || fail "e2e chat did not reach E2E_OK"
 grep -q '## M2' docs/acceptance.md || fail "docs/acceptance.md has no M2 section"

@@ -2,6 +2,8 @@
 # Reviewer check for M1. Exit 0 = pass. Needs network access to devnet.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# macOS has no `timeout`; run the command directly when neither timeout nor gtimeout exists.
+with_timeout() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
 fail() { echo "CHECK FAIL: $*"; exit 1; }
 [ -z "$(git status --short)" ] || fail "working tree not clean"
 git log -1 --format=%s | grep -q '^M1:' || fail "last commit is not an M1 commit"
@@ -10,7 +12,7 @@ cmp -s resources/summit-bandersnatch-cli.wasm .refs/bot-core/vendor/summit-bande
 ! git grep -n -E 'console\.log\([^)]*(mnemonic|seed|privateKey)' -- src scripts || fail "a log statement mentions secret material"
 npm run check >/tmp/m1-check.log 2>&1 || { tail -40 /tmp/m1-check.log; fail "npm run check failed"; }
 name="pcdrev$RANDOM"
-out=$(timeout 400 npm run identity:register -- "$name" 2>&1 | tail -15) || true
+out=$(with_timeout 400 npm run identity:register -- "$name" 2>&1 | tail -15) || true
 echo "$out"
 echo "$out" | grep -q 'ON_CHAIN key_type=0' || fail "registration did not land on chain with an X25519 key"
 grep -q '## M1' docs/acceptance.md || fail "docs/acceptance.md has no M1 section"
