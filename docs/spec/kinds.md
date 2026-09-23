@@ -9,3 +9,6 @@
 | 243 | `buttonPress` | implemented (M8) | n/a | 0006 |
 | 244 | `botInfo` | M10 | none; sent freely | 0008 |
 | 245 | `transactionReference` | implemented (M11) | none; sent freely | 0007 |
+| 246 | `groupInfo` | M12 | none | 0009 |
+| 247 | `groupMessage` | M12 | none | 0009 |
+| 248 | `groupLeave` | M12 | none | 0009 |
