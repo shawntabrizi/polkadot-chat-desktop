@@ -31,3 +31,9 @@ Product:
 - **Disappearing messages** (Session/Status): client-enforced TTL on top of RFC-0003 tombstones.
 - **Metadata privacy note** (DarkFi): session topics are pairwise hashes on a public store; write down what an observer can infer and what Tor/mixnet transport would add. Research item, not a milestone.
 - **Packaging bot-core as an SDK** for third-party agents (XMTP Agent SDK shape): event-driven, middleware, content-type filters. After M11.
+
+## Decisions 2026-09-23 (owner)
+
+- **Identity:** the desktop-owned identity is a temporary measure while the phone app produces accounts with the legacy key type. The target is **"Sign in with Polkadot app"**: the desktop pairs as a device of the phone identity (the V2 pairing flow already in `src/renderer/domain/pairing`), one identity per person. Keep sign-up as a fallback for machines without a phone. Milestone: **M10a Sign in with Polkadot app**, gated on a phone build that writes X25519 keys.
+- **Payments for testing:** add a default **Faucet** chat: a built-in contact with a "Get test funds" button (and a `url` button to the public Paseo faucet with the address prefilled where supported), so contract and payment features can be tried on devnet without manual funding. Long-term onboarding for payments is a separate design. Goes into M10 as step 0.
+- **Capability bootstrap:** propose advertising extension support in the reserved 32 bytes of the RFC-0004 identifier-key container (old readers ignore them by spec); written up as spec 0008 when M9 starts.
