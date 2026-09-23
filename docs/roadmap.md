@@ -5,8 +5,8 @@ Goal: an agent-native, Telegram-quality chat client on Polkadot's encrypted rail
 | # | Milestone | Protocol work | Proof |
 |---|---|---|---|
 | M7 | Delete for everyone; live bot progress as thinking; typing reveal | RFC-0003 (exists) implemented in desktop + pca | e2e delete round trip; bot logs the deletion |
-| M8 | Typing and seen | RFC draft: two ephemeral, rate-limited, never-ACKed kinds | typing dots while the pirate bot works; seen ticks |
-| M9 | Buttons | RFC draft: `buttons` on a message + `buttonPress`; action kinds `command`, `url`, `callback`, reserved `tx` | press a button in the app, the demo bot reacts |
+| M8 | Buttons (moved ahead of typing/seen on 2026-09-23: it is the agent-native differentiator) | spec 0006 drafted; action kinds `command`, `callback`, `url`, reserved `tx` | press a button in the app, the guide bot reacts |
+| M9 | Typing and seen | spec 0005 drafted | typing dots while the pirate bot works; seen ticks |
 | M10 | Bot manifest by DotNS name; contract bot MVP | app convention; `tx` action kind used for contract calls | a contract appears as a chat with read and call buttons |
 | M11 | Publish the local agent as an on-chain peer | none | a phone user chats with the desktop's agent |
 
