@@ -1,0 +1,93 @@
+import { createExpiryAllocator, createInMemoryStatementStore, createSr25519Prover } from '@novasamatech/statement-store';
+import { describe, expect, it } from 'vitest';
+
+import { type TestPeer, makePeer, waitFor } from '../testing/peers';
+
+import { createIdentityChannel } from './identityChannel';
+import type { IdentityChannelEvent } from './identityEvents';
+
+const open = (store: ReturnType<typeof createInMemoryStatementStore>, self: TestPeer, peer: TestPeer, events: IdentityChannelEvent[]) =>
+  createIdentityChannel({
+    ownIdentityAccountId: self.identity.identityAccountId,
+    ownIdentityChatPrivateKey: self.identity.identityChatPrivateKey,
+    peerIdentityAccountId: peer.identity.identityAccountId,
+    peerIdentityChatPublicKey: peer.identity.identityChatPublicKey,
+    prover: createSr25519Prover(self.device.statementAccountSeed),
+    allocator: createExpiryAllocator(),
+    statementStore: store,
+    onEvent: event => events.push(event),
+  });
+
+describe('identity channel', () => {
+  it('carries deviceChatAccepted with the acceptor DeviceInfo to the requester', async () => {
+    const store = createInMemoryStatementStore();
+    const alice = makePeer();
+    const bob = makePeer();
+    const aliceEvents: IdentityChannelEvent[] = [];
+    const bobEvents: IdentityChannelEvent[] = [];
+    const aliceChannel = open(store, alice, bob, aliceEvents);
+    const bobChannel = open(store, bob, alice, bobEvents);
+
+    await bobChannel.post({
+      tag: 'deviceChatAccepted',
+      value: {
+        requestId: 'req-1',
+        device: {
+          statementAccountId: bob.device.statementAccountPublicKey,
+          encryptionPublicKey: bob.device.encryptionPublicKey,
+        },
+      },
+    });
+
+    const accepted = await waitFor(() => aliceEvents.find(event => event.tag === 'accepted'));
+    expect(accepted.tag === 'accepted' && accepted.requestId).toBe('req-1');
+    expect(accepted.tag === 'accepted' && accepted.device.statementAccountId).toEqual(bob.device.statementAccountPublicKey);
+    expect(accepted.tag === 'accepted' && accepted.device.encryptionPublicKey).toEqual(bob.device.encryptionPublicKey);
+    // The channel acknowledges what it delivered: Bob's session sees a response.
+    await waitFor(() => store.acceptedStatements().length >= 2);
+    expect(bobEvents).toHaveLength(0);
+
+    aliceChannel.dispose();
+    bobChannel.dispose();
+  });
+
+  it('surfaces roster fan-out and plain chat content', async () => {
+    const store = createInMemoryStatementStore();
+    const alice = makePeer();
+    const bob = makePeer();
+    const aliceEvents: IdentityChannelEvent[] = [];
+    const aliceChannel = open(store, alice, bob, aliceEvents);
+    const bobChannel = open(store, bob, alice, []);
+
+    const added = new Uint8Array(32).fill(9);
+    await bobChannel.post({ tag: 'deviceAdded', value: { statementAccountId: added, encryptionPublicKey: bob.device.encryptionPublicKey } });
+    await bobChannel.post({ tag: 'text', value: 'welcome' });
+    await bobChannel.post({ tag: 'deviceRemoved', value: { statementAccountId: added } });
+
+    await waitFor(() => aliceEvents.length === 3);
+    expect(aliceEvents.map(event => event.tag)).toEqual(['deviceAdded', 'message', 'deviceRemoved']);
+    const message = aliceEvents[1];
+    expect(message?.tag === 'message' && message.content).toEqual({ tag: 'text', value: 'welcome' });
+
+    aliceChannel.dispose();
+    bobChannel.dispose();
+  });
+
+  it('drops the legacy chatAccepted @14, leaving the request pending', async () => {
+    const store = createInMemoryStatementStore();
+    const alice = makePeer();
+    const bob = makePeer();
+    const aliceEvents: IdentityChannelEvent[] = [];
+    const aliceChannel = open(store, alice, bob, aliceEvents);
+    const bobChannel = open(store, bob, alice, []);
+
+    await bobChannel.post({ tag: 'chatAccepted', value: { messageId: 'req-1' } });
+    await bobChannel.post({ tag: 'text', value: 'after' });
+
+    await waitFor(() => aliceEvents.length === 1);
+    expect(aliceEvents[0]?.tag).toBe('message');
+
+    aliceChannel.dispose();
+    bobChannel.dispose();
+  });
+});

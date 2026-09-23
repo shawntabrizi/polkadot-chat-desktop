@@ -1,0 +1,121 @@
+// Vendored from triangle-js-sdks packages/host-papp/src/sso/auth/scale/handshakeV2.ts
+// (package @novasamatech/host-papp 0.10.2; the .refs checkout has no git metadata).
+// The package does not export the V2 pairing flow from its index, so the file is
+// copied here. Keep the diff against the source minimal; edits are marked "web:".
+
+/**
+ * SCALE codecs for the V2 SSO handshake (multi-device shape).
+ *
+ * The host emits a `VersionedHandshakeProposal::V2` via QR carrying its
+ * `Device { statementAccountId, encryptionPublicKey }` and metadata. The
+ * authorising peer (PApp) responds over the Statement Store with a
+ * `VersionedHandshakeResponse`; its body is ECDH-encrypted to the host's
+ * encryption public key with the peer's ephemeral `tmpKey`. The inner payload
+ * after decrypt is `EncryptedHandshakeResponseV2 = Pending | Success | Failed`.
+ *
+ * `Success` carries:
+ *   - `identityAccountId`     — user identity sr25519 accountId (32 bytes).
+ *                               Addressing for chat / username lookup / session
+ *                               topic derivation.
+ *   - `rootAccountId`         — user root sr25519 accountId (32 bytes). Parent
+ *                               for soft-derivation of product accounts; PApp
+ *                               and host MUST derive identically so a dapp sees
+ *                               the same address on every device.
+ *   - `identityChatPrivateKey`— user identity chat X25519 private scalar (32 bytes),
+ *                               shared per the multi-device spec so this device
+ *                               can decrypt traffic addressed to the user identity
+ *   - `deviceEncPubKey`       — encryption public key of the PApp device (32 bytes,
+ *                               X25519). Tells the host which key to
+ *                               use when addressing chat envelopes back to the
+ *                               authorising PApp device.
+ *   - `ssoEncPubKey`          — `papp_encr_pub` (32 bytes, X25519); see
+ *                               the `HandshakeSuccessV2` codec doc below.
+ *   - `rootEntropySource`     — 32 bytes; `blake2b256_keyed(rootAccountSecret,
+ *                               "product-entropy-derivation")` per RFC-0007 (layer 1).
+ *                               Lets the host derive product entropy deterministically
+ *                               (`host_derive_entropy`) without ever holding the raw
+ *                               root account secret. See the codec doc below.
+ */
+
+import { x25519 } from '@noble/curves/ed25519.js';
+import { Bytes } from '@novasamatech/scale';
+import { Enum, Struct, Tuple, Vector, _void, str } from 'scale-ts';
+
+const AccountIdCodec = Bytes(32);
+const PublicKeyCodec = Bytes(32);
+const PrivateKeyCodec = Bytes(32);
+const EntropySourceCodec = Bytes(32);
+
+export const MetadataKey = Enum({
+  Custom: str,
+  HostName: _void,
+  HostVersion: _void,
+  HostIcon: _void,
+  PlatformType: _void,
+  PlatformVersion: _void,
+});
+
+export const MetadataEntry = Tuple(MetadataKey, str);
+
+export const Device = Struct({
+  statementAccountId: AccountIdCodec,
+  encryptionPublicKey: PublicKeyCodec,
+});
+
+export const HandshakeProposalV2 = Struct({
+  device: Device,
+  metadata: Vector(MetadataEntry),
+});
+
+export const VersionedHandshakeProposal = Enum({
+  _v1Reserved: _void,
+  V2: HandshakeProposalV2,
+});
+
+// V2 Response
+
+export const HandshakeSuccessV2 = Struct({
+  identityAccountId: AccountIdCodec,
+  rootAccountId: AccountIdCodec,
+  identityChatPrivateKey: PrivateKeyCodec,
+  /** PApp's X25519 SSO ECDH public key (`papp_encr_pub`). */
+  ssoEncPubKey: PublicKeyCodec,
+  deviceEncPubKey: PublicKeyCodec,
+  /** Layer-1 source for deterministic product entropy derivation (RFC-0007). */
+  rootEntropySource: EntropySourceCodec,
+});
+
+/** Derive the identity chat X25519 public key (32 bytes) from its private scalar. */
+export const deriveIdentityChatPublicKey = (privateKey: Uint8Array): Uint8Array => x25519.getPublicKey(privateKey);
+
+export const HandshakeStatusV2 = Enum({
+  AllowanceAllocation: _void,
+});
+
+/** Inner handshake response variant. */
+export const EncryptedHandshakeResponseV2 = Enum({
+  Pending: HandshakeStatusV2,
+  Success: HandshakeSuccessV2,
+  Failed: str,
+});
+
+export const HandshakeResponseV2 = Struct({
+  encrypted: Bytes(),
+  tmpKey: PublicKeyCodec,
+});
+
+/** Legacy V1 response shape — decoded for backward compat, never emitted by the V2 path. */
+export const HandshakeResponseV1 = Struct({
+  encrypted: Bytes(),
+  tmpKey: PublicKeyCodec,
+});
+
+export const EncryptedHandshakeResponseV1 = Struct({
+  encryptionKey: PublicKeyCodec,
+  accountId: AccountIdCodec,
+});
+
+export const VersionedHandshakeResponse = Enum({
+  V1: HandshakeResponseV1,
+  V2: HandshakeResponseV2,
+});
