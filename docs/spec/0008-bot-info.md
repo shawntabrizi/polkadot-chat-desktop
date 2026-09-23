@@ -27,7 +27,7 @@ BotInfo = {
 Command = { name: String /* without slash, <= 32 */, description: String /* <= 80 */ }
 ```
 
-- **Sender.** A bot MUST send `botInfo` on the identity channel right after accepting a request, and on `/start`; MAY resend on change (higher `version`). A person's client never sends it.
+- **Sender.** A bot MUST send `botInfo` right after accepting a request, on `/start`, and together with its next reply to any peer that has not received the current `version` (so peers from before the bot had a document, or from before a change, catch up without asking). A person's client never sends it.
 - **Recipient.** Store per peer (latest `version` wins). Render: a badge next to the name (bot / agent), the description as the header subtitle, `/` in the composer opens the command menu, the greeting as a system-style row on first arrival. Never render `botInfo` as a bubble. A peer that sent `botInfo` is listed under a "Bots" section in search results.
 - **Compatibility.** Development mode: sent freely.
 
