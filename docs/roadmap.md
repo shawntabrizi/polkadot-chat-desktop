@@ -8,8 +8,9 @@ Goal: an agent-native, Telegram-quality chat client on Polkadot's encrypted rail
 | M8 | Buttons (moved ahead of typing/seen on 2026-09-23: it is the agent-native differentiator) | spec 0006 drafted; action kinds `command`, `callback`, `url`, reserved `tx` | press a button in the app, the guide bot reacts |
 | M9 | Typing and seen | spec 0005 drafted | typing dots while the pirate bot works; seen ticks |
 | M10 | Bot info (spec 0008), Faucet chat, composer command menu | kind 244 | the guide bot shows a badge, description, `/` menu; Faucet chat funds a devnet account |
-| M11 | `tx` action + transactionReference (spec 0007); contract bot MVP | tag 3 payload, kind 245 | a contract appears as a chat with read and call buttons (contract to be chosen by the owner) |
-| M12 | Publish the local agent as an on-chain peer | none | a phone user chats with the desktop's agent |
+| M11 | `tx` action + transactionReference (spec 0007); contract chats: pay-as-you-go agent, then coin flip (block randomness is acceptable on devnet per the owner; no commit-reveal) | tag 3 payload, kind 245 | prepay a bot and watch the balance drain; two people flip a coin in chat |
+| M12 | Groups (spec 0009, fan-out groups: a group id + roster carried on each member's pairwise session; sender fans out; no group key in v1; MLS later) | kinds 246 `groupInfo`, 247 `groupMessage` header | a three-person room with a bot; DAO, staked polls, N-of-M multisig become possible |
+| M13 | Publish the local agent as an on-chain peer | none | a phone user chats with the desktop's agent |
 
 Decisions (owner, 2026-09-23): the running specification lives in this repo under `docs/spec/`, written as upstream-shaped RFCs as we go, and is sent to `paritytech/chat-spec` only when the owner decides; nothing is pushed to chat-spec meanwhile. `pca` work goes on branches in `polkadot-chat-agents` with the goal of merging later; nothing may break the phone apps, so every extension follows the compatibility rule in `docs/spec/README.md` (receive always, send only after evidence). Provisional kinds 240+ (`docs/spec/kinds.md`); RFC-0003 takes 21 (20 is taken by DeviceChatAccepted).
 
