@@ -9,6 +9,7 @@ import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/d
 import { ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
 import { isLiveFrame } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
+import type { PeerTyping } from '../domain/chat/signals';
 import type { ChatManager } from '../domain/chat/manager';
 import { listMessages, markButtonPressed, markRoomRead, setRoomMuted } from '../domain/chat/messages';
 import { Button } from '@/components/ui/button';
@@ -20,7 +21,7 @@ import { AssistantAvatar, PeerAvatar } from './Avatar';
 import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
-import { RoomHeader } from './RoomHeader';
+import { RoomHeader, TypingLine } from './RoomHeader';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -56,6 +57,9 @@ const PRESS_FLASH_MS = 1_000;
 type PressState = { messageId: string; row: number; index: number; busy: boolean; since: string | null };
 
 const noActivity = { subscribe: () => () => undefined, snapshot: () => null };
+// A stable snapshot: useSyncExternalStore re-renders on every new object.
+const NO_TYPING: ReadonlyMap<PeerId, PeerTyping> = new Map();
+const noTyping = { subscribe: () => () => undefined, snapshot: () => NO_TYPING };
 
 /** "Reconnecting to the People chain…" once the connection has been down 5 s. */
 const ReconnectBanner = ({ connection }: { connection: ConnectionSnapshot }) => {
@@ -111,6 +115,8 @@ export const Room = (props: Props) => {
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
+  const typingStore = manager ? manager.typing : noTyping;
+  const peerTyping = useSyncExternalStore(typingStore.subscribe, typingStore.snapshot).get(peer) ?? null;
 
   useEffect(() => {
     if (!assistant) return;
@@ -370,6 +376,8 @@ export const Room = (props: Props) => {
             )
           ) : noDevice ? (
             <span className="text-fg-warning">No device of this contact is known yet, so messages cannot be delivered.</span>
+          ) : peerTyping ? (
+            <TypingLine typing={peerTyping} />
           ) : undefined
         }
       >
@@ -397,7 +405,11 @@ export const Room = (props: Props) => {
       ) : null}
       <Composer
         draft={draft}
-        onDraft={setDraft}
+        onDraft={text => {
+          setDraft(text);
+          // Spec 0005: only a person's edits of a new message; never the Assistant, never an edit.
+          if (manager && mode.mode !== 'edit') manager.composing(peer as HexString, text);
+        }}
         onSend={() => void submit()}
         context={context}
         sendDisabled={answering}

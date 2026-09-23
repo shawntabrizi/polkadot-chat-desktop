@@ -51,6 +51,10 @@ export type SettingKey =
   | 'chat.sound'
   /** `on` (default) or `off`: typing reveal of bot and Assistant replies (M7). */
   | 'chat.reveal'
+  /** `on` (default) or `off`: send spec 0005 `typing` while composing (M9). */
+  | 'chat.typingIndicator'
+  /** `on` (default) or `off`: send spec 0005 `seen` read receipts (M9). */
+  | 'chat.readReceipts'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session';
 
@@ -140,6 +144,12 @@ export type MessageRow = {
   content: MessageContent;
   reactions: Reaction[];
   editedAt: number | null;
+  /**
+   * Own messages only: when the peer displayed it (spec 0005 `seen.at`, unix
+   * ms). Absent until then, and on rows from before M9. Not indexed, so no
+   * schema version.
+   */
+  seenAt?: number;
 };
 
 /**

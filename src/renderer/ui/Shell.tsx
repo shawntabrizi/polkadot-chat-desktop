@@ -340,6 +340,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
                   selected={listSelection}
                   onOpenRoom={peer => setSelection({ kind: 'room', peer })}
                   onOpenOutgoing={peer => setSelection({ kind: 'outgoing', peer })}
+                  typing={runtime?.manager.typing}
                 />
               </div>
             </SearchPane>

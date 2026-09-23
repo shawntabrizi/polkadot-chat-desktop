@@ -1,28 +1,18 @@
 #!/usr/bin/env node
-// Headless chat round trip with a live peer, through this repo's domain code:
-//   npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete]
-// Reuses .agent-runs/identity-<name>/identity.json (M1's script writes it) or
-// registers <name> + 4 random letters with M1's createIdentity. Dexie runs on
-// fake-indexeddb (memory only), seeded with the identity the way the app seeds
-// it. Sends a chat request, waits for the accept, sends `ping <nonce>`, waits
-// for a reply. Exit 0 E2E_OK, 3 PEER_KEY_UNSUPPORTED, 4 E2E_TIMEOUT <stage>,
-// 1 any other failure. Prints no secret.
-// --delete (M7, RFC-0003): after the reply, sends `delete me <nonce>`, lets
-// the echo land, deletes it for everyone (DELETE_SENT <messageId>), then sends
-// `ping <nonce>` again and waits for the answer. A bot with the pca RFC-0003
-// half logs BOT_RECEIVED_DELETED; that log is the bot's, not checked here.
-// --live-frame (M7 screenshots): after the reply, sends one text shaped like a
-// pca live progress frame (`⏳ working · …`), so the peer shows a thinking row.
-// --buttons (M8 screenshots): after the reply (and the live frame), sends one
-// spec 0006 keyboard (kind 242) with two rows: callback, command, url, and a
-// reserved tx button. The test identity acts as the operator flag here.
-// --seen (M9 screenshots): after all of the above, the script stays and reads
-// the room like an open app window: every second, a new message from the
-// peer is marked read (manager.markRead), which sends spec 0005 `seen`.
-// --typing (M9 screenshots): also stays; each new peer message that contains
-// "working" starts a 20 s agent turn: `typing{working}` every 4 s, as a pca
-// bot sends while it works, then `typing{stopped}`.
-// With --seen or --typing the script runs until it is stopped (at most 15 min).
+// M9 e2e (spec 0005 typing and seen) against a live pca bot, through this repo's domain code:
+//   npm run e2e:typing -- [peerUsername=pcdpirate.81] [--profile devnet|paseo] [--identity <name>]
+// Same setup as e2e-buttons.mjs (the identity file, fake-indexeddb, the People
+// connection). Sends a chat request, waits for the accept, sends a question,
+// and watches three things for 90 s: a `typing{working}` from the bot
+// (TYPING_RECEIVED kind=working; the manager's typing store, as the room
+// header reads it), the reply (REPLY), and a `seen` that marks our question
+// (SEEN_RECEIVED; `seenAt` on our row, as the ticks read it). The script
+// reads the room like the app does (manager.markRead), so our own `seen`
+// goes to the bot too (SEEN_SENT).
+// Exit 0 TYPING_OK (typing and seen both arrived); 8 TYPING_MISSING and
+// SEEN_MISSING (neither arrived in 90 s); 9 one of the two missing (its
+// marker is printed); 3 PEER_KEY_UNSUPPORTED; 4 E2E_TIMEOUT <stage>; 1 any
+// other failure. Prints no secret.
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -54,18 +44,9 @@ const flag = (name) => {
   return at >= 0 ? args[at + 1] : undefined;
 };
 const flagValues = new Set(['--profile', '--identity'].map((f) => args.indexOf(f) + 1).filter((i) => i > 0));
-const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.has(i));
+const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.has(i)) ?? 'pcdpirate.81';
 const profile = flag('profile') ?? 'devnet';
 const identityName = flag('identity') ?? 'pcde2e';
-const deleteRun = args.includes('--delete');
-const liveFrameRun = args.includes('--live-frame');
-const buttonsRun = args.includes('--buttons');
-const seenRun = args.includes('--seen');
-const typingRun = args.includes('--typing');
-if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--seen] [--typing]');
-  process.exit(2);
-}
 if (profile !== 'devnet' && profile !== 'paseo') {
   console.error(`unknown profile "${profile}" (devnet or paseo)`);
   process.exit(2);
@@ -231,143 +212,99 @@ if (await db.contacts.get(peerAccountHex)) {
 const sessionReady = await waitFor(async () => (await db.messages.where('peerAccountId').equals(peerAccountHex).count()) > 0, 10_000);
 if (!sessionReady) console.log('note: no chat row yet; sending anyway');
 
-const textOf = (row) => (row.content.type === 'text' || row.content.type === 'reply' ? row.content.text : `[${row.content.type}]`);
+const textOf = (row) =>
+  row.content.type === 'text' || row.content.type === 'reply' || row.content.type === 'buttons' ? row.content.text : `[${row.content.type}]`;
+const oneLine = (text) => text.replace(/\s+/g, ' ').slice(0, 100);
+// toArray() is in id order; sort by time so `at(-1)` is the newest.
 const incoming = async () =>
-  (await db.messages.toArray()).filter((row) => row.peerAccountId === peerAccountHex && row.direction === 'incoming');
-// A bot answers the request itself (an echo bot echoes the empty opener) a
-// moment after the accept. Let that land first, so it is not taken for the
-// answer to the ping.
+  (await db.messages.toArray())
+    .filter((row) => row.peerAccountId === peerAccountHex && row.direction === 'incoming')
+    .sort((a, b) => a.timestamp - b.timestamp);
+// pca status rows are not answers: its live frames (⏳ / 🤔, M7) and the
+// receipt it edits the placeholder into ("✓ Answered in …").
+const isStatus = (row) => row.content.type === 'text' && /^(?:⏳|🤔|✓) /u.test(row.content.text);
+
+// A bot answers the request itself a moment after the accept. Let that land
+// first, so it is not taken for the answer to the question.
 const greeting = await waitFor(async () => (await incoming())[0], GREETING_WAIT_MS);
-if (greeting) console.log(`GREETING ${textOf(greeting).slice(0, 80)}`);
+if (greeting) console.log(`GREETING ${oneLine(textOf(greeting))}`);
+
+// ── Typing: every state the store takes for this peer ──────────────────
+
+const t0 = Date.now();
+const since = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+let typingFirst = null;
+let typingUpdates = 0;
+let lastTyping = null;
+const onTyping = () => {
+  const state = manager.typing.snapshot().get(peerAccountHex) ?? null;
+  if (state === lastTyping) return;
+  lastTyping = state;
+  if (!state) {
+    console.log(`TYPING_CLEARED at=${since()}`);
+    return;
+  }
+  typingUpdates += 1;
+  if (typingFirst === null) {
+    typingFirst = { kind: state.kind, at: Date.now() };
+    console.log(`TYPING_RECEIVED kind=${state.kind} at=${since()} ahead=${state.until - Date.now()}ms`);
+  }
+};
+manager.typing.subscribe(onTyping);
+
 const before = new Set((await incoming()).map((row) => row.messageId));
-const nonce = randomBytes(3).toString('hex');
+const question = 'Tell me a short pirate joke about blocks.';
 try {
-  await manager.sendMessage(peerAccountHex, { type: 'text', text: `ping ${nonce}` });
+  await manager.sendMessage(peerAccountHex, { type: 'text', text: question });
 } catch (error) {
   finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
 }
-console.log(`PING_SENT ping ${nonce}`);
+const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === question && !before.has(row.messageId) && row.timestamp >= t0);
+if (!own) finish(1, 'SEND_FAIL no row for the question');
+console.log(`QUESTION_SENT ${own.messageId}`);
 
-const reply = await waitFor(async () => (await incoming()).find((row) => !before.has(row.messageId)));
-if (!reply) finish(4, 'E2E_TIMEOUT reply');
-console.log(`REPLY ${textOf(reply).slice(0, 80)}`);
-console.log(`REPLY_HAS_NONCE ${textOf(reply).includes(nonce) ? 'yes' : 'no'}`);
-
-if (deleteRun) {
-  /** Sends one text and waits for the next incoming row after it. */
-  const sendAndWait = async (text, stage) => {
-    const seen = new Set((await incoming()).map((row) => row.messageId));
-    try {
-      await manager.sendMessage(peerAccountHex, { type: 'text', text });
-    } catch (error) {
-      finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-    }
-    const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === text);
-    const answer = await waitFor(async () => (await incoming()).find((row) => !seen.has(row.messageId)));
-    if (!answer) finish(4, `E2E_TIMEOUT ${stage}`);
-    return { own, answer };
-  };
-
-  const doomedText = `delete me ${randomBytes(3).toString('hex')}`;
-  const doomed = await sendAndWait(doomedText, 'echo of the message to delete');
-  console.log(`DOOMED_SENT ${doomedText}`);
-  console.log(`DOOMED_ECHO ${textOf(doomed.answer).slice(0, 80)}`);
-  try {
-    await manager.deleteForEveryone(peerAccountHex, doomed.own.messageId);
-  } catch (error) {
-    finish(1, `DELETE_FAIL ${error instanceof Error ? error.message : String(error)}`);
+const WATCH_MS = 90_000;
+let reply = null;
+let seen = null;
+const readUpTo = new Set();
+await waitFor(async () => {
+  // Read the room as the app does when it is open and focused.
+  const fresh = (await incoming()).filter((row) => !before.has(row.messageId));
+  const newest = fresh.at(-1);
+  if (newest && !readUpTo.has(newest.messageId)) {
+    readUpTo.add(newest.messageId);
+    await manager.markRead(peerAccountHex);
+    console.log(`SEEN_SENT upTo=${newest.messageId}`);
   }
-  console.log(`DELETE_SENT ${doomed.own.messageId}`);
-  const local = await db.messages.get(doomed.own.messageId);
-  console.log(`LOCAL_TOMBSTONE ${local?.content.type === 'deleted' ? 'yes' : 'no'}`);
-  if (local?.content.type !== 'deleted') finish(1, 'DELETE_FAIL the local row is not a tombstone');
+  if (!reply) {
+    // Only a row sent after the question: the bot also answers the request
+    // opener, and that answer can land after the greeting wait.
+    const answer = fresh.find((row) => !isStatus(row) && row.timestamp > own.timestamp);
+    if (answer) {
+      reply = answer;
+      console.log(`REPLY at=${since()} ${oneLine(textOf(answer))}`);
+      // The store records a typing the moment it is decoded, so one seen by now came first.
+      console.log(`TYPING_BEFORE_REPLY ${typingFirst !== null ? 'yes' : 'no'}`);
+    }
+  }
+  if (!seen) {
+    const row = await db.messages.get(own.messageId);
+    if (row?.seenAt !== undefined) {
+      seen = row.seenAt;
+      console.log(`SEEN_RECEIVED upTo=${own.messageId} at=${since()} seenAt=${new Date(row.seenAt).toISOString()}`);
+    }
+  }
+  return reply && seen !== null && typingFirst !== null;
+}, WATCH_MS);
 
-  const after = `ping ${randomBytes(3).toString('hex')}`;
-  const { answer } = await sendAndWait(after, 'reply after the deletion');
-  console.log(`PING_SENT ${after}`);
-  console.log(`REPLY ${textOf(answer).slice(0, 80)}`);
-  console.log(`REPLY_HAS_NONCE ${textOf(answer).includes(after.slice(5)) ? 'yes' : 'no'}`);
-  // The bot must not answer from the deleted message.
-  const quoted = textOf(answer).includes(doomedText);
-  console.log(`REPLY_QUOTES_DELETED ${quoted ? 'yes' : 'no'}`);
-  if (quoted) finish(1, 'DELETE_FAIL the reply after the deletion quotes the deleted text');
-}
-
-if (liveFrameRun) {
-  // The text bot-core's createProgressTracker renders mid-turn.
-  const frame = '⏳ working · 12s · step 2\n▸ Reading notes.md\n▸ Searching the People chain';
-  try {
-    await manager.sendMessage(peerAccountHex, { type: 'text', text: frame });
-  } catch (error) {
-    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sent = await waitFor(async () =>
-    (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && textOf(row) === frame && row.status === 'delivered'),
-  );
-  console.log(`LIVE_FRAME_SENT ${sent ? 'delivered' : 'not acked'}`);
-}
-if (buttonsRun) {
-  const text = 'What would you like to do?';
-  const rows = [
-    [
-      { label: 'Show my balance', action: { tag: 'callback', value: new TextEncoder().encode('balance') } },
-      { label: 'Staking', action: { tag: 'command', value: '/staking' } },
-    ],
-    [
-      { label: 'Open the docs', action: { tag: 'url', value: 'https://docs.polkadot.com/' } },
-      { label: 'Stake 10 DOT', action: { tag: 'tx', value: new Uint8Array([0]) } },
-    ],
-  ];
-  try {
-    await manager.sendButtons(peerAccountHex, { text, rows, oneShot: false });
-  } catch (error) {
-    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sent = await waitFor(async () =>
-    (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.content.type === 'buttons' && row.status === 'delivered'),
-  );
-  console.log(`BUTTONS_SENT ${sent ? 'delivered' : 'not acked'}`);
-}
-if (seenRun || typingRun) {
-  const LINGER_MS = 15 * 60_000;
-  const TURN_MS = 20_000;
-  const REFRESH_MS = 4_000;
-  console.log(`LINGER seen=${seenRun} typing=${typingRun}`);
-  const handled = new Set((await incoming()).map((row) => row.messageId));
-  let lastRead = null;
-  let turnUntil = 0;
-  let lastTypingAt = 0;
-  const until = Date.now() + LINGER_MS;
-  while (Date.now() < until) {
-    // toArray() is in id order; the newest message is the latest timestamp.
-    const rows = (await incoming()).sort((a, b) => a.timestamp - b.timestamp);
-    const newest = rows.at(-1);
-    if (seenRun && newest && newest.messageId !== lastRead) {
-      lastRead = newest.messageId;
-      await manager.markRead(peerAccountHex);
-      console.log(`SEEN_SENT upTo=${newest.messageId}`);
-    }
-    for (const row of rows) {
-      if (handled.has(row.messageId)) continue;
-      handled.add(row.messageId);
-      if (typingRun && /working/i.test(textOf(row))) {
-        turnUntil = Date.now() + TURN_MS;
-        lastTypingAt = 0;
-        console.log('TURN_START');
-      }
-    }
-    const now = Date.now();
-    if (turnUntil > 0 && now < turnUntil && now - lastTypingAt >= REFRESH_MS) {
-      lastTypingAt = now;
-      await manager.sendTyping(peerAccountHex, 'working', now + 6_000).catch((error) => console.log(`TYPING_FAIL ${error.message}`));
-      console.log('TYPING_SENT working');
-    }
-    if (turnUntil > 0 && now >= turnUntil) {
-      turnUntil = 0;
-      await manager.sendTyping(peerAccountHex, 'stopped', now).catch((error) => console.log(`TYPING_FAIL ${error.message}`));
-      console.log('TYPING_SENT stopped');
-    }
-    await delay(1_000);
-  }
-}
-finish(0, 'E2E_OK');
+// Let an outstanding typing clear after the reply, so the log shows it.
+if (reply && lastTyping) await waitFor(() => !manager.typing.snapshot().get(peerAccountHex), 10_000);
+console.log(`TYPING_UPDATES ${typingUpdates}`);
+if (!reply) console.log('REPLY_MISSING (no answer in 90 s)');
+const typingOk = typingFirst?.kind === 'working';
+if (typingFirst && !typingOk) console.log(`TYPING_KIND_UNEXPECTED ${typingFirst.kind}`);
+if (!typingOk) console.log('TYPING_MISSING');
+if (seen === null) console.log('SEEN_MISSING');
+if (!typingOk && seen === null) finish(8);
+if (!typingOk || seen === null) finish(9);
+finish(0, 'TYPING_OK');

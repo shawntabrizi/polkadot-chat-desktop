@@ -38,6 +38,13 @@
 // presses the callback button (spinner) and then the url button, whose
 // confirm strip shows the host under the bubble.
 //
+// M9 (spec 0005, both need PCD_SCREENSHOT_ROOM_WITH; the peer's
+// `e2e-chat.mjs` gets `--seen --typing` and stays): room-seen.png sends a
+// message, waits for the peer's `seen` (the tick turns to the seen colour),
+// and hovers the tick so its "Seen <time>" tooltip shows. room-typing.png
+// sends "Are you working on it?", which starts a 20 s agent turn on the peer
+// (`typing{working}` every 4 s): the header shows "working…" with the pulse.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -222,7 +229,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -276,7 +283,7 @@ app.whenReady().then(() => {
   const roomPeer = roomWith ? JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${roomWith}`, 'identity.json'), 'utf8')).username : BOT;
   const roomLog = roomWith ? openSync(join(outDir, 'room-peer.log'), 'w') : null;
   const roomPeerRun = roomWith
-    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
+    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
 
   for (const theme of THEMES) {
@@ -397,6 +404,60 @@ app.whenReady().then(() => {
         log('url strip:', JSON.stringify(strip));
         const disabled = await app.evaluate(`${keyboard}.querySelectorAll('[data-testid=keyboard-disabled]').length`);
         log('disabled buttons:', disabled);
+      });
+
+      const needsPeer = what => {
+        if (!roomWith) throw new Error(`no ${what}: set PCD_SCREENSHOT_ROOM_WITH`);
+      };
+
+      await shot(
+        'room-seen',
+        async () => {
+          needsPeer('seen');
+          if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+          const text = `Did you see this? ${theme}`;
+          await app.type('textarea[aria-label=Message]', text);
+          await app.click('[aria-label=Send]');
+          const last = `[...document.querySelectorAll('[data-testid=message-outgoing]')].pop()`;
+          if (!(await app.waitFor(`${last}?.textContent.includes(${JSON.stringify(text)}) && ${last}.querySelector('[data-testid=seen-tick]') != null`, 60_000))) {
+            throw new Error(`no seen from ${roomPeer} (see .agent-runs/screens/room-peer.log)`);
+          }
+          log('seen tick shown');
+          // Hover the tick: its tooltip says when. The list may still scroll
+          // when the tick turns, so measure again and retry.
+          const tooltip = `[...document.querySelectorAll('[data-slot=tooltip-content],[role=tooltip]')].some(t => t.textContent.startsWith('Seen '))`;
+          let shown = false;
+          for (let attempt = 0; attempt < 4 && !shown; attempt++) {
+            await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+            // room-buttons scrolled the keyboard into view, so the list may not follow the new message.
+            await app.evaluate(`${last}.scrollIntoView({ block: 'end' }); true`);
+            await sleep(400);
+            const box = await app.evaluate(
+              `(() => { const r = ${last}.querySelector('[data-testid=seen-tick]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+            );
+            await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(box.x), y: Math.round(box.y) });
+            shown = await app.waitFor(tooltip, 3_000);
+            if (!shown) log(`no tooltip yet, tick at ${Math.round(box.x)},${Math.round(box.y)}`);
+          }
+          if (!shown) throw new Error('no "Seen" tooltip on hover');
+          const tip = await app.evaluate(`[...document.querySelectorAll('[data-slot=tooltip-content],[role=tooltip]')].find(t => t.textContent.startsWith('Seen ')).textContent`);
+          log('tooltip:', JSON.stringify(tip));
+          // Let the tooltip finish its fade-in; the pointer must stay on the tick.
+          await app.evaluate('document.fonts.ready.then(() => true)');
+          await sleep(600);
+        },
+        { now: true },
+      );
+
+      await shot('room-typing', async () => {
+        needsPeer('typing');
+        if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+        await app.type('textarea[aria-label=Message]', 'Are you working on it?');
+        await app.click('[aria-label=Send]');
+        if (!(await app.waitFor(app.exists('[data-testid=typing-indicator][data-kind=working]'), 60_000))) {
+          throw new Error(`no working… from ${roomPeer} (see .agent-runs/screens/room-peer.log)`);
+        }
+        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=typing-indicator]').textContent`)));
       });
 
       await shot('assistant', async () => {

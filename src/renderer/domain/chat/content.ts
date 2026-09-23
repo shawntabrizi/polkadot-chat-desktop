@@ -14,6 +14,10 @@ import { openableUrl } from '../../../shared/openUrl';
 
 import { BUTTONS_KIND, type ButtonWire, type ChatContent } from './identityEvents';
 
+/** Spec 0005 `TypingContent.kind`, by wire value. */
+export type TypingKind = 'composing' | 'working' | 'stopped';
+const TYPING_KINDS: readonly TypingKind[] = ['composing', 'working', 'stopped'];
+
 export type Attachment = {
   kind: 'general' | 'image' | 'video';
   mimeType: string;
@@ -70,7 +74,11 @@ export type OutgoingContent =
   /** Spec 0006: a keyboard. Only test scripts send one in M8 (docs/decisions.md). */
   | { type: 'buttons'; text: string; rows: ButtonWire[][]; oneShot: boolean }
   /** Spec 0006: a callback button of the peer's message `messageId` was pressed. */
-  | { type: 'buttonPress'; messageId: string; row: number; index: number; payload: Uint8Array };
+  | { type: 'buttonPress'; messageId: string; row: number; index: number; payload: Uint8Array }
+  /** Spec 0005: an ephemeral typing hint; never a row. */
+  | { type: 'typing'; kind: TypingKind; until: number }
+  /** Spec 0005: a read receipt for the peer's messages up to `upTo`; never a row. */
+  | { type: 'seen'; upTo: string; at: number };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -78,6 +86,8 @@ export type IncomingEffect =
   | { kind: 'edit'; messageId: string; text: string }
   | { kind: 'deleted'; targetMessageId: string }
   | { kind: 'buttonPress'; messageId: string; row: number; index: number }
+  | { kind: 'typing'; typing: TypingKind; until: number }
+  | { kind: 'seen'; upTo: string; at: number }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -104,6 +114,10 @@ export const toWire = (content: OutgoingContent): ChatContent => {
         tag: 'buttonPress',
         value: { messageId: content.messageId, row: content.row, index: content.index, payload: content.payload },
       };
+    case 'typing':
+      return { tag: 'typing', value: { until: BigInt(content.until), kind: TYPING_KINDS.indexOf(content.kind) } };
+    case 'seen':
+      return { tag: 'seen', value: { upTo: content.upTo, at: BigInt(content.at) } };
   }
 };
 
@@ -180,9 +194,17 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
     case 'buttonPress':
       // Never a bubble: the manager checks it against the keyboard we sent.
       return { kind: 'buttonPress', messageId: content.value.messageId, row: content.value.row, index: content.value.index };
+    case 'typing': {
+      // Spec 0005: never a bubble. A kind this build does not know is nothing.
+      const typing = TYPING_KINDS[content.value.kind];
+      return typing ? { kind: 'typing', typing, until: Number(content.value.until) } : { kind: 'ignore' };
+    }
+    case 'seen':
+      return { kind: 'seen', upTo: content.value.upTo, at: Number(content.value.at) };
     case 'undecodable':
       // A keyboard we cannot read (an action tag above 3) is still a message
-      // the peer sent: the unsupported bubble. A press we cannot read is nothing.
+      // the peer sent: the unsupported bubble. A press, typing or seen we
+      // cannot read is nothing.
       return content.value.kind === BUTTONS_KIND ? { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } } : { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };

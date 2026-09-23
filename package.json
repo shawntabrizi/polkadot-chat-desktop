@@ -22,6 +22,7 @@
     "e2e:assistant": "node scripts/e2e-assistant.mjs",
     "e2e:engines": "node scripts/e2e-engines.mjs",
     "e2e:buttons": "node scripts/e2e-buttons.mjs",
+    "e2e:typing": "node scripts/e2e-typing.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {

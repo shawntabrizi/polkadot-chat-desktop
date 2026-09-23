@@ -120,6 +120,29 @@ export const markButtonPressed = (messageId: string, row: number, index: number)
       message.content = { ...message.content, pressed: { row, index } };
     });
 
+export type SeenResult = 'applied' | 'unknown' | 'ignored';
+
+/**
+ * Spec 0005 recipient flow for `seen{upTo, at}` from `peer`: every own
+ * message to that peer with `timestamp <= timestamp(upTo)` gets `seenAt = at`,
+ * unless it has one already (the first time it was seen stands; a repeat is a
+ * no-op). `upTo` must be our own message to that peer, else nothing changes:
+ * a peer can only mark what it was sent. `unknown` when there is no such row
+ * yet (the caller defers it).
+ */
+export const applySeen = (peer: PeerId, upTo: string, at: number): Promise<SeenResult> =>
+  appDatabase.transaction('rw', db.messages, async () => {
+    const target = await db.messages.get(upTo);
+    if (!target) return 'unknown';
+    if (target.peerAccountId !== peer || target.direction !== 'outgoing') return 'ignored';
+    await db.messages
+      .where('[peerAccountId+timestamp]')
+      .between([peer, -Infinity], [peer, target.timestamp], true, true)
+      .filter(row => row.direction === 'outgoing' && row.seenAt === undefined)
+      .modify({ seenAt: at });
+    return 'applied';
+  });
+
 /** The chat list preview follows a changed row when it is the room's newest. */
 const refreshPreview = async (row: MessageRow): Promise<void> => {
   const room = await db.rooms.get(row.peerAccountId);

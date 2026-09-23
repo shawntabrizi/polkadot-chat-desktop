@@ -1,7 +1,17 @@
 import { Copy, Eye, EyeOff } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
-import { DEFAULT_CHAT_PREFS, type SendKey, readChatPrefs, writeNotifications, writeRevealReplies, writeSendKey, writeSound } from '../app/chatPrefs';
+import {
+  DEFAULT_CHAT_PREFS,
+  type SendKey,
+  readChatPrefs,
+  writeNotifications,
+  writeReadReceipts,
+  writeRevealReplies,
+  writeSendKey,
+  writeSound,
+  writeTypingIndicator,
+} from '../app/chatPrefs';
 import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
@@ -163,6 +173,8 @@ const ChatSection = () => {
       <SwitchRow id="notifications" label="Notifications" checked={prefs.notifications} onChange={on => void writeNotifications(on)} testId="notifications-switch" />
       <SwitchRow id="sound" label="Sound" checked={prefs.sound} onChange={on => void writeSound(on)} testId="sound-switch" />
       <SwitchRow id="reveal" label="Reveal bot replies" checked={prefs.revealReplies} onChange={on => void writeRevealReplies(on)} testId="reveal-switch" />
+      <SwitchRow id="typing-indicator" label="Show when I am typing" checked={prefs.typingIndicator} onChange={on => void writeTypingIndicator(on)} testId="typing-switch" />
+      <SwitchRow id="read-receipts" label="Send read receipts" checked={prefs.readReceipts} onChange={on => void writeReadReceipts(on)} testId="receipts-switch" />
     </Section>
   );
 };

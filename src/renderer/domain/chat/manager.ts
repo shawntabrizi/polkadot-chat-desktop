@@ -15,6 +15,7 @@
 import { type StatementStoreAdapter, createExpiryAllocator, createSr25519Prover } from '@novasamatech/statement-store';
 
 import { type HexString, bytesToHex, hexToBytes, randomId } from '../../app/bytes';
+import { readChatPrefs } from '../../app/chatPrefs';
 import type { ContactRow, MessageRow, PeerDevice, RequestRow } from '../../app/database';
 import type { ConnectionStatus } from '../../app/statementStore';
 import { getContact, listContacts, removeContactDevice, upsertContactDevice } from '../contacts/repository';
@@ -25,16 +26,18 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
-import { type MessageContent, type OutgoingContent, fromWire, keyboardOf, toWire } from './content';
+import { type MessageContent, type OutgoingContent, type TypingKind, fromWire, keyboardOf, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { ButtonWire, IdentityChannelEvent } from './identityEvents';
 import {
   addMessage,
   applyDeletion,
+  applySeen,
   applyEdit,
   applyReaction,
   ensureRoom,
   getMessage,
+  listMessages,
   markButtonPressed,
   markRoomRead,
   removeMessage,
@@ -43,6 +46,7 @@ import {
 } from './messages';
 import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
+import { type TypingStore, createPendingSeen, createSeenSender, createTypingSender, createTypingStore } from './signals';
 
 export type ChatManagerDeps = {
   identity: UserIdentity;
@@ -83,7 +87,24 @@ export type ChatManager = {
   sendButtons: (peer: HexString, content: { text: string; rows: ButtonWire[][]; oneShot: boolean }) => Promise<void>;
   /** Sends a `failed` message again with the same id and timestamp; `failed` again if it still cannot go out. */
   retry: (peer: HexString, messageId: string) => Promise<void>;
+  /**
+   * The room is read (M6 rule: visible, focused, in view). Clears the unread
+   * count and, if read receipts are on, sends spec 0005 `seen` for the newest
+   * message from the peer (at most one per 2 s).
+   */
   markRead: (peer: HexString) => Promise<void>;
+  /**
+   * A person changed the composer text for `peer` (not the clear after a
+   * send). Sends spec 0005 `typing` (rate-limited) if the typing indicator is on.
+   */
+  composing: (peer: HexString, text: string) => void;
+  /** Each peer's typing state (spec 0005), in memory. */
+  typing: TypingStore;
+  /**
+   * Spec 0005: send one `typing` as is, outside the composer rules (an
+   * agent's `working` hint). No screen calls it in M9; test scripts do.
+   */
+  sendTyping: (peer: HexString, kind: TypingKind, until: number) => Promise<void>;
   dispose: VoidFunction;
 };
 
@@ -117,12 +138,40 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     if (!disposed) void work.catch(error => console.warn('[chat] %s failed', what, error));
   };
 
+  // ── Spec 0005 signals (ephemeral: never a row, a notification or unread) ─
+
+  const typing = createTypingStore();
+  const pendingSeen = createPendingSeen();
+
+  /** Sends one signal; a signal that cannot go out is dropped (it is only a hint). */
+  const signal = (peer: HexString, content: OutgoingContent, what: string) => {
+    if (!sessions.has(peer)) return;
+    guard(submit(peer, content, { messageId: randomId(), timestamp: Date.now() }), what);
+  };
+  const typingSender = createTypingSender((peer, kind, until) =>
+    guard(
+      readChatPrefs().then(prefs => {
+        if (prefs.typingIndicator) signal(peer as HexString, { type: 'typing', kind, until }, 'typing');
+      }),
+      'typing',
+    ),
+  );
+  const seenSender = createSeenSender((peer, upTo, at) => signal(peer as HexString, { type: 'seen', upTo, at }, 'seen'));
+
+  /** An own row now exists: apply a `seen` that named it before it did. */
+  const settlePendingSeen = async (peer: HexString, messageId: string): Promise<void> => {
+    const at = pendingSeen.take(peer, messageId);
+    if (at !== null) await applySeen(peer, messageId, at);
+  };
+
   // ── Inbound content (session and identity channel alike) ──────────────
 
   const handleIncoming = async (peer: HexString, message: IncomingChatMessage): Promise<void> => {
     const effect = fromWire(message.content);
     switch (effect.kind) {
       case 'message':
+        // Any real message from the peer ends its typing hint.
+        typing.messageFrom(peer, message.timestamp);
         await addMessage({
           messageId: message.messageId,
           peerAccountId: peer,
@@ -153,6 +202,12 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         await addMessage(systemRow(peer, `press:${message.messageId}`, message.timestamp, { type: 'buttonPressed', label: button.label }), { read: true });
         return;
       }
+      case 'typing':
+        typing.receive(peer, effect.typing, effect.until, message.timestamp);
+        return;
+      case 'seen':
+        if ((await applySeen(peer, effect.upTo, effect.at)) === 'unknown') pendingSeen.add(peer, effect.upTo, effect.at);
+        return;
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
         // stops ringing, and keep a system row so the user knows.
@@ -262,6 +317,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
             reactions: [],
             editedAt: null,
           });
+          await settlePendingSeen(peer, request.requestId);
         }
         return;
       }
@@ -340,6 +396,9 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       reactions: [],
       editedAt: null,
     });
+    await settlePendingSeen(peer, ids.messageId);
+    // The real message ends our typing hint on the peer's side.
+    typingSender.sent(peer);
     // Too large, or no usable peer device: the row stays as evidence.
     await submit(peer, content, ids).catch(async error => {
       await setMessageStatus(ids.messageId, 'failed');
@@ -499,10 +558,22 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     markRead: async peer => {
       await markRoomRead(peer);
+      if (!(await readChatPrefs()).readReceipts) return;
+      const newest = (await listMessages(peer)).filter(row => row.direction === 'incoming').at(-1);
+      if (newest) seenSender.displayed(peer, newest.messageId);
     },
+
+    composing: (peer, text) => typingSender.edited(peer, text),
+
+    typing,
+
+    sendTyping: (peer, kind, until) => submit(peer, { type: 'typing', kind, until }, { messageId: randomId(), timestamp: Date.now() }),
 
     dispose: () => {
       disposed = true;
+      typingSender.dispose();
+      seenSender.dispose();
+      typing.dispose();
       stopStatus();
       stopTransport();
     },

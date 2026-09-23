@@ -211,6 +211,81 @@ describe('kinds 242/243: spec 0006 buttons and buttonPress', () => {
   });
 });
 
+describe('kinds 240/241: spec 0005 typing and seen', () => {
+  /*
+   * Derived by hand from docs/spec/0005-typing-and-seen.md with the envelope
+   * conventions of vectors-0006.md (compact length, messageId, u64 LE
+   * timestamp, version 0, kind byte, content):
+   *
+   *   64                          compact(25): the message is 25 bytes
+   *   14 54 59 50 2d 31           messageId "TYP-1"
+   *   00 30 fd 77 90 01 00 00     timestamp 1720000000000
+   *   00 f0                       V1, kind 240 typing
+   *   70 47 fd 77 90 01 00 00     until 1720000006000 (u64 LE)
+   *   01                          kind 1 = working
+   *
+   *   78                          compact(30)
+   *   14 53 45 4e 2d 31           messageId "SEN-1"
+   *   d0 37 fd 77 90 01 00 00     timestamp 1720000002000
+   *   00 f1                       V1, kind 241 seen
+   *   14 4d 53 47 2d 33           upTo "MSG-3"
+   *   d0 37 fd 77 90 01 00 00     at 1720000002000
+   *
+   * Both are the pca vectors of docs/spec/vectors-0005.md (pca codec,
+   * branch desktop/rfc-0003, pinned in bot-core/test/codec.test.mjs). My
+   * hand derivation of A matched pca's bytes before the file arrived; B is
+   * pinned with pca's values. A bot's `working` the desktop reads wrong is a
+   * dead-looking bot; a `seen` pca cannot read is a tick that never turns.
+   */
+  const TYPING_VECTOR = '0x64145459502d310030fd779001000000f07047fd779001000001';
+  const SEEN_VECTOR = '0x781453454e2d31d037fd779001000000f1144d53472d33d037fd7790010000';
+  const opaque = Bytes();
+  const typing = {
+    messageId: 'TYP-1',
+    timestamp: 1720000000000n,
+    versioned: { tag: 'v1' as const, value: { tag: 'typing' as const, value: { until: 1720000006000n, kind: 1 } } },
+  };
+  const seen = {
+    messageId: 'SEN-1',
+    timestamp: 1720000002000n,
+    versioned: { tag: 'v1' as const, value: { tag: 'seen' as const, value: { upTo: 'MSG-3', at: 1720000002000n } } },
+  };
+
+  it('encodes both byte for byte as the spec layout says', () => {
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(typing)))).toBe(TYPING_VECTOR);
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(seen)))).toBe(SEEN_VECTOR);
+  });
+
+  it('decodes both vectors to the values and the effects the manager acts on', () => {
+    const t = ChatMessageCodec.dec(opaque.dec(TYPING_VECTOR));
+    expect(t).toEqual(typing);
+    expect(fromWire(t.versioned.value)).toEqual({ kind: 'typing', typing: 'working', until: 1720000006000 });
+    const s = ChatMessageCodec.dec(opaque.dec(SEEN_VECTOR));
+    expect(s).toEqual(seen);
+    expect(fromWire(s.versioned.value)).toEqual({ kind: 'seen', upTo: 'MSG-3', at: 1720000002000 });
+  });
+
+  it('maps the three typing kinds both ways, and ignores a kind it does not know', () => {
+    for (const [kind, byte] of [['composing', 0], ['working', 1], ['stopped', 2]] as const) {
+      expect(viaWire(toWire({ type: 'typing', kind, until: 5 }))).toEqual({ tag: 'typing', value: { until: 5n, kind: byte } });
+      expect(fromWire({ tag: 'typing', value: { until: 5n, kind: byte } })).toEqual({ kind: 'typing', typing: kind, until: 5 });
+    }
+    expect(fromWire({ tag: 'typing', value: { until: 5n, kind: 3 } })).toEqual({ kind: 'ignore' });
+    expect(viaWire(toWire({ type: 'seen', upTo: 'x', at: 9 }))).toEqual({ tag: 'seen', value: { upTo: 'x', at: 9n } });
+  });
+
+  // A malformed signal must never become a bubble: it is `undecodable`,
+  // which is nothing (a malformed keyboard is the only undecodable bubble).
+  it('reads a malformed typing or seen as nothing, never a bubble', () => {
+    for (const vector of [TYPING_VECTOR, SEEN_VECTOR]) {
+      const bytes = opaque.dec(vector);
+      const decoded = ChatMessageCodec.dec(bytes.slice(0, bytes.length - 1));
+      expect(decoded.versioned.value.tag).toBe('undecodable');
+      expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'ignore' });
+    }
+  });
+});
+
 describe('keyboardOf (what a received keyboard may contain)', () => {
   const label = (n: number) => `b${n}`;
   const command = (n: number) => ({ label: label(n), action: { tag: 'command' as const, value: `/c${n}` } });

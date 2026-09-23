@@ -44,7 +44,23 @@ export type ButtonPressWire = { tag: 'buttonPress'; value: { messageId: string; 
  */
 export type UndecodableWire = { tag: 'undecodable'; value: { kind: number } };
 
-export type ChatContent = SdkChatMessageWire['versioned']['value'] | DeletedWire | ButtonsWire | ButtonPressWire | UndecodableWire;
+/**
+ * Spec 0005 `typing(TypingContent)`, provisional kind 240. `until` is unix ms;
+ * `kind` is 0 composing, 1 working, 2 stopped (other values are kept as read,
+ * and the receiver ignores them). Ephemeral: never a row.
+ */
+export type TypingWire = { tag: 'typing'; value: { until: bigint; kind: number } };
+/** Spec 0005 `seen(SeenContent)`, provisional kind 241. `upTo` is a message id of the receiver's; `at` unix ms. */
+export type SeenWire = { tag: 'seen'; value: { upTo: string; at: bigint } };
+
+export type ChatContent =
+  | SdkChatMessageWire['versioned']['value']
+  | DeletedWire
+  | ButtonsWire
+  | ButtonPressWire
+  | TypingWire
+  | SeenWire
+  | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
 /**
@@ -58,6 +74,9 @@ export const DELETED_KIND = 21;
 /** Spec 0006 provisional kinds (docs/spec/kinds.md). */
 export const BUTTONS_KIND = 242;
 export const BUTTON_PRESS_KIND = 243;
+/** Spec 0005 provisional kinds (docs/spec/kinds.md). */
+export const TYPING_KIND = 240;
+export const SEEN_KIND = 241;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -68,8 +87,11 @@ const ActionCodec = Enum({ command: str, callback: Bytes(), url: str, tx: Bytes(
 const ButtonCodec = Struct({ label: str, action: ActionCodec });
 const ButtonsContentCodec = Struct({ text: str, rows: Vector(Vector(ButtonCodec)), oneShot: bool });
 const ButtonPressContentCodec = Struct({ messageId: str, row: u8, index: u8, payload: Bytes() });
+// Spec 0005 layout (docs/spec/vectors-0005.md).
+const TypingContentCodec = Struct({ until: u64, kind: u8 });
+const SeenContentCodec = Struct({ upTo: str, at: u64 });
 
-type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire;
+type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -79,6 +101,8 @@ const envelope = <T>(content: Codec<T>) =>
 const DeletedMessage = envelope(str);
 const ButtonsMessage = envelope(ButtonsContentCodec);
 const ButtonPressMessage = envelope(ButtonPressContentCodec);
+const TypingMessage = envelope(TypingContentCodec);
+const SeenMessage = envelope(SeenContentCodec);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
   value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
@@ -95,7 +119,7 @@ const decodeWith = <T>(codec: Codec<Envelope & { content: T }>, bytes: Uint8Arra
   }
 };
 
-/** A spec 0006 message this build cannot read past the header (coordinator ruling, docs/decisions.md M8). */
+/** A spec 0005/0006 message this build cannot read past the header (coordinator ruling, docs/decisions.md M8). */
 const undecodable = (header: Envelope): ChatMessageWire => ({
   messageId: header.messageId,
   timestamp: header.timestamp,
@@ -119,6 +143,12 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       return decodeWith(ButtonsMessage, bytes, value => ({ tag: 'buttons', value })) ?? undecodable(header);
     case BUTTON_PRESS_KIND:
       return decodeWith(ButtonPressMessage, bytes, value => ({ tag: 'buttonPress', value })) ?? undecodable(header);
+    // A malformed signal is one entry this build cannot read: `undecodable`,
+    // which content.ts turns into nothing (never a bubble).
+    case TYPING_KIND:
+      return decodeWith(TypingMessage, bytes, value => ({ tag: 'typing', value })) ?? undecodable(header);
+    case SEEN_KIND:
+      return decodeWith(SeenMessage, bytes, value => ({ tag: 'seen', value })) ?? undecodable(header);
     default:
       return null;
   }
@@ -126,7 +156,8 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
 
 /**
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
- * (RFC-0003) and kinds 242 `buttons` / 243 `buttonPress` (spec 0006).
+ * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005) and kinds 242
+ * `buttons` / 243 `buttonPress` (spec 0006).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -140,6 +171,10 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
         return ButtonsMessage.enc({ ...head, kind: BUTTONS_KIND, content: content.value });
       case 'buttonPress':
         return ButtonPressMessage.enc({ ...head, kind: BUTTON_PRESS_KIND, content: content.value });
+      case 'typing':
+        return TypingMessage.enc({ ...head, kind: TYPING_KIND, content: content.value });
+      case 'seen':
+        return SeenMessage.enc({ ...head, kind: SEEN_KIND, content: content.value });
       case 'undecodable':
         throw new Error('an undecodable message is receive-only');
       default:

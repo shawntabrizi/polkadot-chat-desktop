@@ -8,6 +8,7 @@ import {
   applyDeletion,
   applyEdit,
   applyReaction,
+  applySeen,
   countUnread,
   ensureRoom,
   listMessages,
@@ -262,5 +263,55 @@ describe('searchMessages', () => {
     console.log(`searchMessages over 5000 rows: ${elapsed.toFixed(1)} ms, ${hits.length} hits`);
     expect(hits.map(hit => hit.messageId)).toEqual(Array.from({ length: 10 }, (_, k) => `bulk${(9 - k) * 500}`));
     expect(elapsed).toBeLessThan(50);
+  });
+});
+
+describe('applySeen (spec 0005)', () => {
+  const OTHER = '0xbb' as const;
+  const own = (messageId: string, timestamp: number, peer: '0xaa' | '0xbb' = PEER) =>
+    row(messageId, { timestamp, direction: 'outgoing', status: 'delivered', peerAccountId: peer });
+
+  it('marks own messages to that peer up to the named one, and no others', async () => {
+    await addMessage(own('o1', 1));
+    await addMessage(own('o2', 2));
+    await addMessage(own('o3', 3));
+    await addMessage(row('in', { timestamp: 2 }));
+    await addMessage(own('x1', 1, OTHER));
+
+    expect(await applySeen(PEER, 'o2', 500)).toBe('applied');
+    const seenAt = async (id: string) => (await db.messages.get(id))?.seenAt;
+    expect(await seenAt('o1')).toBe(500);
+    expect(await seenAt('o2')).toBe(500);
+    // Later own message, the peer's own message and another peer's chat: untouched.
+    expect(await seenAt('o3')).toBeUndefined();
+    expect(await seenAt('in')).toBeUndefined();
+    expect(await seenAt('x1')).toBeUndefined();
+    // seen changes seenAt only: status stays, so delivery ticks are not rewritten.
+    expect((await db.messages.get('o1'))?.status).toBe('delivered');
+  });
+
+  it('is idempotent: a repeat or a later receipt keeps the first seen time', async () => {
+    await addMessage(own('o1', 1));
+    await addMessage(own('o2', 2));
+    await applySeen(PEER, 'o1', 100);
+    await applySeen(PEER, 'o1', 100);
+    await applySeen(PEER, 'o2', 200);
+    expect((await db.messages.get('o1'))?.seenAt).toBe(100);
+    expect((await db.messages.get('o2'))?.seenAt).toBe(200);
+  });
+
+  // A peer can only mark what it was sent: a receipt naming its own message,
+  // or a message of another chat, changes nothing.
+  it('ignores an upTo that is not our message to that peer', async () => {
+    await addMessage(own('o1', 1));
+    await addMessage(row('in', { timestamp: 5 }));
+    await addMessage(own('x1', 9, OTHER));
+    expect(await applySeen(PEER, 'in', 1)).toBe('ignored');
+    expect(await applySeen(PEER, 'x1', 1)).toBe('ignored');
+    expect((await db.messages.get('o1'))?.seenAt).toBeUndefined();
+  });
+
+  it('reports an unknown upTo so the caller can defer it', async () => {
+    expect(await applySeen(PEER, 'nope', 1)).toBe('unknown');
   });
 });

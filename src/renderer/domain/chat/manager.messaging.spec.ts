@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type HexString, bytesToHex } from '../../app/bytes';
 import { appDatabase, db } from '../../app/database';
+import { writeSetting } from '../../app/settings';
 import type { ConnectionStatus } from '../../app/statementStore';
 import type { IdentityLookup } from '../identity/lookup';
 import { sendChatRequest } from '../requests/gateway';
@@ -448,5 +449,109 @@ describe('chat manager: messaging', () => {
     const rows = await listMessages(peerKey);
     expect(rows.filter(r => r.content.type === 'buttonPressed').map(r => [r.direction, r.content])).toEqual([['system', { type: 'buttonPressed', label: 'Colour' }]]);
     expect((await db.rooms.get(peerKey))?.unreadCount).toBe(unread);
+  });
+});
+
+/*
+ * Spec 0005 through the manager, two clients on one store. Why: typing and
+ * seen are ephemeral, so the harm of a mistake is a phantom bubble, an unread
+ * count or a notification for a hint; and seen must only ever mark our own
+ * messages to the peer that sent it.
+ */
+describe('chat manager: typing and seen (spec 0005)', () => {
+  const setup = async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    return { manager, transport, peerKey };
+  };
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('shows the peer typing without a row, unread or preview, and a real message clears it', async () => {
+    const { manager, transport, peerKey } = await setup();
+    const rowsBefore = (await listMessages(peerKey)).length;
+    const roomBefore = await db.rooms.get(peerKey);
+
+    await transport.send({ tag: 'typing', value: { until: BigInt(Date.now() + 6_000), kind: 1 } });
+    await waitFor(() => manager.typing.snapshot().get(peerKey)?.kind === 'working');
+    expect((await listMessages(peerKey)).length).toBe(rowsBefore);
+    const room = await db.rooms.get(peerKey);
+    expect(room?.unreadCount).toBe(roomBefore?.unreadCount);
+    expect(room?.lastPreview).toBe(roomBefore?.lastPreview);
+
+    await transport.send({ tag: 'text', value: 'the answer' });
+    await waitFor(async () => (await listMessages(peerKey)).some(r => r.content.type === 'text' && r.content.text === 'the answer'));
+    expect(manager.typing.snapshot().has(peerKey)).toBe(false);
+  });
+
+  it('ignores a stale typing from the peer', async () => {
+    const { manager, transport, peerKey } = await setup();
+    await transport.send({ tag: 'typing', value: { until: BigInt(Date.now() - 1), kind: 0 } });
+    await transport.send({ tag: 'text', value: 'marker' });
+    await waitFor(async () => (await listMessages(peerKey)).some(r => r.content.type === 'text' && r.content.text === 'marker'));
+    expect(manager.typing.snapshot().has(peerKey)).toBe(false);
+  });
+
+  it('marks our messages up to the peer’s seen as seen, without a row', async () => {
+    const { manager, transport, peerKey } = await setup();
+    await manager.sendMessage(peerKey, { type: 'text', text: 'first' });
+    await sleep(2);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'second' });
+    const [first, second] = (await listMessages(peerKey)).filter(r => r.direction === 'outgoing');
+    const rowsBefore = (await listMessages(peerKey)).length;
+
+    await transport.send({ tag: 'seen', value: { upTo: first!.messageId, at: 777n } });
+    await waitFor(async () => (await db.messages.get(first!.messageId))?.seenAt === 777);
+    expect((await db.messages.get(second!.messageId))?.seenAt).toBeUndefined();
+    expect((await listMessages(peerKey)).length).toBe(rowsBefore);
+
+    // A receipt that names the peer's own message marks nothing.
+    await transport.send({ tag: 'seen', value: { upTo: 'peer-1', at: 888n } });
+    await transport.send({ tag: 'seen', value: { upTo: second!.messageId, at: 999n } });
+    await waitFor(async () => (await db.messages.get(second!.messageId))?.seenAt === 999);
+    expect((await db.messages.get(first!.messageId))?.seenAt).toBe(777);
+  });
+
+  it('sends seen for the newest peer message when the room is read, only with read receipts on', async () => {
+    const { manager, transport, peerKey } = await setup();
+    await transport.send({ tag: 'text', value: 'one' });
+    await waitFor(() => db.messages.get('peer-1'));
+
+    await writeSetting('chat.readReceipts', 'off');
+    await manager.markRead(peerKey);
+    await sleep(100);
+    expect(transport.received.some(m => m.content.tag === 'seen')).toBe(false);
+
+    await writeSetting('chat.readReceipts', 'on');
+    await manager.markRead(peerKey);
+    const seen = await waitFor(() => transport!.received.find(m => m.content.tag === 'seen'));
+    expect(seen.content.tag === 'seen' && seen.content.value.upTo).toBe('peer-1');
+  });
+
+  it('sends typing{composing} while composing, and nothing then for the real message', async () => {
+    const { manager, transport, peerKey } = await setup();
+    manager.composing(peerKey, 'h');
+    const typing = await waitFor(() => transport!.received.find(m => m.content.tag === 'typing'));
+    expect(typing.content.tag === 'typing' && typing.content.value.kind).toBe(0);
+    const until = typing.content.tag === 'typing' ? Number(typing.content.value.until) : 0;
+    expect(until - Date.now()).toBeGreaterThan(4_000);
+    expect(until - Date.now()).toBeLessThanOrEqual(6_000);
+
+    await manager.sendMessage(peerKey, { type: 'text', text: 'hello' });
+    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'hello'));
+    expect(transport.received.filter(m => m.content.tag === 'typing')).toHaveLength(1);
+  });
+
+  it('sends no typing when the typing indicator is off', async () => {
+    const { manager, transport, peerKey } = await setup();
+    await writeSetting('chat.typingIndicator', 'off');
+    manager.composing(peerKey, 'h');
+    await manager.sendMessage(peerKey, { type: 'text', text: 'marker' });
+    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'marker'));
+    await sleep(50);
+    expect(transport.received.some(m => m.content.tag === 'typing')).toBe(false);
   });
 });

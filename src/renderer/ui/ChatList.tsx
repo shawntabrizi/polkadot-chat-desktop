@@ -1,5 +1,5 @@
 import { MessagesSquare } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useSyncExternalStore } from 'react';
 
 import type { HexString } from '../app/bytes';
 import { type ContactRow, type DraftRow, type MessageRow, type PeerId, type RequestRow, type RoomRow, db } from '../app/database';
@@ -7,10 +7,12 @@ import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistan
 import { isLiveFrame } from '../domain/chat/content';
 import { draftPreview } from '../domain/chat/drafts';
 import { setRoomMuted } from '../domain/chat/messages';
+import type { PeerTyping, TypingStore } from '../domain/chat/signals';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
 import { ChatRow } from './ChatRow';
 import { messagePreview, systemText } from './MessageBubble';
+import { typingText } from './RoomHeader';
 import { formatListTime } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
@@ -20,7 +22,13 @@ type Props = {
   selected: ChatSelection;
   onOpenRoom: (peer: PeerId) => void;
   onOpenOutgoing: (peer: HexString) => void;
+  /** Spec 0005 typing states: a row shows "typing…" / "working…" while one is active. */
+  typing?: TypingStore;
 };
+
+// A stable snapshot: useSyncExternalStore re-renders on every new object.
+const NO_TYPING: ReadonlyMap<PeerId, PeerTyping> = new Map();
+const noTyping = { subscribe: () => () => undefined, snapshot: () => NO_TYPING };
 
 export type ListData = {
   contacts: ContactRow[];
@@ -59,8 +67,11 @@ const plainText = (text: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-/** A bot's live frame is status, not a message: the list says so (M7 review carry item 2). */
-const TYPING = 'Typing…';
+/**
+ * A bot's live frame is status, not a message: the list says so (M7 review
+ * carry item 2). Lower case since M9, the same word as a spec 0005 hint.
+ */
+const TYPING = 'typing…';
 
 /** "You: …" for own messages, the system line for system rows. */
 const previewLine = (last: MessageRow | undefined, name: string, requests: readonly RequestRow[]): string => {
@@ -90,7 +101,12 @@ const previewWithDraft = (data: ListData, peer: PeerId, fallback: string): strin
  * this user sent that wait for an answer, newest activity first. Shared by
  * the list and the ⌘↑/⌘↓/⌘1…9 shortcuts, so both see one order.
  */
-const buildRows = (data: ListData, selected: ChatSelection, open: (target: ChatTarget) => void): { rows: Row[]; others: number } => {
+const buildRows = (
+  data: ListData,
+  selected: ChatSelection,
+  open: (target: ChatTarget) => void,
+  typing: ReadonlyMap<PeerId, PeerTyping> = new Map(),
+): { rows: Row[]; others: number } => {
   const assistantRoom = data.rooms.get(ASSISTANT_PEER);
   const assistantLast = data.lastMessages.get(ASSISTANT_PEER);
   const assistantTarget: ChatTarget = { kind: 'room', peer: ASSISTANT_PEER };
@@ -127,7 +143,10 @@ const buildRows = (data: ListData, selected: ChatSelection, open: (target: ChatT
       at: room?.lastMessageAt ?? contact.createdAt,
       target,
       render: highlighted => {
-        const preview = previewWithDraft(data, contact.accountId, previewLine(last, contact.username, requests));
+        const hint = typing.get(contact.accountId);
+        // A live typing hint wins over the draft and the last message.
+        const preview = hint ? typingText(hint) : previewWithDraft(data, contact.accountId, previewLine(last, contact.username, requests));
+        const status = hint !== undefined || preview === TYPING;
         return (
           <ChatRow
             key={contact.accountId}
@@ -136,7 +155,7 @@ const buildRows = (data: ListData, selected: ChatSelection, open: (target: ChatT
             name={contact.username}
             time={last ? formatListTime(last.timestamp) : null}
             preview={preview}
-            previewTone={preview === TYPING ? 'tertiary' : 'secondary'}
+            previewTone={status ? 'tertiary' : 'secondary'}
             unread={room?.unreadCount ?? 0}
             selected={selected.kind === 'room' && selected.peer === contact.accountId}
             highlighted={highlighted}
@@ -197,10 +216,17 @@ export const useChatRows = (selected: ChatSelection, open: (target: ChatTarget) 
   return { rows: buildRows(data, selected, open).rows, data };
 };
 
-export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing }: Props) => {
+export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing }: Props) => {
   const data = useLiveQuery(loadList, []);
+  const store = typing ?? noTyping;
+  const typingStates = useSyncExternalStore(store.subscribe, store.snapshot);
   if (!data) return null;
-  const { rows, others } = buildRows(data, selected, target => (target.kind === 'room' ? onOpenRoom(target.peer) : onOpenOutgoing(target.peer)));
+  const { rows, others } = buildRows(
+    data,
+    selected,
+    target => (target.kind === 'room' ? onOpenRoom(target.peer) : onOpenOutgoing(target.peer)),
+    typingStates,
+  );
 
   return (
     <div className="flex flex-col gap-0.5">

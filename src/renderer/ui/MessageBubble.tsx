@@ -15,6 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/cn';
 
 import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
@@ -63,7 +64,25 @@ export const DateSeparator = ({ text }: { text: string }) => (
   </div>
 );
 
-const StatusIcon = ({ status }: { status: MessageRow['status'] }) => {
+/**
+ * Own-message ticks: Clock sending → Check sent → CheckCheck delivered →
+ * CheckCheck in `text-fg-link` when the peer's spec 0005 `seen` arrived
+ * (docs/decisions.md M9: link, not success, for contrast on both bubbles).
+ */
+const StatusIcon = ({ status, seenAt }: { status: MessageRow['status']; seenAt: number | undefined }) => {
+  if (seenAt !== undefined && status !== 'failed') {
+    const label = `Seen ${formatClock(seenAt)}`;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex" data-testid="seen-tick" aria-label={label}>
+            <CheckCheck className="size-3.5 text-fg-link" aria-hidden />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
+    );
+  }
   switch (status) {
     case 'sending':
       return <Clock className="size-3.5 text-fg-tertiary-inverted" aria-label="Sending" />;
@@ -291,7 +310,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
             <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
               {row.editedAt && !deleted ? <span>(edited)</span> : null}
               <span>{formatClock(row.timestamp)}</span>
-              {own && !deleted ? <StatusIcon status={row.status} /> : null}
+              {own && !deleted ? <StatusIcon status={row.status} seenAt={row.seenAt} /> : null}
             </div>
           )}
         </div>

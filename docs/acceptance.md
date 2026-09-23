@@ -1410,3 +1410,177 @@ I read `berlin-day/room-buttons.png` and `berlin-night/room-buttons.png`. Both s
 - A `command` press and a received `buttonPress` were not driven in the app UI. They have manager specs against an in-memory store (`manager.messaging.spec.ts`).
 - The Assistant's buttons were not seen from a real engine. The parser and the Assistant path have specs (`buttonsBlock.spec.ts`, `assistant.spec.ts`).
 - `git status --short` is checked after the commit.
+
+## M9
+
+Run on 2026-09-23 against devnet. The pca half is `polkadot-chat-agents` commit ec73ad3 (branch `desktop/rfc-0003`). The coordinator restarted the four bots on it at 15:47:49 (bot log: `BOT_PROTOCOL_EXTENSIONS enabled: deleted, buttons, typing, seen`). I did not start or stop any bot.
+
+### npm run check
+
+```
+> polkadot-chat-desktop@0.1.0 check
+> tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+ Test Files  42 passed (42)
+      Tests  334 passed (334)
+   Start at  16:11:31
+   Duration  3.74s (transform 1.76s, setup 708ms, import 8.41s, tests 8.93s, environment 2ms)
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+check:tokens: clean (107 files)
+```
+
+Both pca vectors of `docs/spec/vectors-0005.md` (typing `TYP-1`, seen `SEN-1`) are pinned in `src/renderer/domain/chat/content.spec.ts`: each decodes byte for byte to the file's values and encodes to the same bytes (tests "encodes both byte for byte…" and "decodes both vectors…", both pass above). The file appeared at the 7th 60 s poll (15:45:33); my hand-derived vector A was already identical to pca's.
+
+### npm run smoke
+
+```
+✓ built in 175ms
+SMOKE_OK
+```
+
+(Last lines; the lines before them are the usual electron-vite build output.)
+
+### npm run e2e:typing — PASSED (exit 0)
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:typing
+> node scripts/e2e-typing.mjs
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7050360 (runtime ready in 1.9s)
+PEER 0x66b78abdcb4c89d2817ce45f201677c08240fde23c50b9c94a6abb6912888a63 key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Sorry — I couldn't reach my agent just now. Please try again in a moment.
+QUESTION_SENT 6fed02fc-1f40-4220-a08e-22be351fd0f8
+SEEN_RECEIVED upTo=6fed02fc-1f40-4220-a08e-22be351fd0f8 at=1.0s seenAt=2026-09-23T19:50:59.288Z
+TYPING_RECEIVED kind=working at=1.4s ahead=5692ms
+TYPING_CLEARED at=4.7s
+SEEN_SENT upTo=9FA23BA2-F07E-4B23-BEE4-C564F8E71612
+REPLY at=5.0s What do ye call a pirate who guards the blocks, matey? A block-kade! Har, that be the finest joke on
+TYPING_BEFORE_REPLY yes
+TYPING_UPDATES 1
+TYPING_OK
+EXIT=0
+```
+
+The bot log (`/tmp/pcdpirate.log`, read only) for the same turn: `BOT_RECEIVED_TEXT` 19:50:59.285, `BOT_SENT_SEEN` upTo `6fed02fc-…` at 59.289, `BOT_SENT_TYPING kind: working` at 59.996, `BOT_SENT_TEXT` at 19:51:03.530. The order in the script output is the order of arrival: pca sends `seen` when it consumes the message, before the turn starts, so `SEEN_RECEIVED` comes first. `TYPING_CLEARED at=4.7s` is the reply clearing the hint (the reply row is polled once per second, so `REPLY` prints at 5.0 s).
+
+An earlier run the same minute also ended `TYPING_OK`, but it took the bot's answer to the request opener ("Sorry — I couldn't reach my agent…", sent before our question) for the reply and printed `TYPING_BEFORE_REPLY no`. The bot log showed the real order (question 19:50:26.052, seen .056, typing 26.742, answer 30.782). The script now takes only a row newer than the question (docs/decisions.md). The run above is the fixed script.
+
+### npm run screenshots
+
+Command: `PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots` (headless).
+
+```
+> polkadot-chat-desktop@0.1.0 screenshots
+> node scripts/screenshots.mjs
+0.5s built
+5.7s saved berlin-day/signup.png
+11.1s saved berlin-night/signup.png
+11.9s seeded pcdecejakd.11
+11.9s assistant engine claude
+30.3s accepted the request of pcdtestjaia.98
+33.2s saved berlin-day/room.png
+33.4s deleting, the toast shows
+39.5s tombstone shown
+40.3s saved berlin-day/room-deleted.png
+40.3s callback pressed, spinner on
+40.3s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+40.3s disabled buttons: 1
+41.2s saved berlin-day/room-buttons.png
+41.9s seen tick shown
+42.6s tooltip: "Seen 04:12 PM"
+43.2s saved berlin-day/room-seen.png
+44.5s header: "working…"
+45.3s saved berlin-day/room-typing.png
+50.2s saved berlin-day/assistant.png
+52.9s saved berlin-day/chats.png
+57.8s request sent to pcdpirate.81 from a global search hit
+60.1s saved berlin-day/search.png
+60.4s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke04:12 PM"
+60.4s saved berlin-day/search-jump.png
+61.7s the highlight ended
+64.0s global search "pcd": 7 rows, 14 after Show more
+64.8s saved berlin-day/search-empty.png
+67.2s saved berlin-day/search-no-results.png
+68.5s saved berlin-day/requests.png
+70.4s saved berlin-day/settings.png
+71.2s saved berlin-day/keyboard.png
+74.9s saved berlin-night/room.png
+75.8s saved berlin-night/room-deleted.png
+75.8s callback pressed, spinner on
+75.8s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+75.8s disabled buttons: 1
+76.6s saved berlin-night/room-buttons.png
+78.2s seen tick shown
+78.8s tooltip: "Seen 04:12 PM"
+79.5s saved berlin-night/room-seen.png
+81.0s header: "working…"
+81.8s saved berlin-night/room-typing.png
+82.7s saved berlin-night/assistant.png
+85.3s saved berlin-night/chats.png
+90.1s saved berlin-night/search.png
+90.3s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke04:12 PM"
+90.3s saved berlin-night/search-jump.png
+91.6s the highlight ended
+92.4s saved berlin-night/search-empty.png
+94.5s saved berlin-night/search-no-results.png
+95.6s saved berlin-night/requests.png
+97.5s saved berlin-night/settings.png
+98.3s saved berlin-night/keyboard.png
+98.9s seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/room-deleted.png
+  .agent-runs/screens/berlin-day/room-buttons.png
+  .agent-runs/screens/berlin-day/room-seen.png
+  .agent-runs/screens/berlin-day/room-typing.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/search.png
+  .agent-runs/screens/berlin-day/search-jump.png
+  .agent-runs/screens/berlin-day/search-empty.png
+  .agent-runs/screens/berlin-day/search-no-results.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/room-deleted.png
+  .agent-runs/screens/berlin-night/room-buttons.png
+  .agent-runs/screens/berlin-night/room-seen.png
+  .agent-runs/screens/berlin-night/room-typing.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/search.png
+  .agent-runs/screens/berlin-night/search-jump.png
+  .agent-runs/screens/berlin-night/search-empty.png
+  .agent-runs/screens/berlin-night/search-no-results.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+EXIT=0
+```
+
+What I saw in the new PNGs:
+
+- `berlin-day/room-seen.png`, `berlin-night/room-seen.png`: the own messages show the double tick in the link blue; the pointer is on the last tick and the tooltip reads "Seen 04:12 PM". The hover also shows the message's reaction toolbar (a real hover state).
+- `berlin-day/room-typing.png`, `berlin-night/room-typing.png`: the header subtitle reads "working…" in the caption style with the three dots; the chat-list row of the peer reads "working…" in the tertiary tone. The ticks of the earlier messages are the seen colour.
+- The other room shots now also show seen ticks on own messages, because the room peer marks every app message read.
+
+Earlier runs of the same command (same session):
+
+1. Run 1: `room-seen` missed in both themes ("no seen"). Cause: my `e2e-chat.mjs --seen` loop took `toArray()` order (by id) as time order, so it sent `seen` only once. Fixed (sort by timestamp). Every other PNG was saved.
+2. Runs 2 and 3: `berlin-night/room-seen.png` missed ("no Seen tooltip on hover"). Cause: `room-buttons` scrolls the keyboard into view, so in the longer night room the new message was below the view and the pointer missed the tick. Fixed (scroll the message into view, measure, retry the hover up to 4 times).
+3. Run 4: all ten room shots missed. The room peer printed `REQUEST_SENT` then `E2E_TIMEOUT accept`: the app accepted at 28 s, but the accept did not reach the peer in 120 s. No code on the accept path changed in M9, and runs 1–3 and 5 passed that stage, so I count it as a devnet flake. Run 5 (above) is the committed code.
+
+### Not run / not seen
+
+- `e2e:typing` does not check `typing{composing}` from a person, because no phone app sends kind 240 yet. The desktop's own `composing` send is covered by `manager.messaging.spec.ts` (two clients, one in-memory store).
+- The deferral of a `seen` with an unknown `upTo` is covered by `signals.spec.ts` (the bounded set) and `messages.spec.ts` (`applySeen` returns `unknown`); no two-client test drives the race, because a test cannot choose the id of a message the manager sends.
