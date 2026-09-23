@@ -1,7 +1,7 @@
 // Two panes on the page surface, as Polkadot Desktop's ChatFullscreen.tsx
 // (.refs/polkadot-desktop, 2026-09-23): the chat list on the left, the open
-// room on the right. Requests, New chat and Settings open in these panes,
-// never in a modal (SKILL.md §10 "Avoid modals"). The keyboard shortcuts,
+// room on the right. Requests, the search (M7b) and Settings open in these
+// panes, never in a modal (SKILL.md §10 "Avoid modals"). The keyboard shortcuts,
 // the window title, the dock badge and the notifications live here, next
 // to the selection they read and change (M6 steps 4, 5, 7).
 
@@ -22,7 +22,6 @@ import type { SearchResult } from '../domain/identity/search';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/cn';
 
@@ -32,20 +31,21 @@ import { PeerAvatar } from './Avatar';
 import { ChatList, type ChatSelection, type ChatTarget, useChatOrder } from './ChatList';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
 import { Room } from './Room';
-import { DraftRoom, NewChatPanel } from './Search';
+import { DraftRoom, SearchPane } from './Search';
 import { Settings } from './Settings';
 import { useNotifications } from './notifications';
 import { useLiveQuery } from './useLiveQuery';
 
 export type Selection =
   | { kind: 'none' }
-  | { kind: 'room'; peer: PeerId }
+  /** `jump`: a message search hit to scroll to; `seq` makes a second click on it jump again. */
+  | { kind: 'room'; peer: PeerId; jump?: { messageId: string; seq: number } }
   | { kind: 'incoming'; requestId: string }
   | { kind: 'outgoing'; peer: HexString }
   | { kind: 'draft'; result: SearchResult }
   | { kind: 'settings' };
 
-type LeftView = 'chats' | 'requests' | 'newChat';
+type LeftView = 'chats' | 'requests';
 
 type Props = {
   username: string;
@@ -95,11 +95,12 @@ const EmptyRoom = ({ title, text }: { title: string; text: string }) => (
 export const Shell = ({ username, identity, profileId, runtime, assistant, assistantApi, connection, onReset }: Props) => {
   const [left, setLeft] = useState<LeftView>('chats');
   const [chosen, setSelection] = useState<Selection>({ kind: 'none' });
-  const [filter, setFilter] = useState('');
-  const [newChatFocus, setNewChatFocus] = useState(0);
+  const [search, setSearch] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [searchFocus, setSearchFocus] = useState(0);
   const pendingIncoming = usePendingIncoming();
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
-  const order = useChatOrder(filter);
+  const order = useChatOrder();
   const desktopApp = window.desktop?.app ?? null;
 
   // A sent request that the peer accepts turns into their room.
@@ -114,6 +115,17 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   }, [unreadTotal, desktopApp]);
 
   useNotifications(desktopApp, selection.kind === 'room' ? selection.peer : null);
+
+  const exitSearch = () => {
+    setSearch('');
+    setAdding(false);
+  };
+
+  // A pick from "Recent" (empty field) goes back to the list, which shows the
+  // selection; with a query the results stay until Esc, as in Telegram.
+  const leaveRecent = () => {
+    if (search.trim() === '') setAdding(false);
+  };
 
   const openTarget = (target: ChatTarget) => {
     setLeft('chats');
@@ -147,9 +159,11 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
       const primary = isPrimaryModifier(event);
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       if (primary && !event.altKey && !event.shiftKey && (key === 'k' || key === 'n')) {
+        // ⌘K searches; ⌘N is "+": the same field, set to find someone new.
         event.preventDefault();
-        setLeft('newChat');
-        setNewChatFocus(count => count + 1);
+        setLeft('chats');
+        if (key === 'n') setAdding(true);
+        setSearchFocus(count => count + 1);
         return;
       }
       if (primary && !event.altKey && key === ',') {
@@ -196,10 +210,25 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
         return <EmptyRoom title="No chat selected" text="Select a chat to view the conversation" />;
       case 'room':
         if (selection.peer === ASSISTANT_PEER) {
-          return assistant ? <Room key={ASSISTANT_PEER} peer={ASSISTANT_PEER} assistant={assistant} /> : null;
+          return assistant ? (
+            <Room
+              key={ASSISTANT_PEER}
+              peer={ASSISTANT_PEER}
+              assistant={assistant}
+              scrollToMessageId={selection.jump?.messageId ?? null}
+              scrollRequest={selection.jump?.seq ?? 0}
+            />
+          ) : null;
         }
         return runtime ? (
-          <Room key={selection.peer} peer={selection.peer} manager={runtime.manager} connection={connection} />
+          <Room
+            key={selection.peer}
+            peer={selection.peer}
+            manager={runtime.manager}
+            connection={connection}
+            scrollToMessageId={selection.jump?.messageId ?? null}
+            scrollRequest={selection.jump?.seq ?? 0}
+          />
         ) : (
           <EmptyRoom title="Starting chat…" text="Connecting to the network. Your chats open when it is ready." />
         );
@@ -230,6 +259,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             manager={runtime?.manager ?? null}
             onSent={peer => {
               setLeft('chats');
+              exitSearch();
               setSelection({ kind: 'outgoing', peer });
             }}
             onClose={() => setSelection({ kind: 'none' })}
@@ -263,50 +293,56 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             onBack={() => setLeft('chats')}
             onOpen={requestId => setSelection({ kind: 'incoming', requestId })}
           />
-        ) : left === 'newChat' ? (
-          <NewChatPanel
-            profile={NETWORK_PROFILES[profileId]}
-            selfIdentityAccountId={identity.identityAccountId}
-            onBack={() => setLeft('chats')}
-            onPick={result => void pick(result)}
-            focusSignal={newChatFocus}
-          />
         ) : (
           <>
             <div className="flex h-12 shrink-0 items-center justify-between ps-2">
               <h1 className="text-heading-m text-fg-primary">Polkadot Chat</h1>
-              <IconButton label="New chat" onClick={() => setLeft('newChat')}>
+              <IconButton
+                label="New chat"
+                active={adding}
+                onClick={() => {
+                  setAdding(true);
+                  setSearchFocus(count => count + 1);
+                }}
+              >
                 <Plus className="size-5" />
               </IconButton>
             </div>
-            <Input
-              value={filter}
-              onChange={event => setFilter(event.target.value)}
-              placeholder="Type username"
-              aria-label="Search chats"
-              autoComplete="off"
-              spellCheck={false}
-              className="mb-2 h-10 shrink-0 rounded-nested px-2 text-body-m md:text-body-m"
-            />
-            {pendingIncoming.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setLeft('requests')}
-                data-testid="new-requests"
-                className="mb-2 flex w-fit cursor-pointer items-center gap-2 rounded-full bg-action-tertiary py-1.5 ps-3 pe-1.5 text-label-m text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-              >
-                New requests
-                <Badge className="h-5 min-w-5 rounded-full px-1.5 text-label-s">{pendingIncoming.length}</Badge>
-              </button>
-            ) : null}
-            <div className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2">
-              <ChatList
-                query={filter}
-                selected={listSelection}
-                onOpenRoom={peer => setSelection({ kind: 'room', peer })}
-                onOpenOutgoing={peer => setSelection({ kind: 'outgoing', peer })}
-              />
-            </div>
+            <SearchPane
+              query={search}
+              onQuery={setSearch}
+              adding={adding}
+              onExit={exitSearch}
+              focusSignal={searchFocus}
+              profile={NETWORK_PROFILES[profileId]}
+              selfIdentityAccountId={identity.identityAccountId}
+              selected={listSelection}
+              onOpenTarget={target => {
+                leaveRecent();
+                openTarget(target);
+              }}
+              onOpenMessage={(peer, messageId) => setSelection({ kind: 'room', peer, jump: { messageId, seq: Date.now() } })}
+              onPickGlobal={result => void pick(result)}
+            >
+              {pendingIncoming.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setLeft('requests')}
+                  data-testid="new-requests"
+                  className="mb-2 flex w-fit cursor-pointer items-center gap-2 rounded-full bg-action-tertiary py-1.5 ps-3 pe-1.5 text-label-m text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+                >
+                  New requests
+                  <Badge className="h-5 min-w-5 rounded-full px-1.5 text-label-s">{pendingIncoming.length}</Badge>
+                </button>
+              ) : null}
+              <div className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2">
+                <ChatList
+                  selected={listSelection}
+                  onOpenRoom={peer => setSelection({ kind: 'room', peer })}
+                  onOpenOutgoing={peer => setSelection({ kind: 'outgoing', peer })}
+                />
+              </div>
+            </SearchPane>
           </>
         )}
         <div className="mt-2 flex shrink-0 items-center gap-3 ps-2">

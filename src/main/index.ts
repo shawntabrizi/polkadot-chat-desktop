@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
+import { isHeadless } from './headless';
 import { registerIpc } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
@@ -23,16 +24,25 @@ if (!app.isPackaged) {
 const userDataOverride = process.env.PCD_USER_DATA_DIR;
 if (userDataOverride) app.setPath('userData', userDataOverride);
 
+// Automation runs (screenshots, GUI checks) with PCD_HEADLESS=1: see headless.ts.
+const headless = isHeadless();
+
 function createWindow(smoke: boolean): BrowserWindow {
   const win = new BrowserWindow({
     ...loadWindowBounds(),
-    show: !smoke,
+    // Never shown when headless; the page still paints, so CDP and
+    // capturePage() screenshots work on the hidden window.
+    show: !smoke && !headless,
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // A hidden window is a background page to Chromium: its timers would be
+      // throttled and `document.visibilityState` would say hidden.
+      ...(headless ? { backgroundThrottling: false } : {}),
     },
   });
   installContextMenu(win);
@@ -82,6 +92,8 @@ const getWindow = (): BrowserWindow | null => mainWindow;
 
 void app.whenReady().then(() => {
   setMetadataCacheDir(join(app.getPath('userData'), 'metadata'));
+  // Before the window exists, so macOS never gives the app a dock icon or the front.
+  if (headless) app.dock?.hide();
   registerIpc(getWindow);
   installAppMenu(getWindow);
   mainWindow = createWindow(process.argv.includes('--smoke'));
@@ -90,9 +102,10 @@ void app.whenReady().then(() => {
   });
 });
 
-// macOS: clicking the dock icon with no window open opens one again.
+// macOS: clicking the dock icon with no window open opens one again (never
+// when headless: there is no dock icon, and no window is to be shown).
 app.on('activate', () => {
-  if (mainWindow === null && app.isReady()) {
+  if (!headless && mainWindow === null && app.isReady()) {
     mainWindow = createWindow(false);
     mainWindow.on('closed', () => {
       mainWindow = null;

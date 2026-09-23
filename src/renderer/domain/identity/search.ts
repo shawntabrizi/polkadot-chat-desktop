@@ -28,6 +28,12 @@ const ss58ToBytes = AccountId().enc;
 const MAX_DIFFICULTY = 24;
 /** Counters between yields, so the screen stays responsive while mining. */
 const MINE_CHUNK = 4_096;
+/**
+ * A search that has not answered by then fails, so the screen says "Search
+ * unavailable" instead of "Searching…" forever (seen on devnet 2026-09-23:
+ * requests that hung for more than 30 s).
+ */
+const SEARCH_TIMEOUT_MS = 15_000;
 
 // The backend response is a trust boundary: rows missing a field this app
 // reads are dropped, extra fields are ignored.
@@ -79,40 +85,52 @@ export const proofOfComputeWork = (sessionId: string, timestampMs: number, count
 };
 
 /** The `Proof-Of-Compute` header value: standard base64 of the solution fields. */
-const solve = async (puzzle: Puzzle): Promise<string> => {
+const solve = async (puzzle: Puzzle, signal: AbortSignal): Promise<string> => {
   if (puzzle.difficulty > MAX_DIFFICULTY) throw new Error('Search is temporarily unavailable.');
   let counter = 0;
   while (proofOfComputeWork(puzzle.sessionId, puzzle.timestamp, counter) < puzzle.difficulty) {
     counter += 1;
-    if (counter % MINE_CHUNK === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    if (counter % MINE_CHUNK === 0) {
+      // The search's time limit covers the mining too.
+      signal.throwIfAborted();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
   }
   return btoa(`${puzzle.sessionId}:${puzzle.timestamp}:${puzzle.difficulty}:${counter}:${puzzle.checksum}`);
 };
+
+/** One page of hits and the cursor of the next page (null on the last one). */
+export type SearchPage = { results: SearchResult[]; nextCursor: string | null };
 
 export const searchUsernames = async (
   profile: NetworkProfile,
   prefix: string,
   selfIdentityAccountId: Uint8Array,
   fetchFn: typeof fetch = fetch,
-): Promise<SearchResult[]> => {
-  const url = usernameSearchUrl(profile, prefix);
-  let response = await fetchFn(url, { headers: { Accept: 'application/json' } });
+  page: { limit?: number; cursor?: string | null } = {},
+  timeoutMs: number = SEARCH_TIMEOUT_MS,
+): Promise<SearchPage> => {
+  const url = usernameSearchUrl(profile, prefix, page);
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response = await fetchFn(url, { headers: { Accept: 'application/json' }, signal });
   if (response.status === 402) {
     // One puzzle per search; a second 402 means the proof was refused.
-    const issued = await fetchFn(proofOfComputeUrl(profile), { method: 'POST' });
+    const issued = await fetchFn(proofOfComputeUrl(profile), { method: 'POST', signal });
     if (!issued.ok) throw new Error(`username search: puzzle request failed: ${issued.status}`);
-    const proof = await solve(parsePuzzle(await issued.json()));
-    response = await fetchFn(url, { headers: { Accept: 'application/json', 'Proof-Of-Compute': proof } });
+    const proof = await solve(parsePuzzle(await issued.json()), signal);
+    response = await fetchFn(url, { headers: { Accept: 'application/json', 'Proof-Of-Compute': proof }, signal });
   }
   if (response.status === 429) throw new Error('Too many searches. Try again in a moment.');
   if (!response.ok) throw new Error(`username search failed: ${response.status}`);
-  const body: unknown = await response.json();
-  const rows = (body as { usernames?: unknown } | null)?.usernames;
+  const body = (await response.json()) as { usernames?: unknown; nextCursor?: unknown } | null;
+  const rows = body?.usernames;
   if (!Array.isArray(rows)) throw new Error('username search: unexpected response shape');
-  return rows
+  const results = rows
     .map(parseRow)
     .filter((row): row is SearchResult => row !== null)
     // Usernames resolve to the identity account, so a search for our own name
     // returns us. Self-chat is not a flow; drop it.
     .filter(row => !bytesEqual(row.accountId, selfIdentityAccountId));
+  const nextCursor = typeof body?.nextCursor === 'string' && body.nextCursor !== '' ? body.nextCursor : null;
+  return { results, nextCursor };
 };

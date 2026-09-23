@@ -172,9 +172,11 @@ const shortcutRows = (): [string, string][] => {
   const mod = primaryModifierLabel();
   const alt = isMac() ? '⌥' : 'Alt+';
   return [
-    [`${mod}K or ${mod}N`, 'New chat'],
+    [`${mod}K`, 'Search chats, people and messages'],
+    [`${mod}N`, 'New chat'],
+    ['↑ / ↓ and Enter in the search', 'Move through the results and open one'],
     [`${mod},`, 'Settings'],
-    ['Esc', 'Close the panel, or go back to the chat list'],
+    ['Esc', 'Clear the search, close the panel, or go back to the chat list'],
     [`${mod}↑ / ${mod}↓ or ${alt}↑ / ${alt}↓`, 'Previous or next chat'],
     [`${mod}1 … ${mod}9`, 'Open the first to ninth chat'],
     ['↑ in an empty message field', 'Edit your last message'],

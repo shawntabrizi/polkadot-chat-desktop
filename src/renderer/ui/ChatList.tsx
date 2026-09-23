@@ -1,9 +1,10 @@
-import { MessagesSquare, SearchX } from 'lucide-react';
+import { MessagesSquare } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import type { HexString } from '../app/bytes';
 import { type ContactRow, type DraftRow, type MessageRow, type PeerId, type RequestRow, type RoomRow, db } from '../app/database';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
+import { isLiveFrame } from '../domain/chat/content';
 import { draftPreview } from '../domain/chat/drafts';
 import { setRoomMuted } from '../domain/chat/messages';
 
@@ -16,14 +17,12 @@ import { useLiveQuery } from './useLiveQuery';
 export type ChatSelection = { kind: 'room'; peer: PeerId } | { kind: 'outgoing'; peer: HexString } | { kind: 'other' };
 
 type Props = {
-  /** Filters rows by username; empty shows all. */
-  query: string;
   selected: ChatSelection;
   onOpenRoom: (peer: PeerId) => void;
   onOpenOutgoing: (peer: HexString) => void;
 };
 
-type ListData = {
+export type ListData = {
   contacts: ContactRow[];
   rooms: Map<PeerId, RoomRow>;
   lastMessages: Map<PeerId, MessageRow>;
@@ -60,10 +59,14 @@ const plainText = (text: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
+/** A bot's live frame is status, not a message: the list says so (M7 review carry item 2). */
+const TYPING = 'Typing…';
+
 /** "You: …" for own messages, the system line for system rows. */
 const previewLine = (last: MessageRow | undefined, name: string, requests: readonly RequestRow[]): string => {
   if (!last) return '';
   if (last.direction === 'system') return systemText(last, name, requests);
+  if (last.direction === 'incoming' && isLiveFrame(last.content)) return TYPING;
   const text = plainText(messagePreview(last));
   if (last.direction === 'outgoing') return `You: ${text}`;
   return text === '' && last.status === 'streaming' ? 'Thinking…' : text;
@@ -72,7 +75,8 @@ const previewLine = (last: MessageRow | undefined, name: string, requests: reado
 /** What a row opens: a room, or the pending room of a request this user sent. */
 export type ChatTarget = { kind: 'room'; peer: PeerId } | { kind: 'outgoing'; peer: HexString };
 
-type Row = { key: string; name: string; at: number; target: ChatTarget; render: () => ReactNode };
+/** One row of the list, or of the search's "Chats and contacts" section. */
+export type Row = { key: string; name: string; at: number; target: ChatTarget; render: (highlighted?: boolean) => ReactNode };
 
 const muteOf = (room: RoomRow | undefined) =>
   room ? { muted: room.muted === true, toggle: () => void setRoomMuted(room.peerAccountId, room.muted !== true) } : undefined;
@@ -86,10 +90,7 @@ const previewWithDraft = (data: ListData, peer: PeerId, fallback: string): strin
  * this user sent that wait for an answer, newest activity first. Shared by
  * the list and the ⌘↑/⌘↓/⌘1…9 shortcuts, so both see one order.
  */
-const buildRows = (data: ListData, query: string, selected: ChatSelection, open: (target: ChatTarget) => void): { rows: Row[]; others: number } => {
-  const needle = query.trim().toLowerCase();
-  const matches = (name: string) => needle === '' || name.toLowerCase().includes(needle);
-
+const buildRows = (data: ListData, selected: ChatSelection, open: (target: ChatTarget) => void): { rows: Row[]; others: number } => {
   const assistantRoom = data.rooms.get(ASSISTANT_PEER);
   const assistantLast = data.lastMessages.get(ASSISTANT_PEER);
   const assistantTarget: ChatTarget = { kind: 'room', peer: ASSISTANT_PEER };
@@ -98,7 +99,7 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
     name: ASSISTANT_USERNAME,
     at: Number.POSITIVE_INFINITY,
     target: assistantTarget,
-    render: () => (
+    render: highlighted => (
       <ChatRow
         key={ASSISTANT_PEER}
         testId="chat-row-assistant"
@@ -108,6 +109,7 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
         preview={previewWithDraft(data, ASSISTANT_PEER, assistantLast ? previewLine(assistantLast, ASSISTANT_USERNAME, []) : 'AI, in this app')}
         unread={assistantRoom?.unreadCount ?? 0}
         selected={selected.kind === 'room' && selected.peer === ASSISTANT_PEER}
+        highlighted={highlighted}
         onClick={() => open(assistantTarget)}
         mute={muteOf(assistantRoom)}
       />
@@ -124,20 +126,25 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
       name: contact.username,
       at: room?.lastMessageAt ?? contact.createdAt,
       target,
-      render: () => (
-        <ChatRow
-          key={contact.accountId}
-          testId="chat-row"
-          avatar={<PeerAvatar name={contact.username} />}
-          name={contact.username}
-          time={last ? formatListTime(last.timestamp) : null}
-          preview={previewWithDraft(data, contact.accountId, previewLine(last, contact.username, requests))}
-          unread={room?.unreadCount ?? 0}
-          selected={selected.kind === 'room' && selected.peer === contact.accountId}
-          onClick={() => open(target)}
-          mute={muteOf(room)}
-        />
-      ),
+      render: highlighted => {
+        const preview = previewWithDraft(data, contact.accountId, previewLine(last, contact.username, requests));
+        return (
+          <ChatRow
+            key={contact.accountId}
+            testId="chat-row"
+            avatar={<PeerAvatar name={contact.username} />}
+            name={contact.username}
+            time={last ? formatListTime(last.timestamp) : null}
+            preview={preview}
+            previewTone={preview === TYPING ? 'tertiary' : 'secondary'}
+            unread={room?.unreadCount ?? 0}
+            selected={selected.kind === 'room' && selected.peer === contact.accountId}
+            highlighted={highlighted}
+            onClick={() => open(target)}
+            mute={muteOf(room)}
+          />
+        );
+      },
     };
   });
 
@@ -151,7 +158,7 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
         name: request.peerUsername,
         at: request.timestamp,
         target,
-        render: () => (
+        render: highlighted => (
           <ChatRow
             key={`outgoing:${request.requestId}`}
             testId="chat-row-outgoing"
@@ -161,6 +168,7 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
             preview="Request message sent"
             unread={0}
             selected={selected.kind === 'outgoing' && selected.peer === request.peerAccountId}
+            highlighted={highlighted}
             onClick={() => open(target)}
           />
         ),
@@ -168,36 +176,36 @@ const buildRows = (data: ListData, query: string, selected: ChatSelection, open:
     });
 
   const others = [...contactRows, ...outgoingRows].sort((a, b) => b.at - a.at);
-  return { rows: [assistantRow, ...others].filter(row => matches(row.name)), others: others.length };
+  return { rows: [assistantRow, ...others], others: others.length };
 };
 
 /** The list's order, for the keyboard shortcuts. */
-export const useChatOrder = (query: string): ChatTarget[] => {
+export const useChatOrder = (): ChatTarget[] => {
   const data = useLiveQuery(loadList, []);
   if (!data) return [];
-  return buildRows(data, query, { kind: 'other' }, () => undefined).rows.map(row => row.target);
+  return buildRows(data, { kind: 'other' }, () => undefined).rows.map(row => row.target);
 };
 
-export const ChatList = ({ query, selected, onOpenRoom, onOpenOutgoing }: Props) => {
+/**
+ * The list's rows in the list's order, and the data they came from: the
+ * search's "Chats and contacts" and "Recent" sections, and the peer names of
+ * its message hits.
+ */
+export const useChatRows = (selected: ChatSelection, open: (target: ChatTarget) => void): { rows: Row[]; data: ListData } | undefined => {
+  const data = useLiveQuery(loadList, []);
+  if (!data) return undefined;
+  return { rows: buildRows(data, selected, open).rows, data };
+};
+
+export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing }: Props) => {
   const data = useLiveQuery(loadList, []);
   if (!data) return null;
-  const needle = query.trim().toLowerCase();
-  const { rows, others } = buildRows(data, query, selected, target => (target.kind === 'room' ? onOpenRoom(target.peer) : onOpenOutgoing(target.peer)));
-
-  if (rows.length === 0) {
-    return (
-      <div className="flex flex-col items-center gap-1 px-4 py-10 text-center">
-        <SearchX className="mb-2 size-6 text-fg-tertiary" aria-hidden />
-        <p className="text-label-m text-fg-primary">No results for “{query.trim()}”</p>
-        <p className="text-body-s text-fg-secondary">To find someone new, use the + button.</p>
-      </div>
-    );
-  }
+  const { rows, others } = buildRows(data, selected, target => (target.kind === 'room' ? onOpenRoom(target.peer) : onOpenOutgoing(target.peer)));
 
   return (
     <div className="flex flex-col gap-0.5">
       {rows.map(row => row.render())}
-      {others === 0 && needle === '' ? (
+      {others === 0 ? (
         <div className="flex flex-col items-center gap-1 px-4 py-10 text-center">
           <MessagesSquare className="mb-2 size-6 text-fg-tertiary" aria-hidden />
           <p className="text-label-m text-fg-primary">No active chats</p>

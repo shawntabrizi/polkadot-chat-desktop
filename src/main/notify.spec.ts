@@ -46,6 +46,15 @@ describe('showNotification', () => {
     expect(t.sent).toEqual([[IPC.notifyOpen, { peerId: '0xaa' }]]);
   });
 
+  // PCD_HEADLESS=1: an automation run must never bring the app to the front.
+  it('opens the room without showing or focusing the window when headless', () => {
+    const t = setup({ minimized: true });
+    showNotification({ title: 'alice.01', body: 'hi', peerId: '0xaa', sound: false }, { ...t.deps, headless: true });
+    t.click();
+    expect(t.calls).toEqual(['show-notification']);
+    expect(t.sent).toEqual([[IPC.notifyOpen, { peerId: '0xaa' }]]);
+  });
+
   it('opens a request by its id', () => {
     const t = setup();
     showNotification({ title: 'bob.02', body: 'Message request', peerId: '0xbb', requestId: 'r1', sound: false }, t.deps);

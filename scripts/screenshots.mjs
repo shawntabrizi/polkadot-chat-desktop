@@ -5,6 +5,7 @@
 //   signup.png                         a fresh profile
 //   room.png assistant.png chats.png   a seeded identity (PCD_SCREENSHOT_IDENTITY)
 //   requests.png settings.png keyboard.png
+//   search.png search-jump.png search-empty.png search-no-results.png
 //
 // M6: the seeded profile's Assistant runs on PCD_SCREENSHOT_ENGINE (default
 // `claude`, tools off; `proxy` for the LLM proxy), so assistant.png shows the
@@ -21,6 +22,16 @@
 // ping is answered. The echo bot sends no live frames, so without
 // PCD_SCREENSHOT_ROOM_WITH the live frame is reported missing.
 //
+// M7b: search.png is the unified search for "pcdp" with its three sections:
+// the pirate bot pcdpirate.81 under "Chats and contacts" (a request sent the
+// first time through a global search hit and the draft room), the echo bot
+// pcdpeer.47 under "Global search", and a message that names the pirate bot
+// (sent once in the room) under "Messages"; ↓ twice highlights the first
+// global row. search-jump.png: a message hit opened, its room scrolled to it
+// and the message highlighted (the 1.5 s highlight must then end). search-empty.png is "+" with the empty field (placeholder
+// "Type username", the Recent section); search-no-results.png a query that
+// finds nothing.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -33,6 +44,10 @@
 // identity instead of the bot (for when the bot is down): `e2e-chat.mjs` sends
 // its request, the app accepts it, the script's "ping" arrives, and the app
 // answers "hello".
+// Headless by default: the app runs with PCD_HEADLESS=1 (hidden window, no
+// dock icon, no focus), so a run does not bring the app to the front. The
+// CDP captures work on the hidden window. `--visible` shows the window:
+//   npm run screenshots -- --visible
 // What cannot be captured is reported and the exit code is 1. Prints no secret.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -54,6 +69,7 @@ const requester = process.env.PCD_SCREENSHOT_REQUESTER ?? 'pcdtestggji';
 const roomWith = process.env.PCD_SCREENSHOT_ROOM_WITH ?? null;
 const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
 const DRAFT = 'Ask about the People chain later';
+const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const t0 = Date.now();
@@ -75,7 +91,7 @@ log('built');
 const launch = async profile => {
   const child = spawn(electronBin, ['.', `--remote-debugging-port=${PORT}`], {
     cwd: root,
-    env: { ...process.env, PCD_USER_DATA_DIR: profile },
+    env: { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile },
     stdio: ['ignore', 'ignore', 'ignore'],
   });
   let target;
@@ -135,11 +151,13 @@ const launch = async profile => {
     await evaluate('document.fonts.ready.then(() => true)');
     await sleep(600);
   };
-  const capture = async (theme, name) => {
-    await settle();
-    // Park the pointer in a corner so no hover state is caught by accident.
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: HEIGHT - 1 });
-    await sleep(200);
+  const capture = async (theme, name, { now = false } = {}) => {
+    if (!now) {
+      await settle();
+      // Park the pointer in a corner so no hover state is caught by accident.
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: HEIGHT - 1 });
+      await sleep(200);
+    }
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     const file = join(outDir, theme, `${name}.png`);
     writeFileSync(file, Buffer.from(shot.result.data, 'base64'));
@@ -198,7 +216,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'assistant', 'settings', 'keyboard', 'requests']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -213,6 +231,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 app.setName('polkadot-chat-desktop');
 app.setPath('userData', process.env.SEED_PROFILE);
+if (process.env.PCD_HEADLESS === '1') app.dock?.hide();
 app.whenReady().then(() => {
   const src = JSON.parse(readFileSync(process.env.SEED_SOURCE, 'utf8'));
   const file = { version: 1, username: src.username, accountHex: src.accountHex, profile: src.profile,
@@ -223,7 +242,7 @@ app.whenReady().then(() => {
 `,
   );
   const seeded = spawnSync(electronBin, [seedScript], {
-    env: { ...process.env, SEED_PROFILE: profile, SEED_SOURCE: resolve(identitySource) },
+    env: { ...process.env, ...headlessEnv, SEED_PROFILE: profile, SEED_SOURCE: resolve(identitySource) },
     stdio: 'ignore',
   });
   rmSync(seedScript);
@@ -256,10 +275,10 @@ app.whenReady().then(() => {
 
   for (const theme of THEMES) {
     const app = await launch(profile);
-    const shot = async (name, run) => {
+    const shot = async (name, run, options) => {
       try {
         await run();
-        await app.capture(theme, name);
+        await app.capture(theme, name, options);
       } catch (error) {
         missing.push(`${theme}/${name}.png (${error.message})`);
         log('missed', `${theme}/${name}.png:`, error.message);
@@ -299,12 +318,11 @@ app.whenReady().then(() => {
         if (!(await app.evaluate(`!!${botRow}`))) {
           // First run: find the bot and send it a request with "hello".
           await app.click('[aria-label="New chat"]');
-          await app.waitFor(app.exists('[aria-label=Username]'), 10_000);
-          await app.type('[aria-label=Username]', BOT);
-          if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=search-results] button')].some(b => b.textContent.includes(${JSON.stringify(BOT)}))`, 90_000))) {
+          await app.type('[aria-label=Search]', BOT);
+          if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=search-global-row]')].some(b => b.textContent.includes(${JSON.stringify(BOT)}))`, 90_000))) {
             throw new Error(`${BOT} not found by search`);
           }
-          await app.clickText('[data-testid=search-results] button', BOT);
+          await app.clickText('[data-testid=search-global-row]', BOT);
           await app.waitFor(app.exists('textarea[aria-label=Message]'), 10_000);
           await app.type('textarea[aria-label=Message]', 'hello');
           await app.clickText('button', 'Send Request');
@@ -394,6 +412,113 @@ app.whenReady().then(() => {
       await sleep(800);
       await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
       await app.waitFor(app.exists('[data-testid=empty-room]'), 10_000);
+
+      // ── M7b: the unified search.
+      const PIRATE = 'pcdpirate.81';
+      const QUERY = 'pcdp';
+      const ESC = ['Escape', 'Escape', { windowsVirtualKeyCode: 27 }];
+      await shot('search', async () => {
+        const pirateRow = `[...document.querySelectorAll('[data-testid=chat-row],[data-testid=chat-row-outgoing]')].some(r => r.textContent.includes(${JSON.stringify(PIRATE)}))`;
+        if (!(await app.evaluate(pirateRow))) {
+          // Once: a request to the pirate bot, sent from a global search hit.
+          await app.click('[aria-label="New chat"]');
+          await app.type('[aria-label=Search]', 'pcdpirate');
+          const hit = `[...document.querySelectorAll('[data-testid=search-global-row]')].some(r => r.textContent.includes(${JSON.stringify(PIRATE)}))`;
+          if (!(await app.waitFor(hit, 60_000))) {
+            const seen = await app.evaluate(`document.querySelector('[data-testid=search-results]')?.innerText ?? 'no results view'`);
+            throw new Error(`${PIRATE} not found by the global search: ${JSON.stringify(seen)}`);
+          }
+          await app.clickText('[data-testid=search-global-row]', PIRATE);
+          if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(PIRATE)} && ${app.exists('textarea[aria-label=Message]')}`, 10_000))) {
+            throw new Error('the global hit did not open the draft room');
+          }
+          await app.type('textarea[aria-label=Message]', 'Ahoy from the desktop app');
+          await app.clickText('button', 'Send Request');
+          if (!(await app.waitFor(pirateRow, 60_000))) throw new Error(`the request to ${PIRATE} did not go out`);
+          log('request sent to', PIRATE, 'from a global search hit');
+        }
+        // Once: a message that contains the query, in the room with the room peer.
+        const peerRow = `[...document.querySelectorAll('[data-testid=chat-row]')].find(r => r.textContent.includes(${JSON.stringify(roomPeer)}))`;
+        if (!(await app.evaluate(`!!${peerRow}`))) throw new Error(`no room with ${roomPeer}`);
+        await app.evaluate(`${peerRow}.click()`);
+        await app.waitFor(app.exists('textarea[aria-label=Message]'), 10_000);
+        // The room's own "hello" first, so a message sent in the first theme is seen.
+        await app.waitFor(`document.querySelectorAll('[data-testid=message-outgoing]').length > 0`, 10_000);
+        const said = `[...document.querySelectorAll('[data-testid=message-outgoing]')].some(m => m.textContent.includes(${JSON.stringify(PIRATE)}))`;
+        if (!(await app.evaluate(said))) {
+          await app.type('textarea[aria-label=Message]', `Ask ${PIRATE} for a pirate joke`);
+          await app.click('[aria-label=Send]');
+          await app.waitFor(said, 10_000);
+        }
+        await app.key(...ESC);
+        await app.waitFor(app.exists('[data-testid=empty-room]'), 10_000);
+        await app.type('[aria-label=Search]', QUERY);
+        const ready = `${app.exists('[data-testid=search-chats]')} && ${app.exists('[data-testid=search-messages]')} && [...document.querySelectorAll('[data-testid=search-global-row]')].some(r => r.textContent.includes(${JSON.stringify(BOT)})) && !document.querySelector('[data-testid=search-results]').textContent.includes('Searching…')`;
+        if (!(await app.waitFor(ready, 60_000))) {
+          const seen = await app.evaluate(`document.querySelector('[data-testid=search-results]')?.innerText ?? 'no results view'`);
+          throw new Error(`the three sections did not fill: ${JSON.stringify(seen)}`);
+        }
+        // ↓ twice: from the contact row across into the first global row.
+        await app.key('ArrowDown', 'ArrowDown', { windowsVirtualKeyCode: 40 });
+        await app.key('ArrowDown', 'ArrowDown', { windowsVirtualKeyCode: 40 });
+        if (!(await app.waitFor(`document.querySelector('[data-highlighted=true]')?.dataset && document.querySelector('[data-highlighted=true] [data-testid=search-global-row]') != null`, 5_000))) {
+          throw new Error('↓↓ did not highlight the first global row');
+        }
+      });
+
+      // A message hit opens its room at that message and highlights it for
+      // 1.5 s; search-jump.png is taken inside that time.
+      await shot('search-jump', async () => {
+        await app.click('[data-testid=search-message]');
+        if (!(await app.waitFor(app.exists('[data-message-id].bg-selection-container-active'), 10_000))) throw new Error('no highlighted message after the jump');
+        const text = await app.evaluate(`document.querySelector('[data-message-id].bg-selection-container-active').textContent`);
+        log('jumped to the message hit, highlighted:', JSON.stringify(text.slice(0, 60)));
+      }, { now: true }); // at once: the highlight lasts 1.5 s
+      if (await app.waitFor(`!document.querySelector('[data-message-id].bg-selection-container-active')`, 5_000)) log('the highlight ended');
+      else missing.push(`${theme}: the message highlight did not end`);
+
+      // "Show more" fetches the next page of the global search (first theme only: the backend rate-limits).
+      await app.evaluate(`document.querySelector('[aria-label=Search]').focus(); true`);
+      await app.key(...ESC);
+      if (theme === THEMES[0]) {
+        try {
+          await app.type('[aria-label=Search]', 'pcd');
+          if (!(await app.waitFor(app.exists('[data-testid=search-show-more]'), 60_000))) throw new Error('no Show more for "pcd"');
+          const before = await app.evaluate(`document.querySelectorAll('[data-testid=search-global-row]').length`);
+          await app.click('[data-testid=search-show-more]');
+          if (!(await app.waitFor(`document.querySelectorAll('[data-testid=search-global-row]').length > ${before}`, 60_000))) {
+            const seen = await app.evaluate(`document.querySelector('[data-testid=search-global]')?.innerText ?? 'no global section'`);
+            throw new Error(`Show more added no rows: ${JSON.stringify(seen)}`);
+          }
+          const after = await app.evaluate(`document.querySelectorAll('[data-testid=search-global-row]').length`);
+          log(`global search "pcd": ${before} rows, ${after} after Show more`);
+        } catch (error) {
+          missing.push(`${theme}: Show more (${error.message})`);
+        }
+        await app.evaluate(`document.querySelector('[aria-label=Search]').focus(); true`);
+        await app.key(...ESC);
+      }
+
+      await shot('search-empty', async () => {
+        // The search is clear; Esc in the field now closes the room.
+        await app.evaluate(`document.querySelector('[aria-label=Search]').focus(); true`);
+        await app.key(...ESC);
+        await app.waitFor(app.exists('[data-testid=empty-room]'), 10_000);
+        await app.click('[aria-label="New chat"]');
+        if (!(await app.waitFor(`document.querySelector('[aria-label=Search]').placeholder === 'Type username' && document.activeElement === document.querySelector('[aria-label=Search]') && ${app.exists('[data-testid=search-results]')}`, 5_000))) {
+          throw new Error('"+" did not focus the search field');
+        }
+      });
+
+      await shot('search-no-results', async () => {
+        await app.type('[aria-label=Search]', 'qxzqxzq');
+        if (!(await app.waitFor(app.exists('[data-testid=search-no-results]'), 30_000))) {
+          const seen = await app.evaluate(`document.querySelector('[data-testid=search-results]')?.innerText ?? 'no results view'`);
+          throw new Error(`no "No results" line: ${JSON.stringify(seen)}`);
+        }
+      });
+      await app.key(...ESC);
+      await app.waitFor(app.exists('[data-testid=new-requests]'), 5_000);
 
       await shot('requests', async () => {
         if (!(await app.click('[data-testid=new-requests]'))) throw new Error(`no incoming request arrived (see .agent-runs/screens/requester.log)`);

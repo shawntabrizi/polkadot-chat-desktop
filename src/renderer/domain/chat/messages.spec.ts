@@ -15,6 +15,7 @@ import {
   markDeliveredBefore,
   markRoomRead,
   removeMessage,
+  searchMessages,
   setMessageStatus,
   setRoomMuted,
   tombstoneMessage,
@@ -224,5 +225,42 @@ describe('RFC-0003 deletions (sender, local side)', () => {
     await removeMessage('unsent');
     expect(await db.messages.get('unsent')).toBeUndefined();
     expect((await listRooms())[0]).toMatchObject({ lastPreview: 'a', lastMessageAt: 1 });
+  });
+});
+
+describe('searchMessages', () => {
+  it('finds text and richText rows by case-insensitive substring, newest first, at most 20', async () => {
+    await addMessage(row('old', { timestamp: 1, content: { type: 'text', text: 'Ask about the People chain' } }));
+    await addMessage(row('rich', { timestamp: 2, content: { type: 'richText', text: 'people photos', attachments: [] } }));
+    await addMessage(row('reply', { timestamp: 3, content: { type: 'reply', messageId: 'old', text: 'people again' } }));
+    await addMessage(row('frame', { timestamp: 4, content: { type: 'text', text: '⏳ working · 3s\n▸ Reading people.md' } }));
+    await addMessage(row('other', { timestamp: 5, content: { type: 'text', text: 'nothing here' } }));
+    expect((await searchMessages('  PEOPLE ')).map(hit => hit.messageId)).toEqual(['rich', 'old']);
+    expect(await searchMessages('   ')).toEqual([]);
+
+    for (let i = 0; i < 25; i++) await addMessage(row(`m${i}`, { timestamp: 100 + i, content: { type: 'text', text: `people ${i}` } }));
+    const capped = await searchMessages('people');
+    expect(capped).toHaveLength(20);
+    expect(capped[0]?.messageId).toBe('m24');
+  });
+
+  // M7b step 4: the search runs on every keystroke, so it must stay under
+  // 50 ms with 5 000 stored messages. If this fails, add a text index.
+  it('answers under 50 ms over 5 000 rows', async () => {
+    const rows = Array.from({ length: 5_000 }, (_, i) =>
+      row(`bulk${i}`, {
+        peerAccountId: i % 2 === 0 ? PEER : '0xbb',
+        timestamp: i,
+        content: { type: 'text', text: i % 500 === 0 ? `the needle ${i} is here` : `ordinary message number ${i} about the People chain` },
+      }),
+    );
+    await db.messages.bulkAdd(rows);
+    await searchMessages('warm up'); // the first read opens the database
+    const started = performance.now();
+    const hits = await searchMessages('needle');
+    const elapsed = performance.now() - started;
+    console.log(`searchMessages over 5000 rows: ${elapsed.toFixed(1)} ms, ${hits.length} hits`);
+    expect(hits.map(hit => hit.messageId)).toEqual(Array.from({ length: 10 }, (_, k) => `bulk${(9 - k) * 500}`));
+    expect(elapsed).toBeLessThan(50);
   });
 });

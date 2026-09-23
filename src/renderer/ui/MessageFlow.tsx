@@ -7,6 +7,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 're
 import type { MessageRow, RequestRow } from '../app/database';
 import { isLiveFrame } from '../domain/chat/content';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/cn';
 
 import { type BubbleActions, DateSeparator, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
 import { formatDay } from './format';
@@ -33,6 +34,8 @@ type Props = {
   deleting?: ReadonlySet<string>;
   /** Typing reveal of answers that arrive while the room is open (Settings → Chat). */
   reveal?: boolean;
+  /** A message search hit to scroll to and highlight; `request` changes on every pick. */
+  jumpTo?: { messageId: string; request: number } | null;
 };
 
 type DayGroup = { day: string; rows: MessageRow[] };
@@ -60,6 +63,9 @@ const NewMessagesSeparator = () => (
 /** How close to the bottom still counts as "at the bottom" (new rows are followed). */
 const FOLLOW_SLACK_PX = 80;
 
+/** How long a message search hit stays highlighted (M7b step 1c). */
+const JUMP_HIGHLIGHT_MS = 1500;
+
 export const MessageFlow = ({
   rows,
   peerName,
@@ -73,6 +79,7 @@ export const MessageFlow = ({
   noteFor,
   deleting,
   reveal = false,
+  jumpTo = null,
 }: Props) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -81,6 +88,9 @@ export const MessageFlow = ({
   const endVisible = useRef(false);
   const placed = useRef(false);
   const [farFromBottom, setFarFromBottom] = useState(false);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const handledJump = useRef<number | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const byId = new Map(rows.map(row => [row.messageId, row]));
   const last = rows.at(-1);
   // Follow the bottom as rows arrive and as a streamed reply grows.
@@ -134,6 +144,23 @@ export const MessageFlow = ({
   // A row that arrives while the end is already on screen is seen at once.
   useEffect(checkSeen, [followKey]);
 
+  // A search hit: runs after the first placement (layout effect), so it wins
+  // over "start at the bottom". Waits until the row is rendered.
+  const jumpId = jumpTo?.messageId ?? null;
+  const jumpRequest = jumpTo?.request ?? null;
+  useEffect(() => {
+    if (jumpId === null || jumpRequest === handledJump.current) return;
+    const target = scrollRef.current?.querySelector(`[data-message-id="${CSS.escape(jumpId)}"]`);
+    if (!target) return;
+    handledJump.current = jumpRequest;
+    target.scrollIntoView({ block: 'center' });
+    clearTimeout(flashTimer.current);
+    // Off the effect's render pass, as the unread anchor in Room.tsx.
+    void Promise.resolve().then(() => setFlashId(jumpId));
+    flashTimer.current = setTimeout(() => setFlashId(null), JUMP_HIGHLIGHT_MS);
+  }, [jumpId, jumpRequest, rows.length]);
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
+
   const onScroll = () => {
     const element = scrollRef.current;
     if (!element) return;
@@ -185,24 +212,31 @@ export const MessageFlow = ({
                   return (
                     <div key={row.messageId}>
                       {separator}
-                      <MessageBubble
-                        row={row}
-                        quote={
-                          row.content.type === 'reply'
-                            ? quoted
-                              ? { sender: quoted.direction === 'outgoing' ? 'You' : peerName, text: messagePreview(quoted) }
-                              : { sender: peerName, text: 'Message not available' }
-                            : null
-                        }
-                        first={separator !== null || previous?.direction !== row.direction}
-                        last={next?.direction !== row.direction || next?.messageId === firstUnreadId}
-                        thinking={assistant && row.direction === 'incoming' && messagePreview(row) === ''}
-                        live={!assistant && row.direction === 'incoming' && isLiveFrame(row.content)}
-                        deleting={deleting?.has(row.messageId) ?? false}
-                        reveal={reveal}
-                        actions={actionsFor(row)}
-                        note={noteFor?.(row) ?? null}
-                      />
+                      {/* The search-hit band. No vertical padding: it would stop the bubble's
+                          top margin from collapsing and move every row. */}
+                      <div
+                        data-message-id={row.messageId}
+                        className={cn('-mx-2 rounded-nested px-2 transition-colors duration-300', flashId === row.messageId && 'bg-selection-container-active')}
+                      >
+                        <MessageBubble
+                          row={row}
+                          quote={
+                            row.content.type === 'reply'
+                              ? quoted
+                                ? { sender: quoted.direction === 'outgoing' ? 'You' : peerName, text: messagePreview(quoted) }
+                                : { sender: peerName, text: 'Message not available' }
+                              : null
+                          }
+                          first={separator !== null || previous?.direction !== row.direction}
+                          last={next?.direction !== row.direction || next?.messageId === firstUnreadId}
+                          thinking={assistant && row.direction === 'incoming' && messagePreview(row) === ''}
+                          live={!assistant && row.direction === 'incoming' && isLiveFrame(row.content)}
+                          deleting={deleting?.has(row.messageId) ?? false}
+                          reveal={reveal}
+                          actions={actionsFor(row)}
+                          note={noteFor?.(row) ?? null}
+                        />
+                      </div>
                     </div>
                   );
                 })}

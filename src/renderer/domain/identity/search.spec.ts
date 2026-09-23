@@ -25,7 +25,7 @@ const page = (rows: unknown[]): Reply => ({ status: 200, body: { usernames: rows
 
 describe('searchUsernames', () => {
   it('parses rows, decodes the account, and excludes the searching identity', async () => {
-    const results = await searchUsernames(
+    const { results } = await searchUsernames(
       NETWORK_PROFILES.devnet,
       'al',
       self,
@@ -40,6 +40,32 @@ describe('searchUsernames', () => {
     );
     expect(results.map(r => r.username)).toEqual(['alistair.02']);
     expect(results[0]?.accountId).toEqual(other);
+  });
+
+  // "Show more" in the unified search fetches the next page; without the
+  // cursor it would fetch the same eight rows again.
+  it('passes the page size and cursor, and returns the next cursor', async () => {
+    const calls: Call[] = [];
+    const first = await searchUsernames(
+      NETWORK_PROFILES.devnet,
+      'pcd',
+      self,
+      scriptedFetch([{ status: 200, body: { usernames: [{ accountId: ss58.dec(other), username: 'pcdcolor.05' }], nextCursor: 'NEXT' } }], calls),
+      { limit: 8 },
+    );
+    expect(first.nextCursor).toBe('NEXT');
+    expect(calls[0]?.url).toContain('limit=8');
+    const last = await searchUsernames(NETWORK_PROFILES.devnet, 'pcd', self, scriptedFetch([page([])], calls), { limit: 8, cursor: first.nextCursor });
+    expect(calls[1]?.url).toContain('cursor=NEXT');
+    expect(last.nextCursor).toBeNull();
+  });
+
+  // A backend that never answers must end in an error ("Search unavailable"),
+  // not in "Searching…" forever.
+  it('gives up when the backend does not answer in time', async () => {
+    const hanging = ((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)))) as unknown as typeof fetch;
+    await expect(searchUsernames(NETWORK_PROFILES.devnet, 'pcd', self, hanging, {}, 20)).rejects.toThrow();
   });
 
   it('fails loudly on an HTTP error or an unexpected body', async () => {
@@ -57,7 +83,7 @@ describe('searchUsernames', () => {
       checksum: 'c8828951fd6c123fdbf6501f111d27dd3f260839344a7370e0dd8f20e2c40482',
     };
     const calls: Call[] = [];
-    const results = await searchUsernames(
+    const { results } = await searchUsernames(
       NETWORK_PROFILES.devnet,
       'pcdpeer',
       self,

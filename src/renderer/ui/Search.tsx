@@ -1,131 +1,302 @@
+// The unified search of the left pane (M7b) and the draft room.
 // Draft room from .refs/polkadot-desktop/src/features/chat/ui/partials/DraftInvitationRoom.tsx
 // (2026-09-23); strings from docs/reference/mobile-ux.md "Starting a chat".
 
-import { ArrowLeft, UserPlus } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { SearchX, UserPlus } from 'lucide-react';
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import { type HexString, bytesToHex } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
-import { db } from '../app/database';
+import type { MessageRow, PeerId } from '../app/database';
 import type { NetworkProfile } from '../app/network';
+import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import type { ChatManager } from '../domain/chat/manager';
+import { searchMessages } from '../domain/chat/messages';
 import type { IdentityLookup } from '../domain/identity/lookup';
 import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-import { PeerAvatar } from './Avatar';
+import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { type ChatSelection, type ChatTarget, type ListData, type Row, useChatRows } from './ChatList';
 import { ChatRow } from './ChatRow';
 import { Composer } from './Composer';
+import { messagePreview } from './MessageBubble';
 import { RoomHeader } from './RoomHeader';
-import { plainError } from './format';
+import { formatListTime, plainError } from './format';
+import {
+  GLOBAL_PAGE_SIZE,
+  GLOBAL_SEARCH_DELAY_MS,
+  RECENT_LIMIT,
+  assembleSections,
+  chatMatches,
+  globalQuery,
+  moveHighlight,
+  resultKey,
+  snippetOf,
+} from './searchSections';
 import { useLiveQuery } from './useLiveQuery';
 
-/** Wait for a pause in typing: each search mines a proof of work first. */
-const SEARCH_DELAY_MS = 500;
-
-type SearchState =
-  | { state: 'idle' }
-  | { state: 'searching' }
-  | { state: 'done'; query: string; results: SearchResult[] }
-  | { state: 'failed'; message: string };
-
-type PanelProps = {
-  profile: NetworkProfile;
-  selfIdentityAccountId: Uint8Array;
-  onBack: () => void;
-  onPick: (result: SearchResult) => void;
-  /** Bumped by ⌘K / ⌘N while the panel is open: the field takes focus again. */
-  focusSignal?: number;
+/** The network's answer for one query; pages append on "Show more". */
+type GlobalState = {
+  query: string;
+  results: SearchResult[];
+  nextCursor: string | null;
+  failed: boolean;
+  loadingMore: boolean;
 };
 
-/** The left pane while "New chat" is open: find a username on the network. */
-export const NewChatPanel = ({ profile, selfIdentityAccountId, onBack, onPick, focusSignal = 0 }: PanelProps) => {
-  const [query, setQuery] = useState('');
+type PanelProps = {
+  query: string;
+  onQuery: (query: string) => void;
+  /** Opened with "+" (or ⌘N): the "Type username" placeholder and the Recent section. */
+  adding: boolean;
+  /** Esc: clear the field and leave "+". */
+  onExit: () => void;
+  /** Bumped by "+", ⌘K and ⌘N: the field takes focus. */
+  focusSignal: number;
+  profile: NetworkProfile;
+  selfIdentityAccountId: Uint8Array;
+  selected: ChatSelection;
+  onOpenTarget: (target: ChatTarget) => void;
+  onOpenMessage: (peer: PeerId, messageId: string) => void;
+  onPickGlobal: (result: SearchResult) => void;
+  /** What the pane shows while the field is empty: the chat list. */
+  children: ReactNode;
+};
+
+const SectionHeader = ({ children }: { children: ReactNode }) => (
+  <h2 className="px-2 pt-3 pb-1 text-overline text-fg-tertiary uppercase">{children}</h2>
+);
+
+const peerNameOf = (data: ListData | undefined, peer: PeerId): string => {
+  if (peer === ASSISTANT_PEER) return ASSISTANT_USERNAME;
+  const contact = data?.contacts.find(row => row.accountId === peer);
+  if (contact) return contact.username;
+  return data?.requests.find(row => row.peerAccountId === peer)?.peerUsername ?? 'Unknown';
+};
+
+/**
+ * The field at the top of the left pane. Empty, the pane shows the chat list
+ * (`children`). With text it shows, in this order: chats and contacts
+ * (local, instant), the network's username directory (after a pause and
+ * three letters), and messages (local, instant). ↑/↓ move across all rows,
+ * Enter opens, Esc clears.
+ */
+export const SearchPane = ({
+  query,
+  onQuery,
+  adding,
+  onExit,
+  focusSignal,
+  profile,
+  selfIdentityAccountId,
+  selected,
+  onOpenTarget,
+  onOpenMessage,
+  onPickGlobal,
+  children,
+}: PanelProps) => {
   const field = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [global, setGlobal] = useState<GlobalState | null>(null);
+  const [highlight, setHighlight] = useState<{ query: string; key: string | null }>({ query: '', key: null });
+  const typed = query.trim();
+  const active = typed !== '' || adding;
+  const prefix = globalQuery(query);
+
   useEffect(() => {
+    if (focusSignal === 0) return;
     field.current?.focus();
     field.current?.select();
   }, [focusSignal]);
-  const [search, setSearch] = useState<SearchState>({ state: 'idle' });
-  const contacts = useLiveQuery(() => db.contacts.toArray(), []);
-  const requests = useLiveQuery(() => db.requests.toArray(), []);
 
+  // One network search per pause in typing: each one mines a proof of work
+  // and the backend rate-limits (M7b step 1b).
   useEffect(() => {
-    const prefix = query.trim().toLowerCase();
-    let active = true;
+    if (prefix === null) return;
+    let live = true;
     const timer = setTimeout(() => {
-      if (!prefix) {
-        setSearch({ state: 'idle' });
-        return;
-      }
-      setSearch({ state: 'searching' });
-      searchUsernames(profile, prefix, selfIdentityAccountId)
-        .then(results => {
-          if (active) setSearch({ state: 'done', query: prefix, results });
-        })
-        .catch((cause: unknown) => {
-          if (active) setSearch({ state: 'failed', message: `${plainError(cause, 'The search did not finish.')} Check your connection and try again.` });
-        });
-    }, SEARCH_DELAY_MS);
+      searchUsernames(profile, prefix, selfIdentityAccountId, fetch, { limit: GLOBAL_PAGE_SIZE }).then(
+        page => {
+          if (live) setGlobal({ query: prefix, results: page.results, nextCursor: page.nextCursor, failed: false, loadingMore: false });
+        },
+        () => {
+          if (live) setGlobal({ query: prefix, results: [], nextCursor: null, failed: true, loadingMore: false });
+        },
+      );
+    }, GLOBAL_SEARCH_DELAY_MS);
     return () => {
-      active = false;
+      live = false;
       clearTimeout(timer);
     };
-  }, [query, profile, selfIdentityAccountId]);
+  }, [prefix, profile, selfIdentityAccountId]);
 
-  const stateOf = (result: SearchResult): string => {
-    const key = bytesToHex(result.accountId);
-    if (contacts?.some(contact => contact.accountId === key)) return 'In your chats';
-    const request = requests?.find(row => row.peerAccountId === key && row.status === 'pending');
-    if (request) return request.direction === 'outgoing' ? 'Request message sent' : 'Message request';
-    return 'Start a chat';
+  const current = prefix !== null && global?.query === prefix ? global : null;
+  const searching = prefix !== null && current === null;
+
+  const showMore = () => {
+    if (!current?.nextCursor || current.loadingMore) return;
+    const shown = current;
+    setGlobal({ ...shown, loadingMore: true });
+    searchUsernames(profile, shown.query, selfIdentityAccountId, fetch, { limit: GLOBAL_PAGE_SIZE, cursor: shown.nextCursor }).then(
+      page => {
+        setGlobal(latest => {
+          if (latest?.query !== shown.query) return latest;
+          const seen = new Set(latest.results.map(hit => hit.candidateAccountId));
+          return { ...latest, results: [...latest.results, ...page.results.filter(hit => !seen.has(hit.candidateAccountId))], nextCursor: page.nextCursor, loadingMore: false };
+        });
+      },
+      () => setGlobal(latest => (latest?.query === shown.query ? { ...latest, nextCursor: null, failed: true, loadingMore: false } : latest)),
+    );
   };
+
+  const chats = useChatRows(selected, onOpenTarget);
+  const messageHits = useLiveQuery(() => searchMessages(query), [query]) ?? [];
+
+  const recent: Row[] = adding && typed === '' ? (chats?.rows ?? []).filter(row => row.target.kind === 'room' && row.target.peer !== ASSISTANT_PEER).slice(0, RECENT_LIMIT) : [];
+  const chatHits = typed === '' ? [] : (chats?.rows ?? []).filter(row => chatMatches(row.name, query)).map(row => ({ key: row.key, peer: row.target.peer, row }));
+  const sections = assembleSections(chatHits, current?.results ?? [], typed === '' ? [] : messageHits);
+  const order = typed === '' ? recent.map(row => resultKey.chat({ key: row.key, peer: row.target.peer })) : sections.order;
+  const highlighted = highlight.query === query ? highlight.key : null;
+
+  const openers = new Map<string, () => void>();
+  for (const row of recent) openers.set(resultKey.chat({ key: row.key, peer: row.target.peer }), () => onOpenTarget(row.target));
+  for (const hit of sections.chats) openers.set(resultKey.chat(hit), () => onOpenTarget(hit.row.target));
+  for (const hit of sections.global) openers.set(resultKey.global(hit), () => onPickGlobal(hit));
+  for (const hit of sections.messages) openers.set(resultKey.message(hit), () => onOpenMessage(hit.peerAccountId, hit.messageId));
+
+  useEffect(() => {
+    list.current?.querySelector('[data-highlighted=true]')?.scrollIntoView({ block: 'nearest' });
+  }, [highlighted]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (!active || event.metaKey || event.ctrlKey || event.altKey) return;
+      event.preventDefault();
+      setHighlight({ query, key: moveHighlight(order, highlighted, event.key === 'ArrowDown' ? 1 : -1) });
+    } else if (event.key === 'Enter') {
+      const open = highlighted ? openers.get(highlighted) : undefined;
+      if (!open) return;
+      event.preventDefault();
+      open();
+    } else if (event.key === 'Escape' && active) {
+      // Handled here: the window's Esc (close the room) must not run as well.
+      event.preventDefault();
+      onExit();
+    }
+  };
+
+  const messageRow = (hit: MessageRow) => {
+    const name = peerNameOf(chats?.data, hit.peerAccountId);
+    const snippet = snippetOf(messagePreview(hit), query);
+    const key = resultKey.message(hit);
+    return (
+      <ChatRow
+        key={key}
+        testId="search-message"
+        avatar={hit.peerAccountId === ASSISTANT_PEER ? <AssistantAvatar /> : <PeerAvatar name={name} />}
+        name={name}
+        time={formatListTime(hit.timestamp)}
+        preview={
+          <>
+            {hit.direction === 'outgoing' ? 'You: ' : ''}
+            {snippet.before}
+            <strong className="font-semibold text-fg-primary">{snippet.match}</strong>
+            {snippet.after}
+          </>
+        }
+        unread={0}
+        selected={false}
+        highlighted={highlighted === key}
+        onClick={() => onOpenMessage(hit.peerAccountId, hit.messageId)}
+      />
+    );
+  };
+
+  const nothing = typed !== '' && !searching && sections.order.length === 0;
 
   return (
     <>
-      <div className="flex h-12 shrink-0 items-center gap-1">
-        <Button variant="ghost" size="icon" className="rounded-full font-normal" aria-label="Back to chats" onClick={onBack}>
-          <ArrowLeft className="size-5" />
-        </Button>
-        <h1 className="text-heading-m text-fg-primary">New chat</h1>
-      </div>
       <Input
         ref={field}
-        autoFocus
         value={query}
-        onChange={event => setQuery(event.target.value)}
-        placeholder="Type username"
-        aria-label="Username"
+        onChange={event => onQuery(event.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder={adding ? 'Type username' : 'Search by username or in messages'}
+        aria-label="Search"
         autoComplete="off"
         spellCheck={false}
-        className="mb-2 h-10 rounded-nested px-2 text-body-m md:text-body-m"
+        className="mb-2 h-10 shrink-0 rounded-nested px-2 text-body-m md:text-body-m"
       />
-      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto" data-testid="search-results">
-        {search.state === 'searching' ? <p className="px-2 py-4 text-body-s text-fg-tertiary">Searching…</p> : null}
-        {search.state === 'failed' ? (
-          <p role="alert" className="px-2 py-4 text-body-s text-fg-error">
-            {search.message}
-          </p>
-        ) : null}
-        {search.state === 'done' && search.results.length === 0 ? (
-          <p className="px-2 py-4 text-center text-body-s text-fg-secondary">No results for “{search.query}”</p>
-        ) : null}
-        {search.state === 'done'
-          ? search.results.map(result => (
-              <ChatRow
-                key={result.candidateAccountId}
-                avatar={<PeerAvatar name={result.username} />}
-                name={result.username}
-                time={null}
-                preview={stateOf(result)}
-                unread={0}
-                selected={false}
-                onClick={() => onPick(result)}
-              />
-            ))
-          : null}
-      </div>
+      {active ? (
+        <div ref={list} className="-mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2" data-testid="search-results">
+          {typed === '' ? (
+            recent.length > 0 ? (
+              <section aria-label="Recent" className="flex flex-col gap-0.5">
+                <SectionHeader>Recent</SectionHeader>
+                {recent.map(row => row.render(highlighted === resultKey.chat({ key: row.key, peer: row.target.peer })))}
+              </section>
+            ) : (
+              <p className="px-2 py-4 text-body-s text-fg-secondary">Type a username to find someone.</p>
+            )
+          ) : null}
+          {sections.chats.length > 0 ? (
+            <section aria-label="Chats and contacts" className="flex flex-col gap-0.5" data-testid="search-chats">
+              <SectionHeader>Chats and contacts</SectionHeader>
+              {sections.chats.map(hit => hit.row.render(highlighted === resultKey.chat(hit)))}
+            </section>
+          ) : null}
+          {sections.global.length > 0 || searching || current?.failed ? (
+            <section aria-label="Global search" className="flex flex-col gap-0.5" data-testid="search-global">
+              <SectionHeader>Global search</SectionHeader>
+              {sections.global.map(hit => {
+                const key = resultKey.global(hit);
+                return (
+                  <ChatRow
+                    key={key}
+                    testId="search-global-row"
+                    avatar={<PeerAvatar name={hit.username} />}
+                    name={hit.username}
+                    time={null}
+                    preview="Not a contact yet"
+                    unread={0}
+                    selected={false}
+                    highlighted={highlighted === key}
+                    onClick={() => onPickGlobal(hit)}
+                  />
+                );
+              })}
+              {searching || current?.loadingMore ? <p className="px-2 py-1.5 text-body-s text-fg-tertiary">Searching…</p> : null}
+              {current?.failed ? (
+                <p className="px-2 py-1.5 text-body-s text-fg-tertiary" data-testid="search-unavailable">
+                  Search unavailable
+                </p>
+              ) : null}
+              {current?.nextCursor && !current.loadingMore ? (
+                <Button variant="ghost" size="sm" className="ms-1 w-fit font-normal" onClick={showMore} data-testid="search-show-more">
+                  Show more
+                </Button>
+              ) : null}
+            </section>
+          ) : null}
+          {sections.messages.length > 0 ? (
+            <section aria-label="Messages" className="flex flex-col gap-0.5" data-testid="search-messages">
+              <SectionHeader>Messages</SectionHeader>
+              {sections.messages.map(messageRow)}
+            </section>
+          ) : null}
+          {nothing ? (
+            <div className="flex flex-col items-center gap-1 px-4 py-10 text-center" data-testid="search-no-results">
+              <SearchX className="mb-2 size-6 text-fg-tertiary" aria-hidden />
+              <p className="text-label-m text-fg-primary">No results for “{typed}”</p>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        children
+      )}
     </>
   );
 };

@@ -8,7 +8,7 @@
 import type { HexString } from '../../app/bytes';
 import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
 
-import { type MessageContent, previewOf } from './content';
+import { type MessageContent, isLiveFrame, previewOf } from './content';
 
 export const listRooms = async (): Promise<RoomRow[]> =>
   (await db.rooms.toArray()).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
@@ -183,3 +183,26 @@ export const setRoomMuted = (peerAccountId: PeerId, muted: boolean): Promise<num
 /** Unread messages of the rooms that are not muted: the window title and the dock badge. */
 export const countUnread = async (): Promise<number> =>
   (await db.rooms.toArray()).reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0);
+
+/** How many message hits the search shows (M7b step 1c). */
+export const MESSAGE_SEARCH_LIMIT = 20;
+
+/** The text a message search reads: text and richText rows, never a bot's live frame (status, not content). */
+const searchableText = (row: MessageRow): string | null => {
+  if (row.content.type === 'richText') return row.content.text;
+  if (row.content.type === 'text') return isLiveFrame(row.content) ? null : row.content.text;
+  return null;
+};
+
+/**
+ * Local message search: rows whose text contains `query` (case-insensitive),
+ * newest first, at most `limit`. Messages are never searched on the network.
+ * A plain filter over the table, no text index: 5 000 rows answer well under
+ * the 50 ms budget (messages.spec.ts, docs/decisions.md M7b).
+ */
+export const searchMessages = async (query: string, limit: number = MESSAGE_SEARCH_LIMIT): Promise<MessageRow[]> => {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return [];
+  const hits = (await db.messages.toArray()).filter(row => searchableText(row)?.toLowerCase().includes(needle) ?? false);
+  return hits.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
+};

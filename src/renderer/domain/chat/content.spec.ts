@@ -105,8 +105,16 @@ describe('isLiveFrame', () => {
     expect(isLiveFrame({ type: 'deleted' })).toBe(false);
   });
 
+  it("treats pca's first placeholder (thinking face and a space) as a live frame too", () => {
+    // Without this the placeholder flashes as a normal bubble before the first ⏳ frame.
+    expect(isLiveFrame({ type: 'text', text: '🤔 One moment — thinking…' })).toBe(true);
+    expect(isLiveFrame({ type: 'text', text: '🤔hmm' })).toBe(false);
+    expect(isLiveFrame({ type: 'text', text: 'I am not sure 🤔 ' })).toBe(false);
+  });
+
   it('drops the hourglass for display', () => {
     expect(liveFrameText('⏳ working · 3s\n▸ step')).toBe('working · 3s\n▸ step');
+    expect(liveFrameText('🤔 One moment — thinking…')).toBe('One moment — thinking…');
   });
 });
 

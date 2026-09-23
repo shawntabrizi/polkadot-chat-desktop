@@ -33,6 +33,10 @@ import { useLiveQuery } from './useLiveQuery';
 type Props = ({ peer: HexString; manager: ChatManager } | { peer: AssistantPeerId; assistant: AssistantChat }) & {
   /** The People-chain connection (contact rooms show a banner when it is down). */
   connection?: ConnectionSnapshot;
+  /** A message search hit (M7b): scroll to it and highlight it for a moment. */
+  scrollToMessageId?: string | null;
+  /** Changes on every pick, so the same hit picked again jumps again. */
+  scrollRequest?: number;
 };
 
 type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
@@ -82,7 +86,7 @@ const MuteButton = ({ peer, muted }: { peer: PeerId; muted: boolean }) => (
 );
 
 export const Room = (props: Props) => {
-  const { peer, connection } = props;
+  const { peer, connection, scrollToMessageId = null, scrollRequest = 0 } = props;
   const manager = 'manager' in props ? props.manager : null;
   const assistant = 'assistant' in props ? props.assistant : null;
   const contact = useLiveQuery(async () => (manager ? db.contacts.get(peer as HexString) : undefined), [peer, manager]);
@@ -324,6 +328,7 @@ export const Room = (props: Props) => {
         noteFor={row => (activity && row.messageId === activity.messageId && row.status === 'streaming' ? activity.title : null)}
         deleting={deleting}
         reveal={prefs.revealReplies}
+        jumpTo={scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null}
       />
       {error ? (
         <p role="alert" className="px-4 text-body-s text-fg-error">

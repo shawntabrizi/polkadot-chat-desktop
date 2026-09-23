@@ -26,6 +26,8 @@ export type NotifyDeps = {
   /** The system sound (`shell.beep()`); no audio file is bundled. */
   beep: () => void;
   getWindow: () => WindowLike | null;
+  /** Headless (automation): the room opens, the window stays hidden and takes no focus. */
+  headless?: boolean;
 };
 
 /** Notifications must stay referenced until clicked or closed, or the click is lost. */
@@ -41,9 +43,11 @@ export const showNotification = (request: NotifyRequest, deps: NotifyDeps): void
     live.delete(notification);
     const win = deps.getWindow();
     if (!win || win.isDestroyed()) return;
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
+    if (!deps.headless) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
     win.webContents.send(IPC.notifyOpen, { peerId: request.peerId, ...(request.requestId ? { requestId: request.requestId } : {}) });
   });
   notification.on('close', () => live.delete(notification));

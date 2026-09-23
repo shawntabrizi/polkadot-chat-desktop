@@ -8,6 +8,8 @@ import { type BrowserWindow, Menu, type MenuItemConstructorOptions, app, shell }
 
 import { IPC } from '../shared/desktop-api';
 
+import { isHeadless } from './headless';
+
 /** Help opens the project README (unverified: the repo has no remote yet; docs/questions.md). */
 export const README_URL = 'https://github.com/shawntabrizi/polkadot-chat-desktop#readme';
 
@@ -78,7 +80,7 @@ export const installAppMenu = (getWindow: () => BrowserWindow | null): void => {
     openSettings: () => {
       const win = getWindow();
       if (!win || win.isDestroyed()) return;
-      win.show();
+      if (!isHeadless()) win.show();
       win.webContents.send(IPC.menuSettings);
     },
     openReadme: () => void shell.openExternal(README_URL),

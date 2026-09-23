@@ -15,23 +15,29 @@ type Props = {
   avatar: ReactNode;
   name: string;
   time: string | null;
-  preview: string;
+  /** A search hit's preview carries the bold match, so it is a node. */
+  preview: ReactNode;
+  /** `tertiary` for a status such as "Typing…", not a message. */
+  previewTone?: 'secondary' | 'tertiary';
   unread: number;
   selected: boolean;
+  /** The row the search's ↑/↓ points at (M7b step 2). */
+  highlighted?: boolean;
   onClick: () => void;
   testId?: string;
   /** A room row: muted state and its toggle. Absent for search results and requests. */
   mute?: { muted: boolean; toggle: () => void };
 };
 
-export const ChatRow = ({ avatar, name, time, preview, unread, selected, onClick, testId, mute }: Props) => {
+export const ChatRow = ({ avatar, name, time, preview, previewTone = 'secondary', unread, selected, highlighted = false, onClick, testId, mute }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <div
       className={cn(
         'group/row relative flex w-full items-center rounded-nested transition-colors',
-        selected ? 'bg-selection-container-active' : 'hover:bg-selection-container-hover',
+        selected ? 'bg-selection-container-active' : highlighted ? 'bg-selection-container-hover' : 'hover:bg-selection-container-hover',
       )}
+      data-highlighted={highlighted ? 'true' : undefined}
     >
       <button
         type="button"
@@ -50,7 +56,7 @@ export const ChatRow = ({ avatar, name, time, preview, unread, selected, onClick
             {time ? <span className={cn('shrink-0 text-caption text-fg-tertiary', mute && 'group-hover/row:invisible', menuOpen && 'invisible')}>{time}</span> : null}
           </span>
           <span className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-body-m text-fg-secondary">{preview}</span>
+            <span className={cn('min-w-0 flex-1 truncate text-body-m', previewTone === 'tertiary' ? 'text-fg-tertiary' : 'text-fg-secondary')}>{preview}</span>
             {unread > 0 ? (
               <Badge
                 className={cn('h-5 min-w-5 shrink-0 rounded-full px-1.5 text-label-s', mute?.muted && 'bg-action-tertiary text-fg-secondary')}

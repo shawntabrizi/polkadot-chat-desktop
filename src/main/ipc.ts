@@ -35,6 +35,7 @@ import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
 import { readMetadata, writeMetadata } from './metadataCache';
+import { isHeadless } from './headless';
 import { showNotification } from './notify';
 
 // The mobile app's rule: lowercase letters only, 6 to 29 of them.
@@ -295,6 +296,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
       create: options => new Notification(options),
       beep: () => shell.beep(),
       getWindow,
+      headless: isHeadless(),
     });
   });
 

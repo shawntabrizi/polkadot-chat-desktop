@@ -161,9 +161,13 @@ export const previewOf = (content: MessageContent): string => {
 /**
  * A `pca` bot's live progress placeholder (bot-core `live-reply.mjs`): a text
  * message `⏳ working · 12s · step 2` plus action lines, edited in place until
- * the turn ends. It is status, not an answer, so it renders as a thinking row.
+ * the turn ends. `pca`'s first placeholder, "🤔 One moment — thinking…", is
+ * the same kind of status (M7 review carry item 1). It is not an answer, so
+ * it renders as a thinking row.
  */
-export const isLiveFrame = (content: MessageContent): boolean => content.type === 'text' && content.text.startsWith('⏳ ');
+const LIVE_FRAME_PREFIX = /^(?:⏳|🤔) /u;
 
-/** The frame without its hourglass, for the thinking row. */
-export const liveFrameText = (text: string): string => text.replace(/^⏳ /, '');
+export const isLiveFrame = (content: MessageContent): boolean => content.type === 'text' && LIVE_FRAME_PREFIX.test(content.text);
+
+/** The frame without its hourglass (or thinking face), for the thinking row. */
+export const liveFrameText = (text: string): string => text.replace(LIVE_FRAME_PREFIX, '');

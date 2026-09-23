@@ -51,3 +51,9 @@ Write the question, what you did meanwhile, and the date.
 - **The first pca placeholder is not a live frame.** Its default text is "🤔 One moment — thinking…" (`BOT_THINKING_TEXT`), and it becomes `⏳ …` only at the first progress frame. So the first seconds show a normal bubble. Should pca start with `⏳ `, or should the app also match the thinking text? Meanwhile: only `⏳ ` matches.
 - **The chat list shows the raw frame** ("⏳working · 12s · step 2 ▸ Readin…", seen in room.png). Should the list say "Working…" for a live frame? Meanwhile: unchanged (M7 does not ask).
 - **Quit inside the Undo time.** If the app quits within 6 s of "Delete for everyone", nothing is sent and the message stays after the restart. Acceptable, or should the pending deletion be persisted?
+
+## M7b (2026-09-23)
+
+- **Reply rows are not searched.** Step 1c says "text and richText rows", so a reply's text does not show under Messages. Should replies be searched too? It is a one-line change in `searchMessages`. Meanwhile: as written.
+- **Keep or clear the search after a pick?** I keep the results until Esc (Telegram Desktop), except for Recent picks and a sent request. The phone app leaves the search when a result opens. Which one do you want?
+- **Search reliability on devnet.** In three of eight screenshot runs a search failed: twice the searches stayed at "Searching…" for 60 s, and once "Show more" added no rows. All three runs had the window visible; the headless run after the fix passed. A plain `curl` a minute later answered in 0.4 s. The 15 s limit now ends such a search with "Search unavailable". I did not find the backend's rate-limit numbers. Is there a documented limit per IP?

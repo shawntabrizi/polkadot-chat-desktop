@@ -1034,3 +1034,205 @@ What the PNGs show (I read all of the new and changed ones):
 - **The Assistant's "Delete"** was not pressed in the app. `deleteMessage` has two specs (context and session dropped; no delete while streaming, no overwrite by a late event).
 - **The incoming tombstone in the app UI** was not seen live: the pca bot receives deletions but does not send them. The recipient rules have specs over the real SDK sessions and codec (`manager.messaging.spec.ts`) and over Dexie (`messages.spec.ts`).
 - `git status --short` is checked after the commit.
+
+## M7b
+
+Run on 2026-09-23 (macOS, Apple Silicon). The bots pcdpeer.47, pcdpirate.81, pcdcolor.05 and pcdguide.70 were running on devnet. I did not start or stop them.
+
+### `npm run check`
+
+```
+Test Files  40 passed (40)
+      Tests  280 passed (280)
+   Start at  15:05:17
+   Duration  3.70s (transform 1.42s, setup 667ms, import 7.78s, tests 8.53s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (104 files)
+```
+
+(`tsc` and `eslint` print nothing when clean; exit code 0.)
+
+### `npm run smoke`
+
+```
+✓ built in 174ms
+SMOKE_OK
+```
+
+### 5 000-row timing (step 4)
+
+`npx vitest run src/renderer/domain/chat/messages.spec.ts --reporter=verbose`:
+
+```
+stdout | src/renderer/domain/chat/messages.spec.ts > searchMessages > answers under 50 ms over 5 000 rows
+searchMessages over 5000 rows: 10.0 ms, 10 hits
+ ✓ src/renderer/domain/chat/messages.spec.ts > searchMessages > answers under 50 ms over 5 000 rows 169ms
+```
+
+The first cut (Dexie `Collection.filter()`) measured 89.1 ms and failed the 50 ms test. The committed `toArray()` + JavaScript filter measured 10.0 ms (docs/decisions.md).
+
+### `npm run screenshots` (headless, the committed code)
+
+```
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots
+
+> polkadot-chat-desktop@0.1.0 screenshots
+> node scripts/screenshots.mjs
+
+0.5s built
+5.7s saved berlin-day/signup.png
+11.1s saved berlin-night/signup.png
+11.9s seeded pcdecejakd.11
+11.9s assistant engine claude
+29.3s accepted the request of pcdtestjaia.98
+32.5s saved berlin-day/room.png
+32.7s deleting, the toast shows
+38.8s tombstone shown
+39.6s saved berlin-day/room-deleted.png
+44.5s saved berlin-day/assistant.png
+47.2s saved berlin-day/chats.png
+50.3s request sent to pcdpirate.81 from a global search hit
+52.2s saved berlin-day/search.png
+52.4s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke03:03 PM"
+52.5s saved berlin-day/search-jump.png
+53.8s the highlight ended
+58.3s global search "pcd": 7 rows, 14 after Show more
+59.2s saved berlin-day/search-empty.png
+61.5s saved berlin-day/search-no-results.png
+62.9s saved berlin-day/requests.png
+64.8s saved berlin-day/settings.png
+65.6s saved berlin-day/keyboard.png
+69.1s saved berlin-night/room.png
+69.9s saved berlin-night/room-deleted.png
+70.8s saved berlin-night/assistant.png
+73.4s saved berlin-night/chats.png
+76.6s saved berlin-night/search.png
+76.9s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke03:03 PM"
+76.9s saved berlin-night/search-jump.png
+78.2s the highlight ended
+79.0s saved berlin-night/search-empty.png
+82.2s saved berlin-night/search-no-results.png
+83.5s saved berlin-night/requests.png
+85.1s saved berlin-night/settings.png
+86.0s saved berlin-night/keyboard.png
+86.6s seeded profile removed: true
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/room-deleted.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/search.png
+  .agent-runs/screens/berlin-day/search-jump.png
+  .agent-runs/screens/berlin-day/search-empty.png
+  .agent-runs/screens/berlin-day/search-no-results.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/room-deleted.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/search.png
+  .agent-runs/screens/berlin-night/search-jump.png
+  .agent-runs/screens/berlin-night/search-empty.png
+  .agent-runs/screens/berlin-night/search-no-results.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+```
+
+Live checks inside this run: a global search hit opened the draft room and sent a request to `pcdpirate.81`, and the bot accepted it (its reply is in the list). ↓↓ from the field highlighted the first global row. A message hit opened the room with the message highlighted, and the highlight ended within 1.5 s. "Show more" for `pcd` went from 7 to 14 rows.
+
+What the PNGs show (I read all of the new ones in both themes, and room/room-deleted/chats/keyboard):
+
+- `search.png` (both): the field "pcdp"; CHATS AND CONTACTS: pcdpirate.81 (its last message as the preview); GLOBAL SEARCH: pcdpeer.47, "Not a contact yet", with the keyboard highlight; MESSAGES: pcdtestjaia.98, "You: Ask **pcdp**irate.81 for a pirate …", time "Now". The overline headers are uppercase tertiary.
+- `search-jump.png` (both): the room with pcdtestjaia.98 scrolled to "Ask pcdpirate.81 for a pirate joke" with the band behind the row; the search results stay on the left.
+- `search-empty.png` (both): "+" active, placeholder "Type username", RECENT with the two contact rooms.
+- `search-no-results.png` (both): "No results for “qxzqxzq”" with the SearchX icon.
+- `room.png` (Day): the chat list preview of the room with the live frame is "Typing…" in tertiary (carry item 2). Before, it showed the raw frame.
+- `keyboard.png`: ⌘K "Search chats, people and messages", ⌘N "New chat", "↑ / ↓ and Enter in the search".
+
+Visual problems I saw and fixed: the Night run sent the room message twice (the script checked before the room rendered; it now waits). The first highlight band hugged the bubble and I tried vertical padding, but that moved every row by 4 px (margin collapse), so I reverted to the horizontal band. The `search-jump` capture came too late in a slow run (after the 1.5 s), so that shot now captures at once.
+
+### Headless mode check (owner request)
+
+A hidden 1280×800 `BrowserWindow` with `show: false`, `paintWhenInitiallyHidden: true`, `backgroundThrottling: false` and `app.dock.hide()`, loading the built renderer, then `webContents.capturePage()` (a scratch Electron script, not committed):
+
+```
+visible=false visibilityState=visible size=2560x1536 empty=false sampledColors=47 nonWhiteSamples=40538
+```
+
+The PNG shows rendered text (the harness has no IPC handlers, so the page shows its IPC error line). It is not blank. The run above is headless, and its CDP captures are the PNGs I read. No window came to the front.
+
+### Earlier runs that failed (window visible, before the headless mode)
+
+The last run before the headless change:
+
+```
+> polkadot-chat-desktop@0.1.0 screenshots
+> node scripts/screenshots.mjs
+
+0.5s built
+11.3s saved berlin-day/signup.png
+22.4s saved berlin-night/signup.png
+23.2s seeded pcdecejakd.11
+23.2s assistant engine claude
+36.9s accepted the request of pcdtestjaia.98
+157.3s missed berlin-day/room.png: no message from pcdtestjaia.98
+157.6s deleting, the toast shows
+164.4s tombstone shown
+284.6s missed berlin-day/room-deleted.png: no live frame from pcdtestjaia.98 (see .agent-runs/screens/room-peer.log)
+297.1s saved berlin-day/assistant.png
+305.0s saved berlin-day/chats.png
+366.1s missed berlin-day/search.png: pcdpirate.81 not found by the global search: "GLOBAL SEARCH\n\nSearching…"
+376.1s missed berlin-day/search-jump.png: no highlighted message after the jump
+376.1s the highlight ended
+442.3s saved berlin-day/search-empty.png
+464.2s saved berlin-day/search-no-results.png
+470.4s saved berlin-day/requests.png
+477.7s saved berlin-day/settings.png
+483.6s saved berlin-day/keyboard.png
+487.7s saved berlin-night/room.png
+488.5s saved berlin-night/room-deleted.png
+489.4s saved berlin-night/assistant.png
+492.0s saved berlin-night/chats.png
+496.9s request sent to pcdpirate.81 from a global search hit
+499.5s saved berlin-night/search.png
+499.8s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke03:00 PM"
+499.8s saved berlin-night/search-jump.png
+501.1s the highlight ended
+501.9s saved berlin-night/search-empty.png
+504.0s saved berlin-night/search-no-results.png
+504.9s saved berlin-night/requests.png
+507.0s saved berlin-night/settings.png
+507.8s saved berlin-night/keyboard.png
+508.4s seeded profile removed: true
+
+PNGs:
+
+Not captured:
+  berlin-day/room.png (no message from pcdtestjaia.98)
+  berlin-day/room-deleted.png (no live frame from pcdtestjaia.98 (see .agent-runs/screens/room-peer.log))
+  berlin-day/search.png (pcdpirate.81 not found by the global search: "GLOBAL SEARCH\n\nSearching…")
+  berlin-day/search-jump.png (no highlighted message after the jump)
+  berlin-day: Show more (no Show more for "pcd")
+SCREENSHOTS_PARTIAL
+```
+
+Here the room peer's script gave no message within 120 s, and username searches stayed at "Searching…" for 60 s. A `curl` to the backend a minute later answered in 0.4 s. A likely cause is timer throttling of the backgrounded window during proof-of-work mining. That is why each search now has a 15 s limit that also stops the mining, and why the headless window has `backgroundThrottling: false`. An earlier run had "Show more added no rows" once. Five other runs passed (docs/questions.md).
+
+### Not run / not seen
+
+- The global search's "Search unavailable" line was not seen in a PNG. The timeout path has a spec (a fetch that never answers is aborted).
+- The "Searching…" line was not captured in a PNG. The failed-run output above shows it as the text of the global section.
+- The `🤔 ` live frame was not seen from a real pca bot. It has a spec. The live frame in the screenshots is the `⏳` frame from the test identity.
+- `--visible` was not run after the change (all visible runs above came before it; the flag only drops the env var).
+- `git status --short` is checked after the commit.
