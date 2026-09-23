@@ -10,9 +10,11 @@ Status: v1 scope written 2026-09-23. Working name `polkadot-chat-desktop`.
 
 ## Goals (v1)
 
-1. **Own identity.** Create a username on the People chain from the desktop app
-   alone, the way `pca create` does. Keys are minted on this machine and stored
-   encrypted by the OS. No mobile app anywhere in the flow.
+1. **Own identity.** On first launch the user signs up: types a username,
+   picks the two digits or lets the network pick, sees whether it is free, and
+   the app claims it on the People chain the way `pca create` does. Keys are
+   minted on this machine and stored encrypted by the OS, so the next launch
+   opens straight into chats. No mobile app anywhere in the flow.
 2. **Chat with anyone.** Find people by username, send and accept chat requests,
    live 1:1 chat with phone users and bots: text, replies, reactions, edits.
 3. **AI assistant in the app.** A built-in assistant contact answered by an LLM
@@ -28,6 +30,8 @@ Status: v1 scope written 2026-09-23. Working name `polkadot-chat-desktop`.
   target is macOS in v1).
 - Agents that act on-chain as separate peers (that is v2, built on
   `.refs/bot-core`).
+- Identity backup to Google Drive, as the mobile app does (v2). v1 stores the
+  credentials only on this machine; a lost machine is a lost identity.
 
 ## Architecture
 
