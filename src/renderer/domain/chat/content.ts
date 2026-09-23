@@ -10,13 +10,34 @@
  * variants go to the contact, and the rest is dropped with a warning.
  */
 
-import type { ChatContent } from './identityEvents';
+import { openableUrl } from '../../../shared/openUrl';
+
+import { BUTTONS_KIND, type ButtonWire, type ChatContent } from './identityEvents';
 
 export type Attachment = {
   kind: 'general' | 'image' | 'video';
   mimeType: string;
   fileSize: number;
 };
+
+/**
+ * A spec 0006 button action as this client stores it. `tx` (reserved for RFC
+ * 0007) and anything this client may not run (a URL with another scheme, a
+ * callback over the payload limit) are `unsupported`: shown, disabled. An
+ * action tag above 3 never gets here: the message cannot be decoded at all.
+ */
+export type ButtonAction =
+  | { kind: 'command'; command: string }
+  | { kind: 'callback'; payload: Uint8Array }
+  | { kind: 'url'; url: string }
+  | { kind: 'unsupported' };
+export type ChatButton = { label: string; action: ButtonAction };
+
+/** Spec 0006 limits. */
+export const MAX_BUTTON_ROWS = 8;
+export const MAX_BUTTONS_PER_ROW = 4;
+export const MAX_BUTTON_LABEL = 40;
+export const MAX_CALLBACK_BYTES = 256;
 
 /** What a message row holds. Reactions and edits are not rows; they mutate one. */
 export type MessageContent =
@@ -28,7 +49,14 @@ export type MessageContent =
   | { type: 'callDeclined' }
   | { type: 'unsupported'; tag: string }
   /** RFC-0003 tombstone: the text, attachments and edit history are gone; id and time stay. */
-  | { type: 'deleted' };
+  | { type: 'deleted' }
+  /**
+   * Spec 0006 `buttons`: `text` is the bubble, `rows` the keyboard. `pressed`
+   * is the first press on this device; a `oneShot` keyboard is gone after it.
+   */
+  | { type: 'buttons'; text: string; rows: ChatButton[][]; oneShot: boolean; pressed: { row: number; index: number } | null }
+  /** System row: the peer pressed a button of a keyboard we sent (spec 0006). */
+  | { type: 'buttonPressed'; label: string };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -38,13 +66,18 @@ export type OutgoingContent =
   | { type: 'edit'; messageId: string; text: string }
   | { type: 'callDecline'; offerMessageId: string }
   /** RFC-0003 delete for everyone: asks the peer to tombstone our message `targetMessageId`. */
-  | { type: 'deleted'; targetMessageId: string };
+  | { type: 'deleted'; targetMessageId: string }
+  /** Spec 0006: a keyboard. Only test scripts send one in M8 (docs/decisions.md). */
+  | { type: 'buttons'; text: string; rows: ButtonWire[][]; oneShot: boolean }
+  /** Spec 0006: a callback button of the peer's message `messageId` was pressed. */
+  | { type: 'buttonPress'; messageId: string; row: number; index: number; payload: Uint8Array };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
   | { kind: 'reaction'; messageId: string; emoji: string; add: boolean }
   | { kind: 'edit'; messageId: string; text: string }
   | { kind: 'deleted'; targetMessageId: string }
+  | { kind: 'buttonPress'; messageId: string; row: number; index: number }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -64,8 +97,44 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'dataChannelClosed', value: { offerMessageId: content.offerMessageId } };
     case 'deleted':
       return { tag: 'deleted', value: { targetMessageId: content.targetMessageId } };
+    case 'buttons':
+      return { tag: 'buttons', value: { text: content.text, rows: content.rows, oneShot: content.oneShot } };
+    case 'buttonPress':
+      return {
+        tag: 'buttonPress',
+        value: { messageId: content.messageId, row: content.row, index: content.index, payload: content.payload },
+      };
   }
 };
+
+/** Cut to `max` characters (code points, so an emoji is not split). */
+const clip = (text: string, max: number): string => {
+  const chars = [...text];
+  return chars.length <= max ? text : `${chars.slice(0, max - 1).join('')}…`;
+};
+
+const actionOf = (action: ButtonWire['action']): ButtonAction => {
+  switch (action.tag) {
+    case 'command':
+      return { kind: 'command', command: action.value };
+    case 'callback':
+      return action.value.length <= MAX_CALLBACK_BYTES ? { kind: 'callback', payload: action.value } : { kind: 'unsupported' };
+    case 'url':
+      return openableUrl(action.value) ? { kind: 'url', url: action.value } : { kind: 'unsupported' };
+    default:
+      return { kind: 'unsupported' };
+  }
+};
+
+/**
+ * The stored keyboard of a received `buttons`: within the spec's limits
+ * (extra rows and buttons are dropped, long labels cut). Row and button
+ * positions are kept, so a press names the sender's indexes.
+ */
+export const keyboardOf = (rows: readonly ButtonWire[][]): ChatButton[][] =>
+  rows
+    .slice(0, MAX_BUTTON_ROWS)
+    .map(row => row.slice(0, MAX_BUTTONS_PER_ROW).map(button => ({ label: clip(button.label, MAX_BUTTON_LABEL), action: actionOf(button.action) })));
 
 const attachmentOf = (file: { tag: string; value: { meta: { tag: string; value: unknown } } }): Attachment | null => {
   if (file.tag !== 'p2pMixnet') return null;
@@ -103,6 +172,18 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       return { kind: 'edit', messageId: content.value.messageId, text: content.value.newContent.text ?? '' };
     case 'deleted':
       return { kind: 'deleted', targetMessageId: content.value.targetMessageId };
+    case 'buttons':
+      return {
+        kind: 'message',
+        content: { type: 'buttons', text: content.value.text, rows: keyboardOf(content.value.rows), oneShot: content.value.oneShot, pressed: null },
+      };
+    case 'buttonPress':
+      // Never a bubble: the manager checks it against the keyboard we sent.
+      return { kind: 'buttonPress', messageId: content.value.messageId, row: content.value.row, index: content.value.index };
+    case 'undecodable':
+      // A keyboard we cannot read (an action tag above 3) is still a message
+      // the peer sent: the unsupported bubble. A press we cannot read is nothing.
+      return content.value.kind === BUTTONS_KIND ? { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } } : { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };
     case 'contactAdded':
@@ -155,6 +236,10 @@ export const previewOf = (content: MessageContent): string => {
       return `Unsupported message (${content.tag})`;
     case 'deleted':
       return 'Message deleted';
+    case 'buttons':
+      return content.text;
+    case 'buttonPressed':
+      return `Pressed ${content.label}`;
   }
 };
 

@@ -10,7 +10,7 @@ import { ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assi
 import { isLiveFrame } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { ChatManager } from '../domain/chat/manager';
-import { listMessages, markRoomRead, setRoomMuted } from '../domain/chat/messages';
+import { listMessages, markButtonPressed, markRoomRead, setRoomMuted } from '../domain/chat/messages';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -46,6 +46,14 @@ const DRAFT_SAVE_MS = 300;
 
 /** Delete acts at once and can be undone this long; then it is sent (M7 step 3). */
 const DELETE_UNDO_MS = 6000;
+
+/** Spec 0006: a callback press spins until the bot's next message, at most this long. */
+const CALLBACK_WAIT_MS = 10_000;
+/** Any other press is highlighted this long. */
+const PRESS_FLASH_MS = 1_000;
+
+/** The last pressed button of the room; `since` is the newest incoming message at the press. */
+type PressState = { messageId: string; row: number; index: number; busy: boolean; since: string | null };
 
 const noActivity = { subscribe: () => () => undefined, snapshot: () => null };
 
@@ -99,6 +107,7 @@ export const Room = (props: Props) => {
   const [error, setError] = useState<string | null>(null);
   const [assistantSettings, setAssistantSettings] = useState<AssistantSettings | null>(null);
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
+  const [press, setPress] = useState<PressState | null>(null);
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
@@ -161,14 +170,60 @@ export const Room = (props: Props) => {
     void Promise.resolve().then(() => setFirstUnreadId(anchor));
   }, [messages, room, firstUnreadId]);
 
+  // One assistant reply at a time: Send waits until it ends or is stopped.
+  const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
+
+  // ── Buttons (spec 0006): the pressed button stays marked until the bot
+  // answers (callback) or for a moment (anything else).
+  const lastIncomingId = [...(messages ?? [])].reverse().find(row => row.direction === 'incoming')?.messageId ?? null;
+  useEffect(() => {
+    if (!press) return;
+    if (press.since !== lastIncomingId) {
+      void Promise.resolve().then(() => setPress(current => (current === press ? null : current)));
+      return;
+    }
+    const timer = setTimeout(() => setPress(current => (current === press ? null : current)), press.busy ? CALLBACK_WAIT_MS : PRESS_FLASH_MS);
+    return () => clearTimeout(timer);
+  }, [press, lastIncomingId]);
+
+  const pressButton = async (row: MessageRow, r: number, i: number) => {
+    if (row.content.type !== 'buttons') return;
+    const action = row.content.rows[r]?.[i]?.action;
+    if (!action || action.kind === 'unsupported') return;
+    setError(null);
+    const current: PressState = { messageId: row.messageId, row: r, index: i, busy: action.kind === 'callback', since: lastIncomingId };
+    setPress(current);
+    try {
+      if (action.kind === 'url') {
+        if (!window.desktop) throw new Error('Links open in the desktop app only.');
+        await window.desktop.app.openUrl(action.url);
+      }
+      if (manager) await manager.pressButton(peer as HexString, row.messageId, r, i);
+      else if (assistant) {
+        // The Assistant's buttons: a command is the user's next message.
+        if (action.kind === 'command') await assistant.send(action.command);
+        await markButtonPressed(row.messageId, r, i);
+      }
+    } catch (cause) {
+      setPress(state => (state === current ? null : state));
+      setError(`${plainError(cause, 'The button did not work.')} Try again.`);
+    }
+  };
+
+  const keyboardFor = (row: MessageRow) =>
+    row.content.type === 'buttons' && row.direction === 'incoming' && !answering
+      ? {
+          press: (r: number, i: number) => void pressButton(row, r, i),
+          active: press?.messageId === row.messageId ? { row: press.row, index: press.index, busy: press.busy } : null,
+        }
+      : undefined;
+
   const unread = room?.unreadCount ?? 0;
   const markSeen = () => {
     if (unread === 0) return;
     void (manager ? manager.markRead(peer as HexString) : markRoomRead(peer));
   };
 
-  // One assistant reply at a time: Send waits until it ends or is stopped.
-  const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
   const name = assistant ? ASSISTANT_USERNAME : (contact?.username ?? '');
 
   const submit = async () => {
@@ -264,10 +319,15 @@ export const Room = (props: Props) => {
     // A tombstone, a message on its way out, and a bot's live frame take no actions.
     if (row.content.type === 'deleted' || deleting.has(row.messageId) || (manager && isLiveFrame(row.content))) return null;
     if (!manager) {
-      // The Assistant: Copy text, and Delete (local only) once a reply is finished.
-      return row.content.type === 'text' && row.status !== 'streaming' ? { remove: { label: 'Delete', run: () => requestDelete(row) } } : {};
+      // The Assistant: Copy text, its buttons, and Delete (local only) once a reply is finished.
+      const keyboard = keyboardFor(row);
+      return (row.content.type === 'text' || row.content.type === 'buttons') && row.status !== 'streaming'
+        ? { remove: { label: 'Delete', run: () => requestDelete(row) }, ...(keyboard ? { keyboard } : {}) }
+        : {};
     }
+    const keyboard = keyboardFor(row);
     return {
+      ...(keyboard ? { keyboard } : {}),
       react: emoji => void toggleReaction(row, emoji),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isEditable(row) ? () => startEdit(row) : undefined,

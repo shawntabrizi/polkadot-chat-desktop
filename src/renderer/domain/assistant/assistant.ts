@@ -15,13 +15,31 @@
 import { randomId } from '../../app/bytes';
 import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
 import { readSetting, writeSetting } from '../../app/settings';
-import { previewOf } from '../chat/content';
+import { type MessageContent, keyboardOf, previewOf } from '../chat/content';
 import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '../chat/messages';
+import { parseButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
 export const ASSISTANT_PEER: AssistantPeerId = 'local:assistant';
 export const ASSISTANT_USERNAME = 'Assistant';
-export const SYSTEM_PROMPT = 'You are the assistant inside Polkadot Chat. Answer briefly in markdown.';
+export const SYSTEM_PROMPT =
+  'You are the assistant inside Polkadot Chat. Answer briefly in markdown. ' +
+  'When the user should pick from a few choices, you may end the reply with a fenced ```buttons block of JSON, ' +
+  '{"rows":[[{"label":"Yes","action":{"command":"yes"}}]]}: each command is sent back to you as the user\'s message when pressed.';
+
+/**
+ * A finished reply: a trailing ```buttons block (spec 0006, the parser pca
+ * uses) becomes a keyboard under the text. The Assistant has no peer to
+ * receive a `callback`, so a callback button shows disabled.
+ */
+export const replyContent = (text: string): MessageContent => {
+  const block = parseButtonsBlock(text);
+  if (!block) return { type: 'text', text };
+  const rows = keyboardOf(block.rows.map(row => row.map(toButtonWire))).map(row =>
+    row.map(button => (button.action.kind === 'callback' ? { ...button, action: { kind: 'unsupported' as const } } : button)),
+  );
+  return { type: 'buttons', text: block.text, rows, oneShot: block.oneShot, pressed: null };
+};
 /** How many earlier messages of the room go with a new one as context. */
 export const CONTEXT_TURNS = 30;
 
@@ -35,12 +53,12 @@ export const isAssistantPeer = (peer: string): peer is AssistantPeerId => peer =
 export const buildContext = (rows: MessageRow[]): AssistantChatMessage[] => {
   const turns = [...rows]
     .sort((a, b) => a.timestamp - b.timestamp)
-    .filter(row => row.direction !== 'system' && row.content.type === 'text' && row.content.text.trim() !== '')
+    .filter(row => row.direction !== 'system' && (row.content.type === 'text' || row.content.type === 'buttons') && row.content.text.trim() !== '')
     .filter(row => !(row.direction === 'incoming' && row.status !== 'received'))
     .slice(-CONTEXT_TURNS)
     .map((row): AssistantChatMessage => ({
       role: row.direction === 'outgoing' ? 'user' : 'assistant',
-      content: row.content.type === 'text' ? row.content.text : '',
+      content: row.content.type === 'text' || row.content.type === 'buttons' ? row.content.text : '',
     }));
   return [{ role: 'system', content: SYSTEM_PROMPT }, ...turns];
 };
@@ -109,7 +127,8 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   const writeReply = async (messageId: string, status: MessageRow['status']): Promise<void> => {
     const reply = replies.get(messageId);
     if (!reply) return;
-    const content = { type: 'text' as const, text: reply.text };
+    // Buttons only once the reply is whole: a half-streamed block is text.
+    const content: MessageContent = status === 'received' ? replyContent(reply.text) : { type: 'text', text: reply.text };
     // A reply deleted in the room stays deleted, whatever still arrives for it.
     if ((await db.messages.get(messageId))?.content.type === 'deleted') return;
     const updated = await db.messages.update(messageId, { content, status });

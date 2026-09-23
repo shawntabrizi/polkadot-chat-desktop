@@ -9,7 +9,7 @@
  */
 
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
-import { type Codec, type CodecType, Struct, createCodec, str, u64, u8 } from 'scale-ts';
+import { Bytes, type Codec, type CodecType, Enum, Struct, Vector, bool, createCodec, str, u64, u8 } from 'scale-ts';
 
 import { hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
@@ -21,7 +21,30 @@ type SdkChatMessageWire = CodecType<typeof SdkChatMessage>;
  * `targetMessageId` is the retracted message (the envelope has its own `messageId`).
  */
 export type DeletedWire = { tag: 'deleted'; value: { targetMessageId: string } };
-export type ChatContent = SdkChatMessageWire['versioned']['value'] | DeletedWire;
+
+/**
+ * Spec 0006 `Action`. `tx` is reserved (RFC 0007): decoded as opaque bytes,
+ * never executed.
+ */
+export type ButtonActionWire =
+  | { tag: 'command'; value: string }
+  | { tag: 'callback'; value: Uint8Array }
+  | { tag: 'url'; value: string }
+  | { tag: 'tx'; value: Uint8Array };
+export type ButtonWire = { label: string; action: ButtonActionWire };
+/** Spec 0006 `buttons(ButtonsContent)`, provisional kind 242. */
+export type ButtonsWire = { tag: 'buttons'; value: { text: string; rows: ButtonWire[][]; oneShot: boolean } };
+/** Spec 0006 `buttonPress(ButtonPressContent)`, provisional kind 243. `messageId` is the buttons message. */
+export type ButtonPressWire = { tag: 'buttonPress'; value: { messageId: string; row: number; index: number; payload: Uint8Array } };
+
+/**
+ * A spec 0006 kind (242/243) whose header decodes but whose body does not:
+ * an unknown action tag (above 3) has no length prefix, so nothing after it
+ * can be read. Receive-only; the app shows the unsupported bubble for it.
+ */
+export type UndecodableWire = { tag: 'undecodable'; value: { kind: number } };
+
+export type ChatContent = SdkChatMessageWire['versioned']['value'] | DeletedWire | ButtonsWire | ButtonPressWire | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
 /**
@@ -32,47 +55,100 @@ export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned:
  * and writes it and hands every other kind to the SDK.
  */
 export const DELETED_KIND = 21;
+/** Spec 0006 provisional kinds (docs/spec/kinds.md). */
+export const BUTTONS_KIND = 242;
+export const BUTTON_PRESS_KIND = 243;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
-const DeletedMessage = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, target: str });
+
+// Spec 0006 layout. scale-ts numbers enum variants in key order: command 0,
+// callback 1, url 2, tx 3.
+const ActionCodec = Enum({ command: str, callback: Bytes(), url: str, tx: Bytes() });
+const ButtonCodec = Struct({ label: str, action: ActionCodec });
+const ButtonsContentCodec = Struct({ text: str, rows: Vector(Vector(ButtonCodec)), oneShot: bool });
+const ButtonPressContentCodec = Struct({ messageId: str, row: u8, index: u8, payload: Bytes() });
+
+type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire;
+type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
+
+/** The header plus one extension body; the caller writes the kind byte. */
+const envelope = <T>(content: Codec<T>) =>
+  Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, content });
+
+const DeletedMessage = envelope(str);
+const ButtonsMessage = envelope(ButtonsContentCodec);
+const ButtonPressMessage = envelope(ButtonPressContentCodec);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
   value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
 
-const decodeDeleted = (bytes: Uint8Array): ChatMessageWire | null => {
+/** Decodes one extension kind strictly: the body must end the message; null otherwise. */
+const decodeWith = <T>(codec: Codec<Envelope & { content: T }>, bytes: Uint8Array, toContent: (content: T) => ExtensionWire): ChatMessageWire | null => {
   try {
-    const header = Header.dec(bytes);
-    if (header.version !== V1 || header.kind !== DELETED_KIND) return null;
-    const decoded = DeletedMessage.dec(bytes);
-    // Bytes after the target string: not a well-formed `deleted`; the SDK
-    // decode that follows rejects it, and the entry counts as unsupported.
-    if (DeletedMessage.enc(decoded).length !== bytes.length) return null;
-    return {
-      messageId: decoded.messageId,
-      timestamp: decoded.timestamp,
-      versioned: { tag: 'v1', value: { tag: 'deleted', value: { targetMessageId: decoded.target } } },
-    };
+    const decoded = codec.dec(bytes);
+    // Bytes after the body: not a well-formed message of this kind.
+    if (codec.enc(decoded).length !== bytes.length) return null;
+    return { messageId: decoded.messageId, timestamp: decoded.timestamp, versioned: { tag: 'v1', value: toContent(decoded.content) } };
   } catch {
     return null;
   }
 };
 
+/** A spec 0006 message this build cannot read past the header (coordinator ruling, docs/decisions.md M8). */
+const undecodable = (header: Envelope): ChatMessageWire => ({
+  messageId: header.messageId,
+  timestamp: header.timestamp,
+  versioned: { tag: 'v1', value: { tag: 'undecodable', value: { kind: header.kind } } },
+});
+
+const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
+  let header: Envelope;
+  try {
+    header = Header.dec(bytes);
+  } catch {
+    return null;
+  }
+  if (header.version !== V1) return null;
+  switch (header.kind) {
+    case DELETED_KIND:
+      // A malformed `deleted` falls through to the SDK decode, which rejects
+      // it: one unsupported entry, never a bubble.
+      return decodeWith(DeletedMessage, bytes, target => ({ tag: 'deleted', value: { targetMessageId: target } }));
+    case BUTTONS_KIND:
+      return decodeWith(ButtonsMessage, bytes, value => ({ tag: 'buttons', value })) ?? undecodable(header);
+    case BUTTON_PRESS_KIND:
+      return decodeWith(ButtonPressMessage, bytes, value => ({ tag: 'buttonPress', value })) ?? undecodable(header);
+    default:
+      return null;
+  }
+};
+
 /**
- * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`.
+ * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
+ * (RFC-0003) and kinds 242 `buttons` / 243 `buttonPress` (spec 0006).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
   message => {
     const content = message.versioned.value;
-    if (content.tag === 'deleted') {
-      return DeletedMessage.enc({ messageId: message.messageId, timestamp: message.timestamp, version: V1, kind: DELETED_KIND, target: content.value.targetMessageId });
+    const head = { messageId: message.messageId, timestamp: message.timestamp, version: V1 };
+    switch (content.tag) {
+      case 'deleted':
+        return DeletedMessage.enc({ ...head, kind: DELETED_KIND, content: content.value.targetMessageId });
+      case 'buttons':
+        return ButtonsMessage.enc({ ...head, kind: BUTTONS_KIND, content: content.value });
+      case 'buttonPress':
+        return ButtonPressMessage.enc({ ...head, kind: BUTTON_PRESS_KIND, content: content.value });
+      case 'undecodable':
+        throw new Error('an undecodable message is receive-only');
+      default:
+        return SdkChatMessage.enc({ ...message, versioned: { tag: 'v1', value: content } });
     }
-    return SdkChatMessage.enc({ ...message, versioned: { tag: 'v1', value: content } });
   },
   value => {
     const bytes = toBytes(value);
-    return decodeDeleted(bytes) ?? SdkChatMessage.dec(bytes);
+    return decodeExtension(bytes) ?? SdkChatMessage.dec(bytes);
   },
 );
 

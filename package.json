@@ -21,6 +21,7 @@
     "e2e:chat": "node scripts/e2e-chat.mjs",
     "e2e:assistant": "node scripts/e2e-assistant.mjs",
     "e2e:engines": "node scripts/e2e-engines.mjs",
+    "e2e:buttons": "node scripts/e2e-buttons.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {

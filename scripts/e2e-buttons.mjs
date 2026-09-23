@@ -1,21 +1,14 @@
 #!/usr/bin/env node
-// Headless chat round trip with a live peer, through this repo's domain code:
-//   npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete]
-// Reuses .agent-runs/identity-<name>/identity.json (M1's script writes it) or
-// registers <name> + 4 random letters with M1's createIdentity. Dexie runs on
-// fake-indexeddb (memory only), seeded with the identity the way the app seeds
-// it. Sends a chat request, waits for the accept, sends `ping <nonce>`, waits
-// for a reply. Exit 0 E2E_OK, 3 PEER_KEY_UNSUPPORTED, 4 E2E_TIMEOUT <stage>,
-// 1 any other failure. Prints no secret.
-// --delete (M7, RFC-0003): after the reply, sends `delete me <nonce>`, lets
-// the echo land, deletes it for everyone (DELETE_SENT <messageId>), then sends
-// `ping <nonce>` again and waits for the answer. A bot with the pca RFC-0003
-// half logs BOT_RECEIVED_DELETED; that log is the bot's, not checked here.
-// --live-frame (M7 screenshots): after the reply, sends one text shaped like a
-// pca live progress frame (`⏳ working · …`), so the peer shows a thinking row.
-// --buttons (M8 screenshots): after the reply (and the live frame), sends one
-// spec 0006 keyboard (kind 242) with two rows: callback, command, url, and a
-// reserved tx button. The test identity acts as the operator flag here.
+// M8 e2e (spec 0006 buttons) against a live pca bot, through this repo's domain code:
+//   npm run e2e:buttons -- [peerUsername=pcdguide.70] [--profile devnet|paseo] [--identity <name>]
+// Same setup as e2e-chat.mjs (the identity file, fake-indexeddb, the People
+// connection). Sends a chat request, waits for the accept, sends `menu`, and
+// waits for a `buttons` message (BUTTONS_RECEIVED rows=<n>). Presses the first
+// `callback` button through the manager, as the app does (PRESS_SENT), and
+// waits up to 60 s for a text reply that names the button's label (BUTTONS_OK).
+// Exit 0 BUTTONS_OK; 7 BUTTONS_FALLBACK (the bot answered `menu` with plain
+// text: no buttons extension, or the gate did not open); 3 PEER_KEY_UNSUPPORTED;
+// 4 E2E_TIMEOUT <stage>; 1 any other failure. Prints no secret.
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -47,16 +40,9 @@ const flag = (name) => {
   return at >= 0 ? args[at + 1] : undefined;
 };
 const flagValues = new Set(['--profile', '--identity'].map((f) => args.indexOf(f) + 1).filter((i) => i > 0));
-const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.has(i));
+const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.has(i)) ?? 'pcdguide.70';
 const profile = flag('profile') ?? 'devnet';
 const identityName = flag('identity') ?? 'pcde2e';
-const deleteRun = args.includes('--delete');
-const liveFrameRun = args.includes('--live-frame');
-const buttonsRun = args.includes('--buttons');
-if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons]');
-  process.exit(2);
-}
 if (profile !== 'devnet' && profile !== 'paseo') {
   console.error(`unknown profile "${profile}" (devnet or paseo)`);
   process.exit(2);
@@ -222,101 +208,81 @@ if (await db.contacts.get(peerAccountHex)) {
 const sessionReady = await waitFor(async () => (await db.messages.where('peerAccountId').equals(peerAccountHex).count()) > 0, 10_000);
 if (!sessionReady) console.log('note: no chat row yet; sending anyway');
 
-const textOf = (row) => (row.content.type === 'text' || row.content.type === 'reply' ? row.content.text : `[${row.content.type}]`);
+const textOf = (row) =>
+  row.content.type === 'text' || row.content.type === 'reply' || row.content.type === 'buttons' ? row.content.text : `[${row.content.type}]`;
+const oneLine = (text) => text.replace(/\s+/g, ' ').slice(0, 100);
 const incoming = async () =>
   (await db.messages.toArray()).filter((row) => row.peerAccountId === peerAccountHex && row.direction === 'incoming');
-// A bot answers the request itself (an echo bot echoes the empty opener) a
-// moment after the accept. Let that land first, so it is not taken for the
-// answer to the ping.
+// pca status rows are not answers: its live frames (⏳ / 🤔, M7) and the
+// receipt it edits the placeholder into ("✓ Answered in …").
+const isStatus = (row) => row.content.type === 'text' && /^(?:⏳|🤔|✓) /u.test(row.content.text);
+
+// A bot answers the request itself a moment after the accept. Let that land
+// first, so it is not taken for the answer to `menu`.
 const greeting = await waitFor(async () => (await incoming())[0], GREETING_WAIT_MS);
-if (greeting) console.log(`GREETING ${textOf(greeting).slice(0, 80)}`);
+if (greeting) console.log(`GREETING ${oneLine(textOf(greeting))}`);
+
 const before = new Set((await incoming()).map((row) => row.messageId));
-const nonce = randomBytes(3).toString('hex');
 try {
-  await manager.sendMessage(peerAccountHex, { type: 'text', text: `ping ${nonce}` });
+  await manager.sendMessage(peerAccountHex, { type: 'text', text: 'menu' });
 } catch (error) {
   finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
 }
-console.log(`PING_SENT ping ${nonce}`);
+console.log('MENU_SENT menu');
 
-const reply = await waitFor(async () => (await incoming()).find((row) => !before.has(row.messageId)));
-if (!reply) finish(4, 'E2E_TIMEOUT reply');
-console.log(`REPLY ${textOf(reply).slice(0, 80)}`);
-console.log(`REPLY_HAS_NONCE ${textOf(reply).includes(nonce) ? 'yes' : 'no'}`);
-
-if (deleteRun) {
-  /** Sends one text and waits for the next incoming row after it. */
-  const sendAndWait = async (text, stage) => {
-    const seen = new Set((await incoming()).map((row) => row.messageId));
-    try {
-      await manager.sendMessage(peerAccountHex, { type: 'text', text });
-    } catch (error) {
-      finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-    }
-    const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === text);
-    const answer = await waitFor(async () => (await incoming()).find((row) => !seen.has(row.messageId)));
-    if (!answer) finish(4, `E2E_TIMEOUT ${stage}`);
-    return { own, answer };
-  };
-
-  const doomedText = `delete me ${randomBytes(3).toString('hex')}`;
-  const doomed = await sendAndWait(doomedText, 'echo of the message to delete');
-  console.log(`DOOMED_SENT ${doomedText}`);
-  console.log(`DOOMED_ECHO ${textOf(doomed.answer).slice(0, 80)}`);
-  try {
-    await manager.deleteForEveryone(peerAccountHex, doomed.own.messageId);
-  } catch (error) {
-    finish(1, `DELETE_FAIL ${error instanceof Error ? error.message : String(error)}`);
+/** How long a plain-text answer may stand before it counts as the fallback. */
+const FALLBACK_GRACE_MS = 20_000;
+let plainSince = null;
+let plain = null;
+const keyboard = await waitFor(async () => {
+  const fresh = (await incoming()).filter((row) => !before.has(row.messageId));
+  const found = fresh.find((row) => row.content.type === 'buttons');
+  if (found) return found;
+  const answer = fresh.find((row) => row.content.type === 'text' && !isStatus(row));
+  if (answer && plainSince === null) {
+    plainSince = Date.now();
+    plain = answer;
   }
-  console.log(`DELETE_SENT ${doomed.own.messageId}`);
-  const local = await db.messages.get(doomed.own.messageId);
-  console.log(`LOCAL_TOMBSTONE ${local?.content.type === 'deleted' ? 'yes' : 'no'}`);
-  if (local?.content.type !== 'deleted') finish(1, 'DELETE_FAIL the local row is not a tombstone');
+  if (plainSince !== null && Date.now() - plainSince > FALLBACK_GRACE_MS) return 'fallback';
+  return null;
+}, STAGE_TIMEOUT_MS);
+if (keyboard === 'fallback') {
+  console.log(`PLAIN_REPLY ${oneLine(textOf(plain))}`);
+  finish(7, 'BUTTONS_FALLBACK');
+}
+if (!keyboard) finish(4, 'E2E_TIMEOUT buttons');
+const rows = keyboard.content.rows;
+console.log(`BUTTONS_RECEIVED rows=${rows.length}`);
+console.log(`BUTTONS_TEXT ${oneLine(keyboard.content.text)}`);
+rows.forEach((row, r) => console.log(`  row ${r}: ${row.map((button) => `[${button.label} · ${button.action.kind}]`).join(' ')}`));
 
-  const after = `ping ${randomBytes(3).toString('hex')}`;
-  const { answer } = await sendAndWait(after, 'reply after the deletion');
-  console.log(`PING_SENT ${after}`);
-  console.log(`REPLY ${textOf(answer).slice(0, 80)}`);
-  console.log(`REPLY_HAS_NONCE ${textOf(answer).includes(after.slice(5)) ? 'yes' : 'no'}`);
-  // The bot must not answer from the deleted message.
-  const quoted = textOf(answer).includes(doomedText);
-  console.log(`REPLY_QUOTES_DELETED ${quoted ? 'yes' : 'no'}`);
-  if (quoted) finish(1, 'DELETE_FAIL the reply after the deletion quotes the deleted text');
-}
+let target = null;
+rows.forEach((row, r) => row.forEach((button, i) => {
+  if (!target && button.action.kind === 'callback') target = { row: r, index: i, label: button.label };
+}));
+if (!target) finish(1, 'NO_CALLBACK_BUTTON the keyboard has no callback button to press');
 
-if (liveFrameRun) {
-  // The text bot-core's createProgressTracker renders mid-turn.
-  const frame = '⏳ working · 12s · step 2\n▸ Reading notes.md\n▸ Searching the People chain';
-  try {
-    await manager.sendMessage(peerAccountHex, { type: 'text', text: frame });
-  } catch (error) {
-    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sent = await waitFor(async () =>
-    (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && textOf(row) === frame && row.status === 'delivered'),
-  );
-  console.log(`LIVE_FRAME_SENT ${sent ? 'delivered' : 'not acked'}`);
+const beforePress = new Set((await incoming()).map((row) => row.messageId));
+try {
+  await manager.pressButton(peerAccountHex, keyboard.messageId, target.row, target.index);
+} catch (error) {
+  finish(1, `PRESS_FAIL ${error instanceof Error ? error.message : String(error)}`);
 }
-if (buttonsRun) {
-  const text = 'What would you like to do?';
-  const rows = [
-    [
-      { label: 'Show my balance', action: { tag: 'callback', value: new TextEncoder().encode('balance') } },
-      { label: 'Staking', action: { tag: 'command', value: '/staking' } },
-    ],
-    [
-      { label: 'Open the docs', action: { tag: 'url', value: 'https://docs.polkadot.com/' } },
-      { label: 'Stake 10 DOT', action: { tag: 'tx', value: new Uint8Array([0]) } },
-    ],
-  ];
-  try {
-    await manager.sendButtons(peerAccountHex, { text, rows, oneShot: false });
-  } catch (error) {
-    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const sent = await waitFor(async () =>
-    (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.content.type === 'buttons' && row.status === 'delivered'),
-  );
-  console.log(`BUTTONS_SENT ${sent ? 'delivered' : 'not acked'}`);
+console.log(`PRESS_SENT row=${target.row} index=${target.index} label=${JSON.stringify(target.label)}`);
+
+// The answer may come as a new message or as an edit of a status row; read
+// every row after the press, and the latest text of each.
+const PRESS_REPLY_MS = 60_000;
+const needle = target.label.toLowerCase();
+let lastSeen = null;
+const answer = await waitFor(async () => {
+  const fresh = (await incoming()).filter((row) => !beforePress.has(row.messageId) && !isStatus(row));
+  if (fresh.length > 0) lastSeen = fresh.at(-1);
+  return fresh.find((row) => textOf(row).toLowerCase().includes(needle)) ?? null;
+}, PRESS_REPLY_MS);
+if (!answer) {
+  if (lastSeen) console.log(`PRESS_REPLY ${oneLine(textOf(lastSeen))} (does not name "${target.label}")`);
+  finish(4, 'E2E_TIMEOUT press reply');
 }
-finish(0, 'E2E_OK');
+console.log(`PRESS_REPLY ${oneLine(textOf(answer))}`);
+finish(0, 'BUTTONS_OK');

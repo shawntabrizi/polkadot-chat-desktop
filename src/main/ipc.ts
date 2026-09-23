@@ -27,6 +27,7 @@ import {
   type UsernameAvailability,
 } from '../shared/desktop-api';
 import { isNetworkProfileId } from '../shared/network';
+import { openableUrl } from '../shared/openUrl';
 
 import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
@@ -303,6 +304,14 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   ipcMain.handle(IPC.appSetBadge, (_event, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.min(Math.floor(count), 9999) : 0;
     app.dock?.setBadge(n > 0 ? String(n) : '');
+  });
+
+  // Spec 0006 `url` buttons. The renderer shows remote content, so the scheme
+  // rule is checked again here: nothing but https and polkadotapp leaves.
+  ipcMain.handle(IPC.openUrl, async (_event, value: unknown): Promise<void> => {
+    const target = typeof value === 'string' ? openableUrl(value) : null;
+    if (!target) throw new Error('Only https and polkadotapp links can be opened.');
+    await shell.openExternal(target.href);
   });
 
   ipcMain.handle(IPC.assistantCancel, (_event, conversationId: unknown): void => {

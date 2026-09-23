@@ -90,16 +90,34 @@ export const applyReaction = (messageId: string, emoji: string, by: 'me' | 'peer
       row.reactions = add ? [...without, { emoji, by }] : without;
     });
 
-/** An edit replaces the text of a text or reply row; other rows (a tombstone too) cannot be edited. */
+/**
+ * An edit replaces the text of a text, reply, richText or buttons row (a
+ * buttons row keeps its keyboard: the base `edit` carries no rows); other
+ * rows (a tombstone too) cannot be edited.
+ */
 export const applyEdit = (messageId: string, text: string, editedAt: number): Promise<number> =>
   db.messages
     .where('messageId')
     .equals(messageId)
     .modify(row => {
-      if (row.content.type !== 'text' && row.content.type !== 'reply' && row.content.type !== 'richText') return;
+      if (row.content.type !== 'text' && row.content.type !== 'reply' && row.content.type !== 'richText' && row.content.type !== 'buttons') return;
       const content: MessageContent = { ...row.content, text };
       row.content = content;
       row.editedAt = editedAt;
+    });
+
+/**
+ * Spec 0006: remember the first press of a keyboard on this device. A
+ * `oneShot` keyboard is gone after it. Later presses of a keyboard that
+ * stays keep the first one (the UI highlights presses on its own).
+ */
+export const markButtonPressed = (messageId: string, row: number, index: number): Promise<number> =>
+  db.messages
+    .where('messageId')
+    .equals(messageId)
+    .modify(message => {
+      if (message.content.type !== 'buttons' || message.content.pressed) return;
+      message.content = { ...message.content, pressed: { row, index } };
     });
 
 /** The chat list preview follows a changed row when it is the room's newest. */

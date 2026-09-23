@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/cn';
 
+import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
 import { formatClock } from './format';
 import { useTypingReveal } from './reveal';
 
@@ -39,6 +40,8 @@ export const systemText = (row: MessageRow, peerName: string, requests: readonly
       return `${peerName} left the chat`;
     case 'callDeclined':
       return 'Call declined';
+    case 'buttonPressed':
+      return `${peerName} pressed ${row.content.label}`;
     default:
       return previewOf(row.content);
   }
@@ -96,6 +99,8 @@ export type BubbleActions = {
   retry?: () => void;
   /** "Delete for everyone" (a contact room) or "Delete" (the Assistant, local only). */
   remove?: { label: string; run: () => void };
+  /** Spec 0006: presses on this message's buttons. Absent: the buttons show disabled. */
+  keyboard?: KeyboardActions;
 };
 
 type Props = {
@@ -120,10 +125,15 @@ type Props = {
 };
 
 const textOf = (row: MessageRow): string | null =>
-  row.content.type === 'text' || row.content.type === 'reply' ? row.content.text : row.content.type === 'richText' ? row.content.text : null;
+  row.content.type === 'text' || row.content.type === 'reply' || row.content.type === 'buttons'
+    ? row.content.text
+    : row.content.type === 'richText'
+      ? row.content.text
+      : null;
 
 export const MessageBubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [confirm, setConfirm] = useState<(ButtonPosition & { url: string }) | null>(null);
   const own = row.direction === 'outgoing';
   const text = textOf(row);
   const deleted = row.content.type === 'deleted';
@@ -154,7 +164,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
       );
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
-    if (row.content.type === 'text' && !own) {
+    if ((row.content.type === 'text' || row.content.type === 'buttons') && !own) {
       // Incoming text (contacts, bots and the Assistant write markdown) renders as
       // markdown, sanitized by renderMarkdown; own messages stay plain.
       return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(painted) }} />;
@@ -174,6 +184,12 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     if (text !== null) return <p className="text-body-m whitespace-pre-wrap">{text}</p>;
     return <p className="text-body-m">{messagePreview(row)}</p>;
   })();
+
+  // A oneShot keyboard is gone after its first press (spec 0006).
+  const keyboardRows =
+    row.content.type === 'buttons' && !(row.content.oneShot && row.content.pressed) && row.content.rows.some(r => r.length > 0)
+      ? row.content.rows
+      : null;
 
   const toolbar = actions ? (
     <div
@@ -263,6 +279,14 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
             </div>
           ) : null}
           <div className="min-w-0 break-words">{body}</div>
+          {keyboardRows && !deleting ? (
+            <ButtonKeyboard
+              rows={keyboardRows}
+              keyboard={actions?.keyboard ?? null}
+              onAskUrl={(position, url) => setConfirm({ ...position, url })}
+              confirming={confirm}
+            />
+          ) : null}
           {live ? null : (
             <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
               {row.editedAt && !deleted ? <span>(edited)</span> : null}
@@ -271,6 +295,16 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
             </div>
           )}
         </div>
+        {confirm && keyboardRows && actions?.keyboard ? (
+          <UrlConfirmStrip
+            url={confirm.url}
+            onCancel={() => setConfirm(null)}
+            onOpen={() => {
+              actions.keyboard?.press(confirm.row, confirm.index);
+              setConfirm(null);
+            }}
+          />
+        ) : null}
         {own && row.status === 'failed' ? (
           <p className="text-caption text-fg-error" data-testid="not-sent">
             Not sent

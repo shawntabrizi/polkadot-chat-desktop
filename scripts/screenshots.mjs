@@ -32,6 +32,12 @@
 // "Type username", the Recent section); search-no-results.png a query that
 // finds nothing.
 //
+// M8: room-buttons.png is the room with a spec 0006 keyboard (two rows: a
+// callback, a command, a url and a reserved tx button) from the room peer
+// (`e2e-chat.mjs --buttons`, so it needs PCD_SCREENSHOT_ROOM_WITH). The shot
+// presses the callback button (spinner) and then the url button, whose
+// confirm strip shows the host under the bubble.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -270,7 +276,7 @@ app.whenReady().then(() => {
   const roomPeer = roomWith ? JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${roomWith}`, 'identity.json'), 'utf8')).username : BOT;
   const roomLog = roomWith ? openSync(join(outDir, 'room-peer.log'), 'w') : null;
   const roomPeerRun = roomWith
-    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
+    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
 
   for (const theme of THEMES) {
@@ -373,6 +379,24 @@ app.whenReady().then(() => {
         if (!(await app.waitFor(app.exists('[data-testid=live-frame]'), roomWith ? 120_000 : 1_000))) {
           throw new Error(roomWith ? `no live frame from ${roomPeer} (see .agent-runs/screens/room-peer.log)` : 'no live frame: the echo bot sends none; set PCD_SCREENSHOT_ROOM_WITH');
         }
+      });
+
+      await shot('room-buttons', async () => {
+        if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+        const keyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].pop()`;
+        if (!(await app.waitFor(`${keyboard} != null`, roomWith ? 120_000 : 1_000))) {
+          throw new Error(roomWith ? `no keyboard from ${roomPeer} (see .agent-runs/screens/room-peer.log)` : 'no keyboard: set PCD_SCREENSHOT_ROOM_WITH');
+        }
+        await app.evaluate(`${keyboard}.scrollIntoView({ block: 'end' }); true`);
+        await app.evaluate(`${keyboard}.querySelector('[data-action=callback]').click(); true`);
+        if (!(await app.waitFor(`${keyboard}.querySelector('[data-action=callback][aria-busy=true]') != null`, 10_000))) throw new Error('the callback button shows no spinner');
+        log('callback pressed, spinner on');
+        await app.evaluate(`${keyboard}.querySelector('[data-action=url]').click(); true`);
+        if (!(await app.waitFor(app.exists('[data-testid=url-confirm]'), 5_000))) throw new Error('no confirm strip for the url button');
+        const strip = await app.evaluate(`document.querySelector('[data-testid=url-confirm]').textContent`);
+        log('url strip:', JSON.stringify(strip));
+        const disabled = await app.evaluate(`${keyboard}.querySelectorAll('[data-testid=keyboard-disabled]').length`);
+        log('disabled buttons:', disabled);
       });
 
       await shot('assistant', async () => {

@@ -362,4 +362,91 @@ describe('chat manager: messaging', () => {
     expect(texts).not.toContain('regret');
     expect(texts).not.toContain('never shown');
   });
+
+  // Spec 0006 round trip, against a peer that speaks the extension (a pca bot).
+  const keyboard: ChatContent = {
+    tag: 'buttons',
+    value: {
+      text: 'Pick one',
+      rows: [
+        [
+          { label: 'Echo', action: { tag: 'command', value: 'echo hi' } },
+          { label: 'Colour', action: { tag: 'callback', value: new Uint8Array([1, 2]) } },
+        ],
+        [
+          { label: 'Docs', action: { tag: 'url', value: 'https://polkadot.com' } },
+          { label: 'Stake', action: { tag: 'tx', value: new Uint8Array([9]) } },
+        ],
+      ],
+      oneShot: false,
+    },
+  };
+
+  it('buttons: a command press is our own text bubble; a callback press is a buttonPress with the payload and no bubble', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await transport.send(keyboard); // peer-1, newest in the room
+    const row = await waitFor(() => db.messages.get('peer-1'));
+    expect(row.content.type).toBe('buttons');
+    expect((await db.rooms.get(peerKey))?.lastPreview).toBe('Pick one');
+
+    await manager.pressButton(peerKey, 'peer-1', 0, 0);
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'text' && m.content.value === 'echo hi'));
+    expect((await listMessages(peerKey)).some(r => r.direction === 'outgoing' && r.content.type === 'text' && r.content.text === 'echo hi')).toBe(true);
+
+    const before = (await listMessages(peerKey)).length;
+    await manager.pressButton(peerKey, 'peer-1', 0, 1);
+    const press = await waitFor(() => transport!.received.find(m => m.content.tag === 'buttonPress'));
+    expect(press.content).toEqual({ tag: 'buttonPress', value: { messageId: 'peer-1', row: 0, index: 1, payload: new Uint8Array([1, 2]) } });
+    expect(await listMessages(peerKey)).toHaveLength(before);
+    // The keyboard stays (not oneShot) and remembers its first press.
+    expect((await db.messages.get('peer-1'))?.content).toMatchObject({ type: 'buttons', pressed: { row: 0, index: 0 } });
+  });
+
+  it('buttons: a tx action is never run, and a oneShot keyboard takes one press only', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await transport.send(keyboard, 100); // peer-1
+    await transport.send({ tag: 'buttons', value: { ...(keyboard.value as object), oneShot: true } } as ChatContent, 101); // peer-2
+    await waitFor(() => db.messages.get('peer-2'));
+
+    await expect(manager.pressButton(peerKey, 'peer-1', 1, 1)).rejects.toThrow('cannot run');
+    await manager.pressButton(peerKey, 'peer-2', 0, 1);
+    await expect(manager.pressButton(peerKey, 'peer-2', 0, 1)).rejects.toThrow('already used');
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'buttonPress'));
+    expect(transport.received.filter(m => m.content.tag === 'buttonPress')).toHaveLength(1);
+  });
+
+  it('buttonPress: accepted only for a keyboard we sent to that peer; shown as a system row that does not count unread', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await manager.sendButtons(peerKey, keyboard.value as { text: string; rows: never[]; oneShot: boolean });
+    const mine = (await listMessages(peerKey)).find(r => r.direction === 'outgoing' && r.content.type === 'buttons')!;
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'buttons'));
+    await transport.send({ tag: 'text', value: 'their text' }, 100); // peer-1
+    await waitFor(() => db.messages.get('peer-1'));
+    const unread = (await db.rooms.get(peerKey))?.unreadCount;
+
+    const pressOf = (messageId: string, row: number, index: number): ChatContent => ({ tag: 'buttonPress', value: { messageId, row, index, payload: new Uint8Array() } });
+    await transport.send(pressOf('peer-1', 0, 0), 101); // peer-2: their own message, not ours
+    await transport.send(pressOf('unknown', 0, 0), 102); // peer-3
+    await transport.send(pressOf(mine.messageId, 5, 0), 103); // peer-4: no such button
+    await transport.send(pressOf(mine.messageId, 0, 1), 104); // peer-5: valid
+    await waitFor(() => db.messages.get('press:peer-5'));
+    const rows = await listMessages(peerKey);
+    expect(rows.filter(r => r.content.type === 'buttonPressed').map(r => [r.direction, r.content])).toEqual([['system', { type: 'buttonPressed', label: 'Colour' }]]);
+    expect((await db.rooms.get(peerKey))?.unreadCount).toBe(unread);
+  });
 });

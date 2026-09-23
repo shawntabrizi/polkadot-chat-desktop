@@ -25,9 +25,9 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
-import { type MessageContent, type OutgoingContent, fromWire, toWire } from './content';
+import { type MessageContent, type OutgoingContent, fromWire, keyboardOf, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
-import type { IdentityChannelEvent } from './identityEvents';
+import type { ButtonWire, IdentityChannelEvent } from './identityEvents';
 import {
   addMessage,
   applyDeletion,
@@ -35,6 +35,7 @@ import {
   applyReaction,
   ensureRoom,
   getMessage,
+  markButtonPressed,
   markRoomRead,
   removeMessage,
   setMessageStatus,
@@ -67,6 +68,19 @@ export type ChatManager = {
    * asks the peer's devices to tombstone it too.
    */
   deleteForEveryone: (peer: HexString, messageId: string) => Promise<void>;
+  /**
+   * Spec 0006: press button `index` of row `row` of the peer's `buttons`
+   * message. `command` sends its text as our own message; `callback` sends
+   * `buttonPress` (no bubble); `url` only records the press (the caller
+   * opened the link after the user confirmed its host). Anything else throws.
+   */
+  pressButton: (peer: HexString, messageId: string, row: number, index: number) => Promise<void>;
+  /**
+   * Spec 0006: send a keyboard. No screen calls it in M8: the compatibility
+   * rule needs evidence the peer reads kind 242, and this client gathers none
+   * (docs/decisions.md). Test scripts use it as the operator flag.
+   */
+  sendButtons: (peer: HexString, content: { text: string; rows: ButtonWire[][]; oneShot: boolean }) => Promise<void>;
   /** Sends a `failed` message again with the same id and timestamp; `failed` again if it still cannot go out. */
   retry: (peer: HexString, messageId: string) => Promise<void>;
   markRead: (peer: HexString) => Promise<void>;
@@ -130,6 +144,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         // Never a bubble, never a notification: only the tombstone it makes.
         await applyDeletion(peer, effect.targetMessageId);
         return;
+      case 'buttonPress': {
+        // Spec 0006: only for a keyboard we sent to this very peer.
+        const target = await getMessage(effect.messageId);
+        if (!target || target.peerAccountId !== peer || target.direction !== 'outgoing' || target.content.type !== 'buttons') return;
+        const button = target.content.rows[effect.row]?.[effect.index];
+        if (!button) return;
+        await addMessage(systemRow(peer, `press:${message.messageId}`, message.timestamp, { type: 'buttonPressed', label: button.label }), { read: true });
+        return;
+      }
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
         // stops ringing, and keep a system row so the user knows.
@@ -305,6 +328,25 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     await sessions.send(peer, toWire(content), ids);
   };
 
+  const sendMessage: ChatManager['sendMessage'] = async (peer, content) => {
+    const ids = { messageId: randomId(), timestamp: Date.now() };
+    await addMessage({
+      messageId: ids.messageId,
+      peerAccountId: peer,
+      timestamp: ids.timestamp,
+      direction: 'outgoing',
+      status: 'sending',
+      content,
+      reactions: [],
+      editedAt: null,
+    });
+    // Too large, or no usable peer device: the row stays as evidence.
+    await submit(peer, content, ids).catch(async error => {
+      await setMessageStatus(ids.messageId, 'failed');
+      throw error;
+    });
+  };
+
   return {
     sendRequest: async (peer, welcomeMessage) => {
       const { requestId, timestamp } = await sendChatRequest({
@@ -367,19 +409,45 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       await setRequestStatus(requestId, 'declined');
     },
 
-    sendMessage: async (peer, content) => {
+    sendMessage,
+
+    pressButton: async (peer, messageId, row, index) => {
+      const target = await getMessage(messageId);
+      if (!target || target.peerAccountId !== peer || target.direction !== 'incoming' || target.content.type !== 'buttons') {
+        throw new Error('This message has no buttons.');
+      }
+      if (target.content.oneShot && target.content.pressed) throw new Error('These buttons were already used.');
+      const button = target.content.rows[row]?.[index];
+      if (!button) throw new Error('This button does not exist.');
+      const action = button.action;
+      switch (action.kind) {
+        case 'command':
+          await sendMessage(peer, { type: 'text', text: action.command });
+          break;
+        case 'callback':
+          await submit(peer, { type: 'buttonPress', messageId, row, index, payload: action.payload }, { messageId: randomId(), timestamp: Date.now() });
+          break;
+        case 'url':
+          break;
+        case 'unsupported':
+          throw new Error('This app cannot run this action yet.');
+      }
+      await markButtonPressed(messageId, row, index);
+    },
+
+    sendButtons: async (peer, buttons) => {
       const ids = { messageId: randomId(), timestamp: Date.now() };
+      const content: OutgoingContent = { type: 'buttons', ...buttons };
       await addMessage({
         messageId: ids.messageId,
         peerAccountId: peer,
         timestamp: ids.timestamp,
         direction: 'outgoing',
         status: 'sending',
-        content,
+        content: { type: 'buttons', text: buttons.text, rows: keyboardOf(buttons.rows), oneShot: buttons.oneShot, pressed: null },
         reactions: [],
         editedAt: null,
       });
-      // Too large, or no usable peer device: the row stays as evidence.
       await submit(peer, content, ids).catch(async error => {
         await setMessageStatus(ids.messageId, 'failed');
         throw error;

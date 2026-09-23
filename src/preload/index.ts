@@ -56,6 +56,7 @@ const api: DesktopApi = {
     },
     onNotifyOpen: listen(IPC.notifyOpen),
     onMenuSettings: listener => listen<void>(IPC.menuSettings)(() => listener()),
+    openUrl: url => ipcRenderer.invoke(IPC.openUrl, url),
   },
 };
 

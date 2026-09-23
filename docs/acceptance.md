@@ -1236,3 +1236,177 @@ Here the room peer's script gave no message within 120 s, and username searches 
 - The `🤔 ` live frame was not seen from a real pca bot. It has a spec. The live frame in the screenshots is the `⏳` frame from the test identity.
 - `--visible` was not run after the change (all visible runs above came before it; the flag only drops the env var).
 - `git status --short` is checked after the commit.
+
+## M8
+
+Run on 2026-09-23 against devnet. The pca half is `polkadot-chat-agents` commit 2acd215 (branch `desktop/rfc-0003`); the coordinator restarted the bots at 15:20:53 with the buttons extension on.
+
+### npm run check
+
+```
+> polkadot-chat-desktop@0.1.0 check
+> tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+ Test Files  41 passed (41)
+      Tests  306 passed (306)
+   Start at  15:27:11
+   Duration  3.73s (transform 1.48s, setup 749ms, import 8.27s, tests 8.46s, environment 2ms)
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+check:tokens: clean (105 files)
+```
+
+The pca vectors of `docs/spec/vectors-0006.md` are in `src/renderer/domain/chat/content.spec.ts`: vector A (buttons) and vector B (buttonPress) decode to the pinned values and encode to the same bytes (four tests, all pass above).
+
+### npm run smoke
+
+```
+✓ built in 186ms
+SMOKE_OK
+```
+
+(Last lines of the output; the build lines before them are the usual electron-vite output.)
+
+### npm run e2e:buttons — NOT PASSED (exit 4)
+
+First run:
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:buttons
+> node scripts/e2e-buttons.mjs
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7049772 (runtime ready in 1.8s)
+PEER 0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06 key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Sorry — I couldn't reach my agent just now. Please try again in a moment.
+MENU_SENT menu
+BUTTONS_RECEIVED rows=1
+BUTTONS_TEXT Hey! I'm here to help with Polkadot, staking, governance, and the Polkadot app. What would you like 
+  row 0: [Staking · command] [Governance · command] [Colour of the day · callback] [Docs · url]
+PRESS_SENT row=0 index=2 label="Colour of the day"
+PRESS_REPLY Emerald — #50C878 (does not name "Colour of the day")
+E2E_TIMEOUT press reply
+```
+
+Second run (exit=4):
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:buttons
+> node scripts/e2e-buttons.mjs
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7049780 (runtime ready in 1.9s)
+PEER 0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06 key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Sorry — I couldn't reach my agent just now. Please try again in a moment.
+MENU_SENT menu
+BUTTONS_RECEIVED rows=1
+BUTTONS_TEXT What would you like to know about?
+  row 0: [Staking · command] [Governance · command] [Colour of the day · callback] [Docs · url]
+PRESS_SENT row=0 index=2 label="Colour of the day"
+PRESS_REPLY Tangerine — #F28500 (does not name "Colour of the day")
+E2E_TIMEOUT press reply
+```
+
+What passed: the guide bot `pcdguide.70` answered `menu` with a real kind-242 keyboard (`BUTTONS_RECEIVED rows=1`, four buttons: two commands, one callback, one url), and the desktop sent the callback press (`PRESS_SENT`). The bot answered the press within 60 s with a colour, which shows that it received the press. What failed: step 6 needs a reply that names the label ("Colour of the day"), and neither reply did, so `BUTTONS_OK` was not printed. The criterion is unchanged. The question is in docs/questions.md. The greeting line in both runs is an error text from the bot (docs/questions.md).
+
+### npm run screenshots
+
+```
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots
+```
+
+```
+0.5s built
+5.8s saved berlin-day/signup.png
+11.2s saved berlin-night/signup.png
+12.0s seeded pcdecejakd.11
+12.0s assistant engine claude
+27.1s accepted the request of pcdtestjaia.98
+30.3s saved berlin-day/room.png
+30.6s deleting, the toast shows
+36.6s tombstone shown
+37.5s saved berlin-day/room-deleted.png
+37.5s callback pressed, spinner on
+37.5s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+37.5s disabled buttons: 1
+38.3s saved berlin-day/room-buttons.png
+43.2s saved berlin-day/assistant.png
+45.9s saved berlin-day/chats.png
+49.7s request sent to pcdpirate.81 from a global search hit
+52.6s saved berlin-day/search.png
+52.9s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke03:26 PM"
+52.9s saved berlin-day/search-jump.png
+54.2s the highlight ended
+55.7s global search "pcd": 7 rows, 14 after Show more
+56.5s saved berlin-day/search-empty.png
+59.1s saved berlin-day/search-no-results.png
+60.5s saved berlin-day/requests.png
+62.4s saved berlin-day/settings.png
+63.2s saved berlin-day/keyboard.png
+66.7s saved berlin-night/room.png
+67.5s saved berlin-night/room-deleted.png
+67.5s callback pressed, spinner on
+67.5s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+67.5s disabled buttons: 1
+68.4s saved berlin-night/room-buttons.png
+69.2s saved berlin-night/assistant.png
+71.9s saved berlin-night/chats.png
+77.1s saved berlin-night/search.png
+77.4s jumped to the message hit, highlighted: "👍❤️😂😮😢🙏🔥👏Ask pcdpirate.81 for a pirate joke03:26 PM"
+77.4s saved berlin-night/search-jump.png
+78.7s the highlight ended
+79.5s saved berlin-night/search-empty.png
+81.9s saved berlin-night/search-no-results.png
+82.8s saved berlin-night/requests.png
+84.6s saved berlin-night/settings.png
+85.5s saved berlin-night/keyboard.png
+86.0s seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/room-deleted.png
+  .agent-runs/screens/berlin-day/room-buttons.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/search.png
+  .agent-runs/screens/berlin-day/search-jump.png
+  .agent-runs/screens/berlin-day/search-empty.png
+  .agent-runs/screens/berlin-day/search-no-results.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/room-deleted.png
+  .agent-runs/screens/berlin-night/room-buttons.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/search.png
+  .agent-runs/screens/berlin-night/search-jump.png
+  .agent-runs/screens/berlin-night/search-empty.png
+  .agent-runs/screens/berlin-night/search-no-results.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+exit=0
+```
+
+I read `berlin-day/room-buttons.png` and `berlin-night/room-buttons.png`. Both show the room peer's message "What would you like to do?" with two rows: "Show my balance" (callback, pressed: primary fill and a spinner), "Staking" (command), "Open the docs" (url, with the link icon, highlighted while its strip is open) and "Stake 10 DOT" (reserved `tx`, disabled). Under the bubble, the strip says "Open **docs.polkadot.com** in your browser?" with Cancel and Open. In Berlin Day the chat list shows the keyboard's text as the preview.
+
+### Not run / not seen
+
+- `BUTTONS_OK` was not seen (see above).
+- The Open button of the url strip was not clicked in a run, so `shell.openExternal` through `open:url` was not seen opening a browser. The scheme rule has a spec (`src/shared/buttonsBlock.spec.ts`, `openableUrl`).
+- The tooltip of a disabled button was not captured in a PNG.
+- A `command` press and a received `buttonPress` were not driven in the app UI. They have manager specs against an in-memory store (`manager.messaging.spec.ts`).
+- The Assistant's buttons were not seen from a real engine. The parser and the Assistant path have specs (`buttonsBlock.spec.ts`, `assistant.spec.ts`).
+- `git status --short` is checked after the commit.

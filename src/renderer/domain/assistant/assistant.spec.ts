@@ -12,7 +12,7 @@ import type {
   AssistantSettings,
 } from '../../../shared/desktop-api';
 
-import { ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat } from './assistant';
+import { ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat, replyContent } from './assistant';
 
 /** A stand-in for `window.desktop.assistant`: records requests, lets the test emit events. */
 const fakeApi = (options: { refuse?: boolean; engine?: AssistantEngineId } = {}) => {
@@ -296,5 +296,45 @@ describe('askOnce', () => {
     expect(sent[0]?.conversationId).not.toBe(ASSISTANT_PEER);
     expect(sent[0]?.messages).toEqual([{ role: 'user', content: TEST_PROMPT }]);
     expect(await db.messages.count()).toBe(0);
+  });
+});
+
+describe('Assistant buttons (spec 0006 fenced block)', () => {
+  const reply = 'Which network?\n\n```buttons\n{"rows":[[{"label":"Paseo","action":{"command":"paseo"}},{"label":"Later","action":{"callback":"x"}}],[{"label":"Docs","action":{"url":"https://docs.polkadot.com"}}]]}\n```';
+
+  it('turns a finished reply that ends with a block into text plus a keyboard; the Assistant cannot take a callback', () => {
+    expect(replyContent(reply)).toEqual({
+      type: 'buttons',
+      text: 'Which network?',
+      rows: [
+        [
+          { label: 'Paseo', action: { kind: 'command', command: 'paseo' } },
+          { label: 'Later', action: { kind: 'unsupported' } },
+        ],
+        [{ label: 'Docs', action: { kind: 'url', url: 'https://docs.polkadot.com' } }],
+      ],
+      oneShot: false,
+      pressed: null,
+    });
+    expect(replyContent('no block here')).toEqual({ type: 'text', text: 'no block here' });
+  });
+
+  it('stores the keyboard only when the reply ends, and keeps the text as context for the next turn', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('pick one for me');
+    fake.delta('reply-1', reply);
+    await vi.waitFor(async () => expect(text(await db.messages.get('reply-1'))).toBe(reply));
+    fake.done('reply-1');
+    await vi.waitFor(async () => expect((await db.messages.get('reply-1'))?.content.type).toBe('buttons'));
+    expect((await db.rooms.get(ASSISTANT_PEER))?.lastPreview).toBe('Which network?');
+
+    // A press sends the command as the next user message, with the keyboard's text as context.
+    await chat.send('paseo');
+    expect(fake.sent[1]?.messages.slice(-2)).toEqual([
+      { role: 'assistant', content: 'Which network?' },
+      { role: 'user', content: 'paseo' },
+    ]);
+    chat.dispose();
   });
 });

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { bytesToHex } from '../../app/bytes';
 
-import { fromWire, isLiveFrame, liveFrameText, previewOf, toWire } from './content';
+import { fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, toWire } from './content';
 import { type ChatContent, ChatMessageCodec } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
@@ -23,6 +23,10 @@ describe('toWire', () => {
     expect(viaWire(toWire({ type: 'edit', messageId: 'a', text: 'new' }))).toMatchObject({ tag: 'edit', value: { messageId: 'a', newContent: { text: 'new' } } });
     expect(viaWire(toWire({ type: 'callDecline', offerMessageId: 'o' }))).toEqual({ tag: 'dataChannelClosed', value: { offerMessageId: 'o' } });
     expect(viaWire(toWire({ type: 'deleted', targetMessageId: 'a' }))).toEqual({ tag: 'deleted', value: { targetMessageId: 'a' } });
+    expect(viaWire(toWire({ type: 'buttonPress', messageId: 'b', row: 1, index: 2, payload: new Uint8Array([7]) }))).toEqual({
+      tag: 'buttonPress',
+      value: { messageId: 'b', row: 1, index: 2, payload: new Uint8Array([7]) },
+    });
   });
 });
 
@@ -89,6 +93,159 @@ describe('kind 21: RFC-0003 deleted', () => {
   // entry, not a broken batch.
   it('does not decode with the plain SDK codec', () => {
     expect(() => SdkChatMessage.dec(opaque.dec(PCA_VECTOR))).toThrow();
+  });
+});
+
+describe('kinds 242/243: spec 0006 buttons and buttonPress', () => {
+  /*
+   * The two vectors of docs/spec/vectors-0006.md, produced by the pca codec
+   * (bot-core/vendor/app-chat-codec.mjs, branch desktop/rfc-0003) and pinned
+   * there too. Both codecs must read each other's bytes: a desktop that
+   * decodes a bot's keyboard differently shows the wrong buttons, and a press
+   * the bot cannot decode is a press that never happened.
+   */
+  const VECTOR_A =
+    '0x45011442544e2d310030fd779001000000f2205069636b206f6e650808104563686f001c6563686f20686918436f6c6f7572010801020410446f6373025068747470733a2f2f706f6c6b61646f742e636f6d00';
+  const VECTOR_B = '0x6c145052532d31e833fd779001000000f31442544e2d310001080102';
+  const opaque = Bytes();
+  const buttons = {
+    messageId: 'BTN-1',
+    timestamp: 1720000000000n,
+    versioned: {
+      tag: 'v1' as const,
+      value: {
+        tag: 'buttons' as const,
+        value: {
+          text: 'Pick one',
+          rows: [
+            [
+              { label: 'Echo', action: { tag: 'command' as const, value: 'echo hi' } },
+              { label: 'Colour', action: { tag: 'callback' as const, value: new Uint8Array([1, 2]) } },
+            ],
+            [{ label: 'Docs', action: { tag: 'url' as const, value: 'https://polkadot.com' } }],
+          ],
+          oneShot: false,
+        },
+      },
+    },
+  };
+  const press = {
+    messageId: 'PRS-1',
+    timestamp: 1720000001000n,
+    versioned: {
+      tag: 'v1' as const,
+      value: { tag: 'buttonPress' as const, value: { messageId: 'BTN-1', row: 0, index: 1, payload: new Uint8Array([1, 2]) } },
+    },
+  };
+
+  it('decodes pca vector A (buttons) to the pinned values', () => {
+    expect(ChatMessageCodec.dec(opaque.dec(VECTOR_A))).toEqual(buttons);
+  });
+
+  it('encodes vector A byte for byte', () => {
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(buttons)))).toBe(VECTOR_A);
+  });
+
+  it('decodes pca vector B (buttonPress) to the pinned values', () => {
+    expect(ChatMessageCodec.dec(opaque.dec(VECTOR_B))).toEqual(press);
+  });
+
+  it('encodes vector B byte for byte', () => {
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(press)))).toBe(VECTOR_B);
+  });
+
+  // Coordinator ruling (M8): an Action has no length prefix, so an unknown
+  // action tag (above 3) makes the whole keyboard unreadable. The user still
+  // sees that the bot sent something: the normal unsupported bubble.
+  it('shows a keyboard with an unknown action tag as the unsupported bubble, not as a button', () => {
+    const tag4 = VECTOR_A.replace('104563686f00', '104563686f04');
+    expect(tag4).not.toBe(VECTOR_A);
+    const decoded = ChatMessageCodec.dec(opaque.dec(tag4));
+    expect(decoded.messageId).toBe('BTN-1');
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'message', content: { type: 'unsupported', tag: 'buttons' } });
+    // Trailing bytes are malformed the same way.
+    const trailing = ChatMessageCodec.dec(new Uint8Array([...opaque.dec(VECTOR_A), 0]));
+    expect(fromWire(trailing.versioned.value)).toEqual({ kind: 'message', content: { type: 'unsupported', tag: 'buttons' } });
+  });
+
+  // A press this build cannot read is dropped: it must never become a bubble.
+  it('drops a malformed buttonPress without a row', () => {
+    const decoded = ChatMessageCodec.dec(new Uint8Array([...opaque.dec(VECTOR_B), 0]));
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'ignore' });
+  });
+
+  // The phone apps (SDK codec) cannot read these kinds: why the compatibility rule gates sending.
+  it('does not decode with the plain SDK codec', () => {
+    expect(() => SdkChatMessage.dec(opaque.dec(VECTOR_A))).toThrow();
+    expect(() => SdkChatMessage.dec(opaque.dec(VECTOR_B))).toThrow();
+  });
+
+  it('decodes a reserved tx action (tag 3) as opaque bytes', () => {
+    const tx = { ...buttons, versioned: { tag: 'v1' as const, value: { tag: 'buttons' as const, value: { text: 't', rows: [[{ label: 'Stake', action: { tag: 'tx' as const, value: new Uint8Array([9]) } }]], oneShot: true } } } };
+    expect(ChatMessageCodec.dec(ChatMessageCodec.enc(tx))).toEqual(tx);
+  });
+
+  it('turns vector A into a keyboard row that renders, and vector B into a press effect (never a bubble)', () => {
+    const effect = fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR_A)).versioned.value);
+    expect(effect).toEqual({
+      kind: 'message',
+      content: {
+        type: 'buttons',
+        text: 'Pick one',
+        rows: [
+          [
+            { label: 'Echo', action: { kind: 'command', command: 'echo hi' } },
+            { label: 'Colour', action: { kind: 'callback', payload: new Uint8Array([1, 2]) } },
+          ],
+          [{ label: 'Docs', action: { kind: 'url', url: 'https://polkadot.com' } }],
+        ],
+        oneShot: false,
+        pressed: null,
+      },
+    });
+    expect(fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR_B)).versioned.value)).toEqual({ kind: 'buttonPress', messageId: 'BTN-1', row: 0, index: 1 });
+  });
+
+  it('the chat list shows the keyboard message by its text', () => {
+    expect(previewOf({ type: 'buttons', text: 'Pick one', rows: [], oneShot: false, pressed: null })).toBe('Pick one');
+  });
+});
+
+describe('keyboardOf (what a received keyboard may contain)', () => {
+  const label = (n: number) => `b${n}`;
+  const command = (n: number) => ({ label: label(n), action: { tag: 'command' as const, value: `/c${n}` } });
+
+  it('keeps at most 8 rows of 4 buttons, so a bot cannot flood the room with controls', () => {
+    const rows = Array.from({ length: 10 }, (_, r) => Array.from({ length: 6 }, (_, i) => command(r * 10 + i)));
+    const keyboard = keyboardOf(rows);
+    expect(keyboard).toHaveLength(8);
+    expect(keyboard.every(row => row.length === 4)).toBe(true);
+    // Positions are the sender's, so a press names the button the bot means.
+    expect(keyboard[2]?.[3]?.label).toBe('b23');
+  });
+
+  it('cuts a label at 40 characters without splitting an emoji', () => {
+    const long = `${'a'.repeat(38)}🔥🔥🔥`;
+    const label = keyboardOf([[{ label: long, action: { tag: 'command', value: 'x' } }]])[0]?.[0]?.label ?? '';
+    expect([...label]).toHaveLength(40);
+    expect(label.endsWith('🔥…')).toBe(true);
+  });
+
+  it('disables what this client must not run: tx, links that are not https/polkadotapp, oversized callbacks', () => {
+    const keyboard = keyboardOf([
+      [
+        { label: 'tx', action: { tag: 'tx', value: new Uint8Array([1]) } },
+        { label: 'http', action: { tag: 'url', value: 'http://example.com' } },
+        { label: 'js', action: { tag: 'url', value: 'javascript:alert(1)' } },
+        { label: 'big', action: { tag: 'callback', value: new Uint8Array(257) } },
+      ],
+      [
+        { label: 'app', action: { tag: 'url', value: 'polkadotapp://chat/x' } },
+        { label: 'max', action: { tag: 'callback', value: new Uint8Array(256) } },
+      ],
+    ]);
+    expect(keyboard[0]?.map(button => button.action.kind)).toEqual(['unsupported', 'unsupported', 'unsupported', 'unsupported']);
+    expect(keyboard[1]?.map(button => button.action.kind)).toEqual(['url', 'callback']);
   });
 });
 

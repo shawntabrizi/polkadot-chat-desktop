@@ -27,6 +27,7 @@ export const IPC = {
   notifyOpen: 'notify:open',
   appSetBadge: 'app:setBadge',
   menuSettings: 'menu:settings',
+  openUrl: 'open:url',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -181,6 +182,11 @@ export type DesktopAppApi = {
   onNotifyOpen: (listener: (event: NotifyOpen) => void) => () => void;
   /** The app menu's "Preferences…". */
   onMenuSettings: (listener: () => void) => () => void;
+  /**
+   * Opens a button's link in the system browser (spec 0006), after the user
+   * saw its host. Only https and polkadotapp links; anything else rejects.
+   */
+  openUrl: (url: string) => Promise<void>;
 };
 
 export type DesktopApi = {
