@@ -23,7 +23,7 @@ content. Please update the app." bubble. So:
    sense (buttons: the menu as text), so an old client that shows the bubble
    still shows something useful once upstream assigns the kind.
 4. **Provisional kind numbers** are in the range 240–249 and are listed in
-   `kinds.md`; RFC-0003 keeps its upstream number 20.
+   `kinds.md`; RFC-0003 takes 21 (20 is DeviceChatAccepted).
 
 ## Documents
 
