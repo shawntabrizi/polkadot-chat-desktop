@@ -9,7 +9,7 @@
  */
 
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
-import { Bytes, type Codec, type CodecType, Enum, Struct, Vector, bool, createCodec, str, u16, u64, u8 } from 'scale-ts';
+import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, bool, createCodec, str, u16, u32, u64, u8 } from 'scale-ts';
 
 import { hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
@@ -65,6 +65,16 @@ export type BotInfoWire = {
   value: { kind: number; name: string; description: string; greeting: string; commands: BotCommandWire[]; version: number };
 };
 
+/**
+ * Spec 0007 `transactionReference(TransactionReference)`, provisional kind
+ * 245. `status`: 0 submitted, 1 in block (best), 2 finalized, 3 failed; any
+ * other byte is kept as read. `hash` is the extrinsic hash.
+ */
+export type TransactionReferenceWire = {
+  tag: 'transactionReference';
+  value: { chainId: string; hash: Uint8Array; status: number; block: number | undefined; note: string; intentMessageId: string | undefined };
+};
+
 export type ChatContent =
   | SdkChatMessageWire['versioned']['value']
   | DeletedWire
@@ -73,6 +83,7 @@ export type ChatContent =
   | TypingWire
   | SeenWire
   | BotInfoWire
+  | TransactionReferenceWire
   | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
@@ -92,6 +103,8 @@ export const TYPING_KIND = 240;
 export const SEEN_KIND = 241;
 /** Spec 0008 provisional kind (docs/spec/kinds.md). */
 export const BOT_INFO_KIND = 244;
+/** Spec 0007 provisional kind (docs/spec/kinds.md). */
+export const TRANSACTION_REFERENCE_KIND = 245;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -108,6 +121,8 @@ const SeenContentCodec = Struct({ upTo: str, at: u64 });
 // Spec 0008 layout (docs/spec/vectors-0008.md).
 const BotCommandCodec = Struct({ name: str, description: str });
 const BotInfoContentCodec = Struct({ kind: u8, name: str, description: str, greeting: str, commands: Vector(BotCommandCodec), version: u16 });
+// Spec 0007 layout (docs/spec/vectors-0007.md).
+const TransactionReferenceCodec = Struct({ chainId: str, hash: Bytes(), status: u8, block: Option(u32), note: str, intentMessageId: Option(str) });
 
 /**
  * Spec 0008 decoder bounds, the same as pca's (vectors-0008.md): each string
@@ -125,7 +140,19 @@ const withinBotInfoBounds = (info: BotInfoWire['value']): boolean =>
     command => utf8Length(command.name) <= BOT_INFO_BOUNDS.commandName && utf8Length(command.description) <= BOT_INFO_BOUNDS.commandDescription,
   );
 
-type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire | BotInfoWire;
+/**
+ * Spec 0007 decoder bounds, the same as pca's (vectors-0007.md): `hash` 1 to
+ * 64 bytes, `note` at most 560 bytes (4 per character of the 140 limit),
+ * `status` 0 to 3. Outside them the message is undecodable.
+ */
+export const REFERENCE_BOUNDS = { hashMin: 1, hashMax: 64, note: 560, status: 3 } as const;
+const withinReferenceBounds = (reference: TransactionReferenceWire['value']): boolean =>
+  reference.hash.length >= REFERENCE_BOUNDS.hashMin &&
+  reference.hash.length <= REFERENCE_BOUNDS.hashMax &&
+  utf8Length(reference.note) <= REFERENCE_BOUNDS.note &&
+  reference.status <= REFERENCE_BOUNDS.status;
+
+type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire | BotInfoWire | TransactionReferenceWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -138,6 +165,7 @@ const ButtonPressMessage = envelope(ButtonPressContentCodec);
 const TypingMessage = envelope(TypingContentCodec);
 const SeenMessage = envelope(SeenContentCodec);
 const BotInfoMessage = envelope(BotInfoContentCodec);
+const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
   value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
@@ -189,6 +217,11 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       const value = decoded?.versioned.value;
       return decoded && value?.tag === 'botInfo' && withinBotInfoBounds(value.value) ? decoded : undecodable(header);
     }
+    case TRANSACTION_REFERENCE_KIND: {
+      const decoded = decodeWith(TransactionReferenceMessage, bytes, value => ({ tag: 'transactionReference', value }));
+      const value = decoded?.versioned.value;
+      return decoded && value?.tag === 'transactionReference' && withinReferenceBounds(value.value) ? decoded : undecodable(header);
+    }
     default:
       return null;
   }
@@ -197,7 +230,8 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
 /**
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
  * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005), kinds 242
- * `buttons` / 243 `buttonPress` (spec 0006) and kind 244 `botInfo` (spec 0008).
+ * `buttons` / 243 `buttonPress` (spec 0006), kind 244 `botInfo` (spec 0008) and
+ * kind 245 `transactionReference` (spec 0007).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -217,6 +251,8 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
         return SeenMessage.enc({ ...head, kind: SEEN_KIND, content: content.value });
       case 'botInfo':
         return BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value });
+      case 'transactionReference':
+        return TransactionReferenceMessage.enc({ ...head, kind: TRANSACTION_REFERENCE_KIND, content: content.value });
       case 'undecodable':
         throw new Error('an undecodable message is receive-only');
       default:

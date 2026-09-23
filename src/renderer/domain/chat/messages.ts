@@ -8,7 +8,7 @@
 import type { HexString } from '../../app/bytes';
 import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
 
-import { type MessageContent, isLiveFrame, previewOf } from './content';
+import { type MessageContent, type TxReference, isLiveFrame, previewOf } from './content';
 
 export const listRooms = async (): Promise<RoomRow[]> =>
   (await db.rooms.toArray()).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
@@ -119,6 +119,50 @@ export const markButtonPressed = (messageId: string, row: number, index: number)
       if (message.content.type !== 'buttons' || message.content.pressed) return;
       message.content = { ...message.content, pressed: { row, index } };
     });
+
+/** Spec 0007: after these, a reference for the same transaction changes nothing. */
+const isFinal = (reference: TxReference): boolean => reference.status === 'finalized' || reference.status === 'failed';
+
+/**
+ * Spec 0007: one row per transaction and side. The first reference for a hash
+ * from `direction` adds a row (`messageId`, `timestamp`); a later one updates
+ * that row's state in place, unless it already ended (finalized or failed).
+ * A later reference with no note keeps the note. Returns the row's id and
+ * whether it is new.
+ */
+export const applyReference = (
+  peer: PeerId,
+  direction: 'incoming' | 'outgoing',
+  ids: { messageId: string; timestamp: number },
+  reference: TxReference,
+  options: { read?: boolean } = {},
+): Promise<{ messageId: string; added: boolean }> =>
+  appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
+    const hash = reference.hash.toLowerCase();
+    const existing = (await listMessages(peer)).find(
+      row => row.direction === direction && row.content.type === 'transactionReference' && row.content.reference.hash.toLowerCase() === hash,
+    );
+    if (!existing || existing.content.type !== 'transactionReference') {
+      const row: MessageRow = {
+        ...ids,
+        peerAccountId: peer,
+        direction,
+        status: direction === 'outgoing' ? 'sending' : 'received',
+        content: { type: 'transactionReference', reference: { ...reference, hash } },
+        reactions: [],
+        editedAt: null,
+      };
+      return { messageId: ids.messageId, added: await addMessage(row, options) };
+    }
+    const current = existing.content.reference;
+    if (!isFinal(current)) {
+      const next: TxReference = { ...current, ...reference, hash, note: reference.note || current.note, intentMessageId: reference.intentMessageId ?? current.intentMessageId };
+      await db.messages.update(existing.messageId, { content: { type: 'transactionReference', reference: next } });
+      const room = await db.rooms.get(peer);
+      if (room && room.lastMessageAt === existing.timestamp) await db.rooms.update(peer, { lastPreview: previewOf({ type: 'transactionReference', reference: next }) });
+    }
+    return { messageId: existing.messageId, added: false };
+  });
 
 export type SeenResult = 'applied' | 'unknown' | 'ignored';
 

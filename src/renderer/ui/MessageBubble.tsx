@@ -3,7 +3,7 @@
 // system tokens and shadcn DropdownMenu; no tr-ui.
 
 import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
 import { liveFrameText, previewOf } from '../domain/chat/content';
@@ -19,6 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/cn';
 
 import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
+import { ReferenceBody } from './Transactions';
 import { formatClock } from './format';
 import { useTypingReveal } from './reveal';
 
@@ -130,6 +131,8 @@ export type BubbleActions = {
   remove?: { label: string; run: () => void };
   /** Spec 0006: presses on this message's buttons. Absent: the buttons show disabled. */
   keyboard?: KeyboardActions;
+  /** Inline content under the bubble: the spec 0007 signing strip of a pressed `tx` button. */
+  below?: ReactNode;
 };
 
 type Props = {
@@ -193,6 +196,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
       );
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
+    if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} />;
     if ((row.content.type === 'text' || row.content.type === 'buttons') && !own) {
       // Incoming text (contacts, bots and the Assistant write markdown) renders as
       // markdown, sanitized by renderMarkdown; own messages stay plain.
@@ -334,6 +338,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
             }}
           />
         ) : null}
+        {actions?.below ?? null}
         {own && row.status === 'failed' ? (
           <p className="text-caption text-fg-error" data-testid="not-sent">
             Not sent

@@ -24,6 +24,8 @@ import {
   type IdentitySummary,
   type NotifyRequest,
   type RendererSecrets,
+  type TxDryRun,
+  type TxStatusEvent,
   type UsernameAvailability,
 } from '../shared/desktop-api';
 import { isNetworkProfileId } from '../shared/network';
@@ -32,6 +34,7 @@ import { openableUrl } from '../shared/openUrl';
 import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
+import { type TxService, createTxService, openAssetHub } from './chain/assetHub';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
@@ -61,6 +64,43 @@ const CONVERSATION_ID = /^[\w:.-]{1,64}$/;
 const SESSION_ID = /^[\w.:-]{1,128}$/;
 const MAX_NOTIFY_CHARS = 300;
 const ROLES = new Set<AssistantChatMessage['role']>(['system', 'user', 'assistant']);
+
+/** Largest `TxIntent` the renderer may pass: 8 calls of 16 KiB plus the texts. */
+const MAX_INTENT_BYTES = 8 * 16 * 1024 + 4096;
+const MAX_CALLDATA_BYTES = 16 * 1024;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+const CONTRACT = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Spec 0007: one Asset Hub connection and signing service for the identity
+ * on this computer, opened on first use. A failed open is not kept, so the
+ * next press tries again. The service holds the wallet key's sign function,
+ * never the mnemonic.
+ */
+let txService: { key: string; service: Promise<TxService> } | null = null;
+const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService> => {
+  const identity = loadIdentity();
+  if (!identity) return Promise.reject(new Error('This computer has no identity yet.'));
+  const key = `${identity.profile}:${identity.accountHex}`;
+  if (txService?.key === key) return txService.service;
+  void txService?.service.then(old => old.dispose(), () => undefined);
+  const service = openAssetHub(identity.profile).then(chain => {
+    const keys = deriveIdentityKeys(identity.mnemonic);
+    const created = createTxService(chain, { publicKey: keys.accountId, sign: keys.sign });
+    created.onStatus((event: TxStatusEvent) => {
+      const win = getWindow();
+      if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainTxStatus, event);
+    });
+    return created;
+  });
+  const entry = { key, service };
+  txService = entry;
+  service.catch(() => {
+    if (txService === entry) txService = null;
+  });
+  return service;
+};
 
 /** One running reply per conversation; `assistant:cancel` aborts it. */
 const assistantStreams = new Map<string, AbortController>();
@@ -211,6 +251,26 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   );
   ipcMain.handle(IPC.chainMetadataSet, (_event, codeHash: unknown, metadata: unknown): void => {
     if (typeof codeHash === 'string' && metadata instanceof Uint8Array) writeMetadata(codeHash, metadata);
+  });
+
+  // Spec 0007. The intent bytes are decoded and checked again in main; sign
+  // takes only the id of a dry-run that passed (assetHub.ts).
+  ipcMain.handle(IPC.chainDryRun, async (_event, intent: unknown): Promise<TxDryRun> => {
+    if (!(intent instanceof Uint8Array) || intent.length > MAX_INTENT_BYTES) throw new Error('Invalid action.');
+    return (await txServiceFor(getWindow)).dryRun(intent);
+  });
+  ipcMain.handle(IPC.chainSign, async (_event, dryRunId: unknown): Promise<{ hash: string }> => {
+    if (typeof dryRunId !== 'string' || !UUID.test(dryRunId)) throw new Error('Run the test first.');
+    return (await txServiceFor(getWindow)).sign(dryRunId);
+  });
+  ipcMain.handle(IPC.chainWatch, async (_event, hash: unknown): Promise<TxStatusEvent | null> => {
+    if (typeof hash !== 'string' || !TX_HASH.test(hash)) return null;
+    return (await txServiceFor(getWindow)).status(hash);
+  });
+  ipcMain.handle(IPC.chainContractRead, async (_event, address: unknown, calldata: unknown): Promise<Uint8Array> => {
+    if (typeof address !== 'string' || !CONTRACT.test(address)) throw new Error('Invalid contract address.');
+    if (!(calldata instanceof Uint8Array) || calldata.length > MAX_CALLDATA_BYTES) throw new Error('Invalid call data.');
+    return (await txServiceFor(getWindow)).contractRead(address, calldata);
   });
 
   ipcMain.handle(IPC.assistantGetSettings, (): AssistantSettings => publicSettings());

@@ -7,7 +7,8 @@ import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { BANNER_DELAY_MS, type ConnectionSnapshot, showsBanner } from '../app/connectionState';
 import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/database';
 import { ASSISTANT_COMMANDS, ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
-import { isLiveFrame } from '../domain/chat/content';
+import type { TxRunner } from '../domain/chain/transactions';
+import { type TxStatus, isLiveFrame } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { PeerTyping } from '../domain/chat/signals';
 import type { ChatManager } from '../domain/chat/manager';
@@ -17,6 +18,8 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { AssistantSettings } from '../../shared/desktop-api';
+import { BALANCE_NOTE, METER, balanceOfCalldata, decodeUint256, isMeterTopUp, repliesFor, reviveAddressOf, unitsToPlanck } from '../../shared/meter';
+import { type TxIntent, decodeTxIntent, formatUnits } from '../../shared/txIntent';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
 import { BotBadge } from './BotBadge';
@@ -24,6 +27,7 @@ import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader, TypingLine } from './RoomHeader';
+import { type StripPhase, TxStrip } from './Transactions';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -40,6 +44,10 @@ type Props = ({ peer: HexString; manager: ChatManager } | { peer: AssistantPeerI
   scrollToMessageId?: string | null;
   /** Changes on every pick, so the same hit picked again jumps again. */
   scrollRequest?: number;
+  /** Spec 0007: signs `tx` buttons and reports the states (contact rooms). */
+  transactions?: TxRunner | null;
+  /** The identity: its account (the Meter balance) and username (the strip's "Signs as"). */
+  self?: { accountId: Uint8Array; username: string } | null;
 };
 
 type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
@@ -54,6 +62,21 @@ const DELETE_UNDO_MS = 6000;
 const CALLBACK_WAIT_MS = 10_000;
 /** Any other press is highlighted this long. */
 const PRESS_FLASH_MS = 1_000;
+
+/** The one signing strip of the room (spec 0007 rate limit): which button, the intent, where it is. */
+type Strip = { messageId: string; row: number; index: number; bytes: Uint8Array; intent: TxIntent; state: StripPhase; outcome: string | null };
+
+/** The Meter balance line reads again at most this often while nothing new arrives. */
+const METER_REFRESH_MS = 15_000;
+
+/** Reads the identity's Meter balance at the best block, in planck; null when the chain cannot tell. */
+const readMeterBalance = async (accountId: Uint8Array): Promise<bigint | null> => {
+  const chain = window.desktop?.chain;
+  if (!chain) return null;
+  const data = await chain.contractRead(METER.address, balanceOfCalldata(reviveAddressOf(accountId)));
+  const units = decodeUint256(data);
+  return units === null ? null : unitsToPlanck(units);
+};
 
 /** The last pressed button of the room; `since` is the newest incoming message at the press. */
 type PressState = { messageId: string; row: number; index: number; busy: boolean; since: string | null };
@@ -100,7 +123,7 @@ const MuteButton = ({ peer, muted }: { peer: PeerId; muted: boolean }) => (
 );
 
 export const Room = (props: Props) => {
-  const { peer, connection, scrollToMessageId = null, scrollRequest = 0 } = props;
+  const { peer, connection, scrollToMessageId = null, scrollRequest = 0, transactions = null, self = null } = props;
   const manager = 'manager' in props ? props.manager : null;
   const assistant = 'assistant' in props ? props.assistant : null;
   const contact = useLiveQuery(async () => (manager ? db.contacts.get(peer as HexString) : undefined), [peer, manager]);
@@ -116,6 +139,10 @@ export const Room = (props: Props) => {
   const [assistantSettings, setAssistantSettings] = useState<AssistantSettings | null>(null);
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const [press, setPress] = useState<PressState | null>(null);
+  const [strip, setStrip] = useState<Strip | null>(null);
+  // The `tx` button each keyboard started a transaction from (this session).
+  const [txButtons, setTxButtons] = useState<ReadonlyMap<string, { row: number; index: number }>>(() => new Map());
+  const [meterBalance, setMeterBalance] = useState<bigint | null>(null);
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
@@ -210,6 +237,10 @@ export const Room = (props: Props) => {
     const action = row.content.rows[r]?.[i]?.action;
     if (!action || action.kind === 'unsupported') return;
     setError(null);
+    if (action.kind === 'tx') {
+      openStrip(row.messageId, r, i, action.intent);
+      return;
+    }
     const current: PressState = { messageId: row.messageId, row: r, index: i, busy: action.kind === 'callback', since: lastIncomingId };
     setPress(current);
     try {
@@ -229,13 +260,69 @@ export const Room = (props: Props) => {
     }
   };
 
-  const keyboardFor = (row: MessageRow) =>
-    row.content.type === 'buttons' && row.direction === 'incoming' && !answering
-      ? {
-          press: (r: number, i: number) => void pressButton(row, r, i),
-          active: press?.messageId === row.messageId ? { row: press.row, index: press.index, busy: press.busy } : null,
-        }
-      : undefined;
+  // ── Spec 0007: the signing strip. One per room; a dry-run always comes first.
+  const openStrip = (messageId: string, r: number, i: number, bytes: Uint8Array) => {
+    if (strip?.state.phase === 'signing') {
+      setError('A transaction is being signed in this chat. Wait for it, then try again.');
+      return;
+    }
+    const intent = decodeTxIntent(bytes);
+    if (!intent) return;
+    const opened: Strip = { messageId, row: r, index: i, bytes, intent, state: { phase: 'checking' }, outcome: null };
+    setStrip(opened);
+    const update = (next: Partial<Strip>) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, ...next } : current));
+    const chain = window.desktop?.chain;
+    if (!chain || !manager || !transactions) {
+      update({ state: { phase: 'refused', reason: 'This app cannot run chain actions here.', dryRun: null } });
+      return;
+    }
+    const topUp = intent.calls.find(isMeterTopUp);
+    Promise.all([chain.dryRun(bytes), topUp && self ? readMeterBalance(self.accountId).catch(() => null) : Promise.resolve(null)])
+      .then(([dryRun, balance]) => {
+        const outcome = topUp && balance !== null ? `Balance after: ${formatUnits(balance + topUp.value)} PAS` : null;
+        update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
+      })
+      .catch((cause: unknown) => update({ state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } }));
+  };
+
+  const signStrip = async () => {
+    if (!strip || strip.state.phase !== 'ready' || !transactions || !manager) return;
+    const { dryRun } = strip.state;
+    const current = strip;
+    if (!dryRun.id) return;
+    setStrip({ ...current, state: { phase: 'signing', dryRun } });
+    const { display } = current.intent;
+    // "Top up (1 PAS)": what it was, and how much.
+    const note = display.amount ? `${display.title} (${display.amount}${display.asset ? ` ${display.asset}` : ''})` : display.title;
+    try {
+      await transactions.run({ peer: peer as HexString, dryRunId: dryRun.id, chainId: current.intent.chainId, note, intentMessageId: current.messageId });
+      setTxButtons(map => new Map(map).set(current.messageId, { row: current.row, index: current.index }));
+      await manager.pressButton(peer as HexString, current.messageId, current.row, current.index);
+      setStrip(s => (s === null || s.messageId !== current.messageId ? s : null));
+    } catch (cause) {
+      setStrip(s => (s && s.messageId === current.messageId ? { ...s, state: { phase: 'refused', reason: `${plainError(cause, 'It was not signed.')}`, dryRun } } : s));
+    }
+  };
+
+  // The latest state of the transaction each keyboard started (our own reference rows).
+  const txStatusOf = (messageId: string): TxStatus | null => {
+    const ref = [...(messages ?? [])]
+      .reverse()
+      .find(r => r.direction === 'outgoing' && r.content.type === 'transactionReference' && r.content.reference.intentMessageId === messageId);
+    return ref?.content.type === 'transactionReference' ? ref.content.reference.status : null;
+  };
+
+  const keyboardFor = (row: MessageRow) => {
+    if (row.content.type !== 'buttons' || row.direction !== 'incoming' || answering) return undefined;
+    const button = txButtons.get(row.messageId);
+    const status = button ? txStatusOf(row.messageId) : null;
+    const open = strip?.messageId === row.messageId && (strip.state.phase === 'checking' || strip.state.phase === 'signing');
+    return {
+      press: (r: number, i: number) => void pressButton(row, r, i),
+      active: open && strip ? { row: strip.row, index: strip.index, busy: true } : press?.messageId === row.messageId ? { row: press.row, index: press.index, busy: press.busy } : null,
+      tx: button && status ? { ...button, status } : null,
+    };
+  };
 
   const unread = room?.unreadCount ?? 0;
   const markSeen = () => {
@@ -345,8 +432,20 @@ export const Room = (props: Props) => {
         : {};
     }
     const keyboard = keyboardFor(row);
+    const below =
+      strip && strip.messageId === row.messageId ? (
+        <TxStrip
+          intent={strip.intent}
+          state={strip.state}
+          signerName={self?.username ?? 'this account'}
+          outcome={strip.outcome}
+          onSign={() => void signStrip()}
+          onCancel={() => setStrip(null)}
+        />
+      ) : null;
     return {
       ...(keyboard ? { keyboard } : {}),
+      ...(below ? { below } : {}),
       react: emoji => void toggleReaction(row, emoji),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isEditable(row) ? () => startEdit(row) : undefined,
@@ -370,6 +469,43 @@ export const Room = (props: Props) => {
           },
         };
 
+  // ── Spec 0007 Meter (M11 step 5): a bot with a `balance` command, or one
+  // whose references carry `balance:`, gets the balance line under its name.
+  const meterPeer =
+    manager !== null &&
+    self !== null &&
+    ((botInfo?.commands.some(command => command.name === 'balance') ?? false) ||
+      (messages ?? []).some(row => row.direction === 'incoming' && row.content.type === 'transactionReference' && BALANCE_NOTE.test(row.content.reference.note)));
+  const lastReferenceState = (messages ?? [])
+    .filter(row => row.content.type === 'transactionReference')
+    .map(row => (row.content.type === 'transactionReference' ? `${row.messageId}:${row.content.reference.status}` : ''))
+    .join(',');
+  const selfAccount = self?.accountId ?? null;
+  useEffect(() => {
+    if (!meterPeer || !selfAccount) return;
+    let active = true;
+    const refresh = () =>
+      readMeterBalance(selfAccount).then(
+        balance => {
+          if (active && balance !== null) setMeterBalance(balance);
+        },
+        (cause: unknown) => console.warn('[room] meter balance read failed', cause),
+      );
+    void refresh();
+    const timer = setInterval(() => void refresh(), METER_REFRESH_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+    // Read again when the bot answers (a reply is charged) or a transaction moves.
+  }, [meterPeer, selfAccount, lastIncomingId, lastReferenceState]);
+  const meterLine =
+    meterPeer && meterBalance !== null ? (
+      <span data-testid="meter-balance">
+        Balance: {formatUnits(meterBalance)} PAS · ~{String(repliesFor(meterBalance))} {repliesFor(meterBalance) === 1n ? 'reply' : 'replies'}
+      </span>
+    ) : null;
+
   const noDevice = contact !== undefined && contact.devices.length === 0;
   const muted = room?.muted === true;
 
@@ -392,6 +528,19 @@ export const Room = (props: Props) => {
             <span className="text-fg-warning">No device of this contact is known yet, so messages cannot be delivered.</span>
           ) : peerTyping ? (
             <TypingLine typing={peerTyping} />
+          ) : meterLine ? (
+            // The balance first (it is what changes), then the bot's own line.
+            <>
+              {meterLine}
+              {botInfo && botInfo.description !== '' ? (
+                <>
+                  {' · '}
+                  <span data-testid="bot-description" title={botInfo.description}>
+                    {botInfo.description}
+                  </span>
+                </>
+              ) : null}
+            </>
           ) : botInfo && botInfo.description !== '' ? (
             <span data-testid="bot-description" title={botInfo.description}>
               {botInfo.description}
@@ -437,6 +586,7 @@ export const Room = (props: Props) => {
         onEditLast={lastOwnText ? () => startEdit(lastOwnText) : undefined}
         // Commands only for a new message: an edit or a reply is not one.
         commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
+        quietSend={strip !== null}
       />
     </>
   );

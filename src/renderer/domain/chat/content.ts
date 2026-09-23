@@ -11,8 +11,17 @@
  */
 
 import { openableUrl } from '../../../shared/openUrl';
+import { decodeTxIntent } from '../../../shared/txIntent';
+import { bytesToHex, hexToBytes } from '../../app/bytes';
 
-import { BUTTONS_KIND, type BotInfoWire, type ButtonWire, type ChatContent } from './identityEvents';
+import {
+  BUTTONS_KIND,
+  type BotInfoWire,
+  type ButtonWire,
+  type ChatContent,
+  TRANSACTION_REFERENCE_KIND,
+  type TransactionReferenceWire,
+} from './identityEvents';
 
 /** Spec 0005 `TypingContent.kind`, by wire value. */
 export type TypingKind = 'composing' | 'working' | 'stopped';
@@ -25,15 +34,18 @@ export type Attachment = {
 };
 
 /**
- * A spec 0006 button action as this client stores it. `tx` (reserved for RFC
- * 0007) and anything this client may not run (a URL with another scheme, a
- * callback over the payload limit) are `unsupported`: shown, disabled. An
- * action tag above 3 never gets here: the message cannot be decoded at all.
+ * A spec 0006 button action as this client stores it. `tx` keeps the spec
+ * 0007 `TxIntent` bytes as sent (decoded again when pressed; bigints stay
+ * out of the database). Anything this client may not run (a URL with
+ * another scheme, a callback over the payload limit, intent bytes that do not
+ * decode) is `unsupported`: shown, disabled. An action tag above 3 never gets
+ * here: the message cannot be decoded at all.
  */
 export type ButtonAction =
   | { kind: 'command'; command: string }
   | { kind: 'callback'; payload: Uint8Array }
   | { kind: 'url'; url: string }
+  | { kind: 'tx'; intent: Uint8Array }
   | { kind: 'unsupported' };
 export type ChatButton = { label: string; action: ButtonAction };
 
@@ -59,6 +71,29 @@ export type BotInfo = {
   version: number;
 };
 
+/** Spec 0007 `TransactionReference.status`, by wire value. */
+export type TxStatus = 'submitted' | 'inBlock' | 'finalized' | 'failed';
+export const TX_STATUSES: readonly TxStatus[] = ['submitted', 'inBlock', 'finalized', 'failed'];
+
+/**
+ * Spec 0007 `TransactionReference` as this client stores it. `hash` is 0x-hex
+ * (the extrinsic hash). One row per transaction and direction: a later state
+ * for the same hash updates the row (`applyReference`).
+ */
+export type TxReference = {
+  chainId: string;
+  hash: string;
+  status: TxStatus;
+  block: number | null;
+  note: string;
+  intentMessageId: string | null;
+  /** Why our own transaction failed, in words; local only, never on the wire (the note says what it was). */
+  error?: string | null;
+};
+
+/** Spec 0007 limit on `note`. */
+export const MAX_REFERENCE_NOTE = 140;
+
 /** What a message row holds. Reactions and edits are not rows; they mutate one. */
 export type MessageContent =
   | { type: 'text'; text: string }
@@ -78,7 +113,9 @@ export type MessageContent =
   /** System row: the peer pressed a button of a keyboard we sent (spec 0006). */
   | { type: 'buttonPressed'; label: string }
   /** System-style row: a bot's spec 0008 greeting, once, when its info first arrives. */
-  | { type: 'botGreeting'; text: string };
+  | { type: 'botGreeting'; text: string }
+  /** Spec 0007: a transaction and its latest state, from either side. */
+  | { type: 'transactionReference'; reference: TxReference };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -98,7 +135,9 @@ export type OutgoingContent =
   /** Spec 0005: a read receipt for the peer's messages up to `upTo`; never a row. */
   | { type: 'seen'; upTo: string; at: number }
   /** Spec 0008: a bot describes itself. A person's client never sends it; test scripts do. */
-  | { type: 'botInfo'; info: BotInfo };
+  | { type: 'botInfo'; info: BotInfo }
+  /** Spec 0007: the state of a transaction this client submitted. */
+  | { type: 'transactionReference'; reference: TxReference };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -109,6 +148,8 @@ export type IncomingEffect =
   | { kind: 'typing'; typing: TypingKind; until: number }
   | { kind: 'seen'; upTo: string; at: number }
   | { kind: 'botInfo'; info: BotInfo }
+  /** Spec 0007: merged into the row of the same hash, or a new row. */
+  | { kind: 'transactionReference'; reference: TxReference }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -141,7 +182,32 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'seen', value: { upTo: content.upTo, at: BigInt(content.at) } };
     case 'botInfo':
       return { tag: 'botInfo', value: botInfoWire(content.info) };
+    case 'transactionReference':
+      return { tag: 'transactionReference', value: referenceWire(content.reference) };
   }
+};
+
+const referenceWire = (reference: TxReference): TransactionReferenceWire['value'] => ({
+  chainId: reference.chainId,
+  hash: hexToBytes(reference.hash),
+  status: TX_STATUSES.indexOf(reference.status),
+  block: reference.block ?? undefined,
+  note: clip(reference.note, MAX_REFERENCE_NOTE),
+  intentMessageId: reference.intentMessageId ?? undefined,
+});
+
+/** A received reference; null for a status byte this build does not know. */
+const referenceOf = (value: TransactionReferenceWire['value']): TxReference | null => {
+  const status = TX_STATUSES[value.status];
+  if (!status) return null;
+  return {
+    chainId: value.chainId,
+    hash: bytesToHex(value.hash),
+    status,
+    block: value.block ?? null,
+    note: value.note,
+    intentMessageId: value.intentMessageId ?? null,
+  };
 };
 
 const botInfoWire = (info: BotInfo): BotInfoWire['value'] => ({
@@ -167,6 +233,10 @@ const actionOf = (action: ButtonWire['action']): ButtonAction => {
       return action.value.length <= MAX_CALLBACK_BYTES ? { kind: 'callback', payload: action.value } : { kind: 'unsupported' };
     case 'url':
       return openableUrl(action.value) ? { kind: 'url', url: action.value } : { kind: 'unsupported' };
+    case 'tx':
+      // Spec 0007: runnable only when the intent decodes; the checks against
+      // the chain and the clock run when it is pressed.
+      return decodeTxIntent(action.value) ? { kind: 'tx', intent: action.value } : { kind: 'unsupported' };
     default:
       return { kind: 'unsupported' };
   }
@@ -236,11 +306,17 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
     case 'botInfo':
       // Spec 0008: never a bubble; the manager stores it per peer.
       return { kind: 'botInfo', info: { ...content.value, commands: content.value.commands.map(command => ({ ...command })) } };
+    case 'transactionReference': {
+      const reference = referenceOf(content.value);
+      return reference ? { kind: 'transactionReference', reference } : { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
+    }
     case 'undecodable':
-      // A keyboard we cannot read (an action tag above 3) is still a message
-      // the peer sent: the unsupported bubble. A press, typing, seen or
-      // botInfo we cannot read is nothing.
-      return content.value.kind === BUTTONS_KIND ? { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } } : { kind: 'ignore' };
+      // A keyboard or a reference we cannot read is still a message the peer
+      // sent: the unsupported bubble. A press, typing, seen or botInfo we
+      // cannot read is nothing.
+      if (content.value.kind === BUTTONS_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } };
+      if (content.value.kind === TRANSACTION_REFERENCE_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
+      return { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };
     case 'contactAdded':
@@ -299,8 +375,28 @@ export const previewOf = (content: MessageContent): string => {
       return `Pressed ${content.label}`;
     case 'botGreeting':
       return content.text;
+    case 'transactionReference':
+      return referenceLine(content.reference);
   }
 };
+
+/** "Top-up of 1 PAS · in block #123"; the note, or "Transaction" without one. */
+export const referenceLine = (reference: TxReference): string => {
+  const what = reference.note.trim() || 'Transaction';
+  switch (reference.status) {
+    case 'submitted':
+      return `${what} · submitted`;
+    case 'inBlock':
+      return `${what} · in block${reference.block !== null ? ` #${reference.block}` : ''}`;
+    case 'finalized':
+      return `${what} · finalized${reference.block !== null ? ` in block #${reference.block}` : ''}`;
+    case 'failed':
+      return `${what} · failed${reference.error ? `: ${reference.error}` : ''}`;
+  }
+};
+
+/** Spec 0007 states only move forward; a late "submitted" never undoes "in block". */
+export const referenceRank = (status: TxStatus): number => TX_STATUSES.indexOf(status);
 
 /**
  * A `pca` bot's live progress placeholder (bot-core `live-reply.mjs`): a text

@@ -17,6 +17,8 @@ export const isFaucetPeer = (peer: string): peer is FaucetPeerId => peer === FAU
 
 /** The command of the "Copy my address" button; handled here, never sent. */
 export const COPY_ADDRESS_COMMAND = 'copy-address';
+/** The command of "Get 1 PAS": the room asks the faucet bot (domain/faucet/drip.ts); never sent as is. */
+export const DRIP_COMMAND = 'drip';
 
 export const FAUCET_INFO: BotInfo = {
   kind: 0,
@@ -37,6 +39,7 @@ export const faucetUrl = (address: string): string =>
   `https://faucet.polkadot.io/?parachain=1000&address=${encodeURIComponent(address)}`;
 
 export const faucetKeyboard = (address: string): ChatButton[][] => [
+  [{ label: 'Get 1 PAS', action: { kind: 'command', command: DRIP_COMMAND } }],
   [{ label: 'Get test funds', action: { kind: 'url', url: faucetUrl(address) } }],
   [{ label: 'Copy my address', action: { kind: 'command', command: COPY_ADDRESS_COMMAND } }],
 ];
@@ -73,6 +76,16 @@ export const ensureFaucet = (address: string, now: number = Date.now()): Promise
     if (existing) await db.messages.update(FAUCET_KEYBOARD_ID, { content: keyboard });
     else await addMessage(localRow(FAUCET_KEYBOARD_ID, now + 1, 'incoming', keyboard), { read: true });
   });
+
+/** "Get 1 PAS": where the ask went. The bot's answer (a transaction reference) arrives in its own chat. */
+export const addDripRow = (username: string, via: 'message' | 'request' | 'pending', now: number = Date.now()): Promise<boolean> =>
+  addMessage(
+    localRow(`faucet:drip:${now}`, now, 'system', {
+      type: 'text',
+      text: via === 'pending' ? `You already asked ${username}. Its answer comes in that chat once it accepts.` : `Asked ${username} for 1 PAS. The transfer shows in that chat.`,
+    }),
+    { read: true },
+  );
 
 /** "Copy my address": the confirmation row, after the address went to the clipboard. */
 export const addCopiedRow = (now: number = Date.now()): Promise<boolean> =>

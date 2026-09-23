@@ -54,6 +54,16 @@
 // clipboard). search-bots.png searches "test": the Faucet (by its
 // description) and the room peer (by its username) under "Bots".
 //
+// M11 (spec 0007, needs PCD_SCREENSHOT_ROOM_WITH; the peer's `e2e-chat.mjs`
+// gets `--tx`): the room peer sends a keyboard with a `tx` button (0.01 PAS
+// from the app's account to itself on devnet Asset Hub) and lists a
+// `balance` command. room-tx.png presses it: the signing strip after the
+// dry-run (amount, fee, signer, outcome; Sign enabled). room-tx-done.png
+// presses Sign: the app signs with the identity key, the reference bubble
+// goes submitted → in block → finalized (the shot waits for the finalized
+// tick), and the header shows the Meter balance line. The seeded identity
+// must hold PAS (the faucet drip of `npm run e2e:meter`).
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -238,7 +248,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -292,7 +302,7 @@ app.whenReady().then(() => {
   const roomPeer = roomWith ? JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${roomWith}`, 'identity.json'), 'utf8')).username : BOT;
   const roomLog = roomWith ? openSync(join(outDir, 'room-peer.log'), 'w') : null;
   const roomPeerRun = roomWith
-    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--botinfo', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
+    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame', '--buttons', '--botinfo', '--tx', '--seen', '--typing'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
 
   for (const theme of THEMES) {
@@ -399,7 +409,8 @@ app.whenReady().then(() => {
 
       await shot('room-buttons', async () => {
         if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
-        const keyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].pop()`;
+        // The M8 keyboard (a callback among its buttons), not a later one such as M11's tx keyboard.
+        const keyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].filter(k => k.querySelector('[data-action=callback]')).pop()`;
         if (!(await app.waitFor(`${keyboard} != null`, roomWith ? 120_000 : 1_000))) {
           throw new Error(roomWith ? `no keyboard from ${roomPeer} (see .agent-runs/screens/room-peer.log)` : 'no keyboard: set PCD_SCREENSHOT_ROOM_WITH');
         }
@@ -487,6 +498,43 @@ app.whenReady().then(() => {
           throw new Error(`no working… from ${roomPeer} (see .agent-runs/screens/room-peer.log)`);
         }
         log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=typing-indicator]').textContent`)));
+      });
+
+      // M11: the signing strip of a tx button, then the reference after Sign.
+      const txKeyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].filter(k => k.querySelector('[data-action=tx]:not([disabled])')).pop()`;
+      await shot('room-tx', async () => {
+        needsPeer('tx button');
+        if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+        if (!(await app.waitFor(`${txKeyboard} != null`, 120_000))) throw new Error(`no tx button from ${roomPeer} (see .agent-runs/screens/room-peer.log)`);
+        // room-buttons left its url strip open; Cancel it, so Sign is the one primary control on screen.
+        await app.evaluate(`[...document.querySelectorAll('[data-testid=url-confirm] button')].find(b => b.textContent.trim() === 'Cancel')?.click(); true`);
+        await app.evaluate(`${txKeyboard}.querySelector('[data-action=tx]').click(); true`);
+        if (!(await app.waitFor(`document.querySelector('[data-testid=tx-strip]')?.dataset.phase === 'ready' || document.querySelector('[data-testid=tx-strip]')?.dataset.phase === 'refused'`, 60_000))) {
+          throw new Error('the signing strip did not finish its dry-run');
+        }
+        const strip = await app.evaluate(`document.querySelector('[data-testid=tx-strip]').innerText.replace(/\\s+/g, ' ')`);
+        log('strip:', JSON.stringify(strip));
+        if ((await app.evaluate(`document.querySelector('[data-testid=tx-strip]').dataset.phase`)) !== 'ready') throw new Error(`the dry-run refused it: ${strip}`);
+        await app.evaluate(`document.querySelector('[data-testid=tx-strip]').scrollIntoView({ block: 'end' }); true`);
+      });
+      await shot('room-tx-done', async () => {
+        needsPeer('tx button');
+        if (!(await app.evaluate(`document.querySelector('[data-testid=tx-strip]')?.dataset.phase === 'ready'`))) throw new Error('no signing strip to sign');
+        const before = await app.evaluate(`document.querySelectorAll('[data-testid=message-outgoing] [data-testid=tx-reference]').length`);
+        await app.click('[data-testid=tx-sign]');
+        const last = `[...document.querySelectorAll('[data-testid=message-outgoing] [data-testid=tx-reference]')][${before}]`;
+        if (!(await app.waitFor(`${last} != null`, 60_000))) throw new Error('no reference bubble after Sign');
+        log('reference:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
+        if (!(await app.waitFor(`${last}.dataset.status === 'inBlock' || ${last}.dataset.status === 'finalized'`, 90_000))) {
+          throw new Error(`the transaction did not reach a block: ${await app.evaluate(`${last}.innerText`)}`);
+        }
+        log('in block:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
+        if (!(await app.waitFor(`${last}.dataset.status === 'finalized'`, 120_000))) throw new Error(`not finalized in 120 s: ${await app.evaluate(`${last}.innerText`)}`);
+        log('finalized:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
+        if (!(await app.waitFor(app.exists('[data-testid=meter-balance]'), 60_000))) throw new Error('no Meter balance line in the header');
+        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=meter-balance]').textContent`)));
+        // Centred: at the very end the composer's edge clips the last bubble.
+        await app.evaluate(`${last}.scrollIntoView({ block: 'center' }); true`);
       });
 
       await shot('assistant', async () => {

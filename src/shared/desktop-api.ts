@@ -28,6 +28,11 @@ export const IPC = {
   appSetBadge: 'app:setBadge',
   menuSettings: 'menu:settings',
   openUrl: 'open:url',
+  chainDryRun: 'chain:dryRun',
+  chainSign: 'chain:sign',
+  chainWatch: 'chain:watch',
+  chainTxStatus: 'chain:txStatus',
+  chainContractRead: 'chain:contractRead',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -102,6 +107,50 @@ export type DesktopIdentityApi = {
 export type DesktopChainApi = {
   getMetadata: (codeHash: string) => Promise<Uint8Array | null>;
   setMetadata: (codeHash: string, metadata: Uint8Array) => void;
+  /**
+   * Spec 0007: checks, dry-runs and prices a `TxIntent` (its SCALE bytes) at
+   * the best block of Asset Hub, as the identity's account. A refusal is
+   * `ok: false` with the reason; only a transport failure rejects.
+   */
+  dryRun: (intent: Uint8Array) => Promise<TxDryRun>;
+  /** Signs and submits the dry-run `id` with the identity key; resolves with the hash once broadcast. */
+  sign: (dryRunId: string) => Promise<{ hash: string }>;
+  /** The latest state of a transaction this app submitted, or null. */
+  watch: (hash: string) => Promise<TxStatusEvent | null>;
+  /** Every state change of the transactions this app submits. Returns the unsubscribe function. */
+  onTxStatus: (listener: (event: TxStatusEvent) => void) => () => void;
+  /** A read-only contract call at the best block (`ReviveApi_call`): the return data. */
+  contractRead: (address: string, calldata: Uint8Array) => Promise<Uint8Array>;
+};
+
+/**
+ * The result of a spec 0007 dry-run. Amounts are planck as decimal strings.
+ * `id` is what `sign` takes; null when the action must not be signed.
+ */
+export type TxDryRun = {
+  id: string | null;
+  ok: boolean;
+  /** Why it will not be signed, in words for the strip. */
+  error: string | null;
+  /** The signing account, SS58 (prefix 42). */
+  signer: string;
+  /** The estimated fee, planck; null when the dry-run stopped before pricing. */
+  fee: string | null;
+  /** The value the calls transfer, planck. */
+  value: string;
+  /** `Revive.map_account` goes first (the account has never used a contract). */
+  mapsAccount: boolean;
+  /** 0x-hex return data of the last contract call, when there is one. */
+  returnData: string | null;
+};
+
+/** One state of a submitted transaction (spec 0007 `TransactionReference.status`). */
+export type TxStatusEvent = {
+  hash: string;
+  status: 'submitted' | 'inBlock' | 'finalized' | 'failed';
+  block: number | null;
+  /** Why it failed, in words. */
+  error: string | null;
 };
 
 /** Assistant settings as the renderer sees them: never the key itself. */

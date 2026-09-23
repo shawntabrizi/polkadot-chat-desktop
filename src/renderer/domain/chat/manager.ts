@@ -26,7 +26,7 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
-import { type BotInfo, type MessageContent, type OutgoingContent, type TypingKind, fromWire, keyboardOf, toWire } from './content';
+import { type BotInfo, type MessageContent, type OutgoingContent, type TxReference, type TypingKind, fromWire, keyboardOf, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { ButtonWire, IdentityChannelEvent } from './identityEvents';
 import {
@@ -35,6 +35,7 @@ import {
   applySeen,
   applyEdit,
   applyReaction,
+  applyReference,
   ensureRoom,
   getMessage,
   listMessages,
@@ -118,6 +119,13 @@ export type ChatManager = {
    * Test scripts use it as the operator flag.
    */
   sendBotInfo: (peer: HexString, info: BotInfo) => Promise<void>;
+  /**
+   * Spec 0007: tell `peer` the state of a transaction this client submitted
+   * (a new `transactionReference` message each time) and keep one row for it
+   * that moves through the states. Never waits for finality: the caller
+   * sends each state as it happens.
+   */
+  sendReference: (peer: HexString, reference: TxReference) => Promise<void>;
   dispose: VoidFunction;
 };
 
@@ -224,6 +232,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       case 'botInfo':
         // Spec 0008: stored per peer, never a bubble, never answered.
         await applyBotInfo(peer, effect.info, message.timestamp);
+        return;
+      case 'transactionReference':
+        // Spec 0007: a bubble, merged with earlier states of the same transaction.
+        typing.messageFrom(peer, message.timestamp);
+        await applyReference(peer, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference);
         return;
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
@@ -512,6 +525,9 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
           break;
         case 'url':
           break;
+        case 'tx':
+          // The signing strip runs it (dry-run, sign, references); this only records the press.
+          break;
         case 'unsupported':
           throw new Error('This app cannot run this action yet.');
       }
@@ -610,6 +626,17 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       const contact = await getContact(peer);
       if (!contact) throw new Error('no contact to describe this client to');
       await ensureChannel(hexToBytes(peer), contact.chatPublicKey).post(toWire({ type: 'botInfo', info }));
+    },
+
+    sendReference: async (peer, reference) => {
+      const ids = { messageId: randomId(), timestamp: Date.now() };
+      const { messageId, added } = await applyReference(peer, 'outgoing', ids, reference);
+      // The session marks the first message sent and delivered (the row's id).
+      await submit(peer, { type: 'transactionReference', reference }, ids).catch(async error => {
+        // The chain state is real even when the peer was not told: the row stays, marked.
+        if (added) await setMessageStatus(messageId, 'failed');
+        throw error;
+      });
     },
 
     dispose: () => {

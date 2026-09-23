@@ -37,6 +37,8 @@ type Props = {
   sendButton?: 'icon' | 'pill';
   /** The peer's commands (spec 0008): `/` at the start opens the menu. None: no menu. */
   commands?: readonly BotCommand[];
+  /** Spec 0007: a signing strip is open, and its Sign is the room's one primary control; Send steps down. */
+  quietSend?: boolean;
 };
 
 /**
@@ -95,6 +97,7 @@ export const Composer = ({
   allowEmpty = false,
   sendButton = 'icon',
   commands = [],
+  quietSend = false,
 }: Props) => {
   const field = useRef<HTMLTextAreaElement>(null);
 
@@ -229,7 +232,15 @@ export const Composer = ({
             {sendLabel}
           </Button>
         ) : (
-          <Button type="button" size="icon" className="size-10 shrink-0 rounded-full" aria-label={sendLabel} disabled={!canSend} onClick={send}>
+          <Button
+            type="button"
+            size="icon"
+            variant={quietSend ? 'secondary' : 'default'}
+            className="size-10 shrink-0 rounded-full"
+            aria-label={sendLabel}
+            disabled={!canSend}
+            onClick={send}
+          >
             <SendHorizontal className="size-5" />
           </Button>
         )}

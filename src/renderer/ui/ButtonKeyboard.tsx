@@ -3,19 +3,24 @@
 // variant, rounded-medium inside a bubble, never a pill); the strip is inline
 // under the bubble, not a modal, and names the host (§11).
 
-import { ExternalLink, LoaderCircle } from 'lucide-react';
+import { ExternalLink, LoaderCircle, Wallet } from 'lucide-react';
 
-import type { ChatButton } from '../domain/chat/content';
+import type { ChatButton, TxStatus } from '../domain/chat/content';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import { openableUrl } from '../../shared/openUrl';
+
+import { TxStatusIcon } from './Transactions';
+import { txButtonView } from './txButton';
 
 /** Where a press goes; absent, every button shows disabled. */
 export type KeyboardActions = {
   press: (row: number, index: number) => void;
   /** The button pressed last: highlighted; `busy` shows a spinner (a callback waiting for the bot). */
   active: { row: number; index: number; busy: boolean } | null;
+  /** Spec 0007: the state of the transaction a `tx` button of this keyboard started. */
+  tx?: { row: number; index: number; status: TxStatus } | null;
 };
 
 export type ButtonPosition = { row: number; index: number };
@@ -39,13 +44,17 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
       <div key={r} className="flex flex-wrap gap-1.5">
         {row.map((button, i) => {
           const { action } = button;
-          const runnable = action.kind !== 'unsupported';
+          // Spec 0007 (owner requirement): a tx button says it signs, shows the amount, and expires.
+          const txView = action.kind === 'tx' ? txButtonView(action.intent, Date.now()) : null;
+          const runnable = action.kind !== 'unsupported' && txView?.expired !== true;
           const active = same(keyboard?.active ?? null, r, i) || same(confirming, r, i);
           const busy = keyboard?.active?.busy === true && same(keyboard.active, r, i);
+          const txStatus = keyboard?.tx && same(keyboard.tx, r, i) ? keyboard.tx.status : null;
           const control = (
             <Button
               type="button"
-              variant={active ? 'default' : 'secondary'}
+              // A tx button stays secondary: while its strip is open, Sign is the one primary control.
+              variant={active && action.kind !== 'tx' ? 'default' : 'secondary'}
               size="sm"
               className="h-auto min-h-8 max-w-full min-w-0 grow cursor-pointer rounded-medium py-1.5 text-label-m disabled:cursor-not-allowed"
               disabled={!runnable || !keyboard}
@@ -60,11 +69,28 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
               }}
             >
               {busy ? <LoaderCircle className="size-3.5 animate-spin" aria-label="Waiting for the answer" /> : null}
+              {action.kind === 'tx' && !busy ? <Wallet className="size-4" aria-hidden /> : null}
               <span className="truncate">{button.label}</span>
+              {txView?.caption ? (
+                <span className="shrink-0 text-body-s text-fg-secondary" data-testid="tx-caption">
+                  {txView.caption}
+                </span>
+              ) : null}
               {action.kind === 'url' ? <ExternalLink className="size-3.5" aria-hidden /> : null}
+              {txStatus && !busy ? <TxStatusIcon status={txStatus} /> : null}
             </Button>
           );
-          if (runnable) return <div key={i} className="flex max-w-full min-w-0 grow">{control}</div>;
+          if (runnable && !txView) return <div key={i} className="flex max-w-full min-w-0 grow">{control}</div>;
+          if (runnable) {
+            return (
+              <Tooltip key={i}>
+                <TooltipTrigger asChild>
+                  <div className="flex max-w-full min-w-0 grow">{control}</div>
+                </TooltipTrigger>
+                <TooltipContent>{txView?.tooltip}</TooltipContent>
+              </Tooltip>
+            );
+          }
           // A disabled button takes no pointer events: the wrapper holds the tooltip.
           return (
             <Tooltip key={i}>
@@ -73,7 +99,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
                   {control}
                 </span>
               </TooltipTrigger>
-              <TooltipContent>{DISABLED_ACTION_TEXT}</TooltipContent>
+              <TooltipContent>{txView?.tooltip ?? DISABLED_ACTION_TEXT}</TooltipContent>
             </Tooltip>
           );
         })}

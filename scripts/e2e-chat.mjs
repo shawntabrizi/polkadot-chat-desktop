@@ -21,6 +21,12 @@
 // commands) on the identity channel, as a bot does after it accepts. The
 // test identity acts as the operator flag here; a person's client never
 // sends it.
+// --tx (M11 screenshots): with --botinfo, the agent also lists a `balance`
+// command (the app then shows the Meter balance line); after the botInfo,
+// sends one keyboard with a spec 0007 `tx` button: a plain
+// `Balances.transfer_keep_alive` of 0.01 PAS on devnet Asset Hub from the
+// peer's account to itself (kind 0 call data, encoded with the Asset Hub
+// descriptors). The app dry-runs and signs it; this script never signs.
 // --seen (M9 screenshots): after all of the above, the script stays and reads
 // the room like an open app window: every second, a new message from the
 // peer is marked read (manager.markRead), which sends spec 0005 `seen`.
@@ -68,8 +74,9 @@ const buttonsRun = args.includes('--buttons');
 const seenRun = args.includes('--seen');
 const typingRun = args.includes('--typing');
 const botInfoRun = args.includes('--botinfo');
+const txRun = args.includes('--tx');
 if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--botinfo] [--seen] [--typing]');
+  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--botinfo] [--tx] [--seen] [--typing]');
   process.exit(2);
 }
 if (profile !== 'devnet' && profile !== 'paseo') {
@@ -346,8 +353,10 @@ if (botInfoRun) {
       { name: 'validators', description: 'Pick validators to nominate' },
       { name: 'start', description: 'Start over' },
       { name: 'help', description: 'What I can do' },
+      // M11: a bot with `balance` gets the Meter balance line in the app's header.
+      ...(txRun ? [{ name: 'balance', description: 'Your prepaid balance' }] : []),
     ],
-    version: 1,
+    version: txRun ? 2 : 1,
   };
   try {
     await manager.sendBotInfo(peerAccountHex, info);
@@ -355,6 +364,39 @@ if (botInfoRun) {
     finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
   }
   console.log(`BOTINFO_SENT commands=${info.commands.length}`);
+}
+if (txRun) {
+  const { openAssetHub } = await load('src/main/chain/assetHub.ts');
+  const { encodeTxIntent } = await load('src/shared/txIntent.ts');
+  let chain = null;
+  try {
+    chain = await openAssetHub(profile);
+    // 0.01 PAS (10 decimals) from the peer's account (the signer) to itself.
+    const callData = await chain.api.tx.Balances.transfer_keep_alive({ dest: { type: 'Id', value: ss58.dec(bytesOf(peerAccountHex)) }, value: 100_000_000n }).getEncodedData();
+    const intent = encodeTxIntent({
+      version: 1,
+      chainId: chain.genesis,
+      calls: [{ kind: 0, to: undefined, data: callData, value: 0n, gasRefTime: undefined, gasProofSize: undefined, storageDepositLimit: undefined }],
+      display: { title: 'Send to yourself', description: 'A test transfer of 0.01 PAS from your account back to it', amount: '0.01', asset: 'PAS' },
+      dryRunRequired: true,
+      expiresAt: BigInt(Date.now() + 30 * 60_000),
+    });
+    await manager.sendButtons(peerAccountHex, {
+      text: 'Try a transaction: it only costs the network fee.',
+      rows: [[{ label: 'Send 0.01 PAS to yourself', action: { tag: 'tx', value: intent } }]],
+      oneShot: false,
+    });
+  } catch (error) {
+    finish(1, `TX_FAIL ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    chain?.destroy();
+  }
+  const sent = await waitFor(async () =>
+    (await db.messages.toArray()).find(
+      (row) => row.peerAccountId === peerAccountHex && row.content.type === 'buttons' && row.content.rows.flat().some((b) => b.action.kind === 'tx') && row.status === 'delivered',
+    ),
+  );
+  console.log(`TX_BUTTON_SENT ${sent ? 'delivered' : 'not acked'}`);
 }
 if (seenRun || typingRun) {
   const LINGER_MS = 15 * 60_000;

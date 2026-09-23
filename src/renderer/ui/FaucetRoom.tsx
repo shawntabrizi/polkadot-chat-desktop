@@ -1,13 +1,14 @@
 // The built-in Faucet's room (M10 step 6): the Assistant's room shape, with
-// no composer: the Faucet only has its keyboard. Everything is local; a
-// press never touches the wire.
+// no composer: the Faucet only has its keyboard. Everything is local, except
+// "Get 1 PAS" (M11 step 6), which asks the faucet bot in its own chat.
 
 import { Droplets } from 'lucide-react';
 import { useState } from 'react';
 
 import { type MessageRow, db } from '../app/database';
 import { listMessages, markButtonPressed, markRoomRead } from '../domain/chat/messages';
-import { COPY_ADDRESS_COMMAND, FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME, addCopiedRow } from '../domain/faucet/faucet';
+import type { DripResult } from '../domain/faucet/drip';
+import { COPY_ADDRESS_COMMAND, DRIP_COMMAND, FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME, addCopiedRow, addDripRow } from '../domain/faucet/faucet';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 import { BotBadge } from './BotBadge';
@@ -28,7 +29,13 @@ export const FaucetAvatar = ({ size = 'md' }: { size?: 'sm' | 'md' }) => (
 /** A press stays highlighted this long, as in a contact's room. */
 const PRESS_FLASH_MS = 1_000;
 
-export const FaucetRoom = ({ address }: { address: string }) => {
+type Props = {
+  address: string;
+  /** Asks the faucet bot for 1 PAS; null until the chat manager runs. */
+  drip: ((address: string) => Promise<DripResult>) | null;
+};
+
+export const FaucetRoom = ({ address, drip }: Props) => {
   const messages = useLiveQuery(() => listMessages(FAUCET_PEER), []);
   const room = useLiveQuery(() => db.rooms.get(FAUCET_PEER), []);
   const [active, setActive] = useState<{ messageId: string; row: number; index: number } | null>(null);
@@ -49,6 +56,10 @@ export const FaucetRoom = ({ address }: { address: string }) => {
       } else if (action.kind === 'command' && action.command === COPY_ADDRESS_COMMAND) {
         await navigator.clipboard.writeText(address);
         await addCopiedRow();
+      } else if (action.kind === 'command' && action.command === DRIP_COMMAND) {
+        if (!drip) throw new Error('Chat is still starting.');
+        const result = await drip(address);
+        await addDripRow(result.username, result.via);
       } else {
         return;
       }

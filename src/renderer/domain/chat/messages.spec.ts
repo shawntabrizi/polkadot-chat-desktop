@@ -8,6 +8,7 @@ import {
   applyDeletion,
   applyEdit,
   applyReaction,
+  applyReference,
   applySeen,
   countUnread,
   ensureRoom,
@@ -313,5 +314,41 @@ describe('applySeen (spec 0005)', () => {
 
   it('reports an unknown upTo so the caller can defer it', async () => {
     expect(await applySeen(PEER, 'nope', 1)).toBe('unknown');
+  });
+});
+
+describe('applyReference (spec 0007)', () => {
+  const HASH = `0x${'AB'.repeat(32)}`;
+  const reference = { chainId: '0x01', hash: HASH, status: 'submitted' as const, block: null, note: 'Top up of 1 PAS', intentMessageId: 'intent' };
+
+  // One transaction is one bubble that moves through its states; a chat full
+  // of "submitted", "in block", "finalized" copies would hide the answer.
+  it('keeps one row per transaction and side, and moves it forward in place', async () => {
+    const first = await applyReference(PEER, 'outgoing', { messageId: 'r1', timestamp: 10 }, reference);
+    expect(first).toEqual({ messageId: 'r1', added: true });
+    const second = await applyReference(PEER, 'outgoing', { messageId: 'r2', timestamp: 20 }, { ...reference, hash: HASH.toLowerCase(), status: 'inBlock', block: 5, note: '' });
+    expect(second).toEqual({ messageId: 'r1', added: false });
+    const rows = await listMessages(PEER);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.content).toEqual({ type: 'transactionReference', reference: { ...reference, hash: HASH.toLowerCase(), status: 'inBlock', block: 5 } });
+    expect((await db.rooms.get(PEER))?.lastPreview).toBe('Top up of 1 PAS · in block #5');
+  });
+
+  it('never moves a finalized or failed transaction again', async () => {
+    await applyReference(PEER, 'outgoing', { messageId: 'r1', timestamp: 10 }, { ...reference, status: 'failed', error: 'not enough funds' });
+    await applyReference(PEER, 'outgoing', { messageId: 'r2', timestamp: 20 }, { ...reference, status: 'inBlock', block: 5 });
+    const [only] = await listMessages(PEER);
+    expect(only?.content.type === 'transactionReference' ? only.content.reference.status : null).toBe('failed');
+  });
+
+  it("keeps the peer's reference apart from ours for the same hash, and counts it unread", async () => {
+    await applyReference(PEER, 'outgoing', { messageId: 'r1', timestamp: 10 }, reference);
+    await applyReference(PEER, 'incoming', { messageId: 'p1', timestamp: 11 }, { ...reference, note: 'balance: 9000000000' });
+    const rows = await listMessages(PEER);
+    expect(rows.map(r => [r.messageId, r.direction])).toEqual([
+      ['r1', 'outgoing'],
+      ['p1', 'incoming'],
+    ]);
+    expect((await db.rooms.get(PEER))?.unreadCount).toBe(1);
   });
 });

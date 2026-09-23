@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { appDatabase, db } from '../../app/database';
 import { listMessages } from '../chat/messages';
 
-import { COPY_ADDRESS_COMMAND, FAUCET_INFO, FAUCET_KEYBOARD_ID, FAUCET_PEER, addCopiedRow, ensureFaucet, faucetKeyboard, faucetUrl } from './faucet';
+import { COPY_ADDRESS_COMMAND, DRIP_COMMAND, FAUCET_INFO, FAUCET_KEYBOARD_ID, FAUCET_PEER, addCopiedRow, ensureFaucet, faucetKeyboard, faucetUrl } from './faucet';
 
 const ADDRESS = '15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5';
 
@@ -19,8 +19,9 @@ describe('the Faucet keyboard (M10 step 6)', () => {
     expect(url.searchParams.get('address')).toBe(ADDRESS);
   });
 
-  it('has "Get test funds" as a url button and "Copy my address" as a local command, nothing else', () => {
+  it('has "Get 1 PAS" (the faucet bot), "Get test funds" as a url button and "Copy my address", nothing else', () => {
     expect(faucetKeyboard(ADDRESS)).toEqual([
+      [{ label: 'Get 1 PAS', action: { kind: 'command', command: DRIP_COMMAND } }],
       [{ label: 'Get test funds', action: { kind: 'url', url: faucetUrl(ADDRESS) } }],
       [{ label: 'Copy my address', action: { kind: 'command', command: COPY_ADDRESS_COMMAND } }],
     ]);
@@ -50,7 +51,7 @@ describe('ensureFaucet', () => {
     expect(rows).toHaveLength(2);
     const keyboard = await db.messages.get(FAUCET_KEYBOARD_ID);
     expect(keyboard?.timestamp).toBe(1001);
-    expect(keyboard?.content.type === 'buttons' ? keyboard.content.rows[0]?.[0]?.action : null).toEqual({ kind: 'url', url: faucetUrl('5other') });
+    expect(keyboard?.content.type === 'buttons' ? keyboard.content.rows[1]?.[0]?.action : null).toEqual({ kind: 'url', url: faucetUrl('5other') });
   });
 
   it('confirms a copy with a system row and never shows the address in it', async () => {

@@ -16,10 +16,12 @@ import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
+import { type DripDeps, requestDrip } from '../domain/faucet/drip';
 import { FAUCET_PEER } from '../domain/faucet/faucet';
+import type { TxRunner } from '../domain/chain/transactions';
 import type { ChatManager } from '../domain/chat/manager';
 import type { IdentityLookup } from '../domain/identity/lookup';
-import type { SearchResult } from '../domain/identity/search';
+import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -55,7 +57,7 @@ type Props = {
   identity: UserIdentity;
   profileId: NetworkProfileId;
   /** Null while the chat manager starts. */
-  runtime: { manager: ChatManager; lookup: IdentityLookup } | null;
+  runtime: { manager: ChatManager; lookup: IdentityLookup; transactions: TxRunner | null } | null;
   assistant: AssistantChat | null;
   assistantApi: DesktopAssistantApi | null;
   connection: ConnectionSnapshot;
@@ -204,6 +206,16 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
     return () => window.removeEventListener('keydown', listener);
   }, []);
 
+  // "Get 1 PAS" in the Faucet: the faucet bot, found by the same search a person uses.
+  const dripDeps = (live: NonNullable<Props['runtime']>): DripDeps => ({
+    contacts: () => db.contacts.toArray(),
+    requests: () => db.requests.toArray(),
+    search: async prefix => (await searchUsernames(NETWORK_PROFILES[profileId], prefix, identity.identityAccountId)).results,
+    getPeerIdentity: accountId => live.lookup.getPeerIdentity(accountId),
+    sendMessage: (peer, text) => live.manager.sendMessage(peer, { type: 'text', text }),
+    sendRequest: (peer, text) => live.manager.sendRequest(peer, text),
+  });
+
   const listSelection: ChatSelection =
     selection.kind === 'room' || selection.kind === 'outgoing' ? selection : { kind: 'other' };
 
@@ -223,12 +235,16 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             />
           ) : null;
         }
-        if (selection.peer === FAUCET_PEER) return <FaucetRoom key={FAUCET_PEER} address={toSs58(identity.identityAccountId)} />;
+        if (selection.peer === FAUCET_PEER) {
+          return <FaucetRoom key={FAUCET_PEER} address={toSs58(identity.identityAccountId)} drip={runtime ? address => requestDrip(dripDeps(runtime), address) : null} />;
+        }
         return runtime ? (
           <Room
             key={selection.peer}
             peer={selection.peer}
             manager={runtime.manager}
+            transactions={runtime.transactions}
+            self={{ accountId: identity.identityAccountId, username }}
             connection={connection}
             scrollToMessageId={selection.jump?.messageId ?? null}
             scrollRequest={selection.jump?.seq ?? 0}

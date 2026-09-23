@@ -21,6 +21,12 @@ export type NetworkProfile = {
   /** Base URL of the identity backend (username search and registration). */
   identityBackend: string;
   identityRegistrationAuth: IdentityRegistrationAuth;
+  /**
+   * Spec 0007 transactions and contract reads: the Asset Hub of this network
+   * (RPC endpoints in order, and the genesis hash a `TxIntent.chainId` must
+   * name). Null: this profile cannot run chain actions.
+   */
+  assetHub: { endpoints: readonly string[]; genesis: string } | null;
 };
 
 export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
@@ -34,6 +40,12 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
     ],
     identityBackend: 'https://polkadot-app.api.polkadotcommunity.foundation',
     identityRegistrationAuth: 'client-proof',
+    // Paseo Asset Hub (asset-hub-paseo 2005002 on 2026-09-23); endpoints
+    // from .refs/polkadot-app-deploy environments.
+    assetHub: {
+      endpoints: ['wss://asset-hub-paseo-rpc.n.dwellir.com', 'wss://sys.turboflakes.io/asset-hub-paseo', 'wss://sys.ibp.network/asset-hub-paseo'],
+      genesis: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
+    },
   },
   paseo: {
     id: 'paseo',
@@ -41,6 +53,8 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
     peopleEndpoints: ['wss://paseo-people-next-system-rpc.polkadot.io'],
     identityBackend: 'https://identity-backend-next.parity-testnet.parity.io',
     identityRegistrationAuth: 'none',
+    // Paseo Next has its own Asset Hub; no descriptors for it yet (M11 is devnet only).
+    assetHub: null,
   },
 };
 

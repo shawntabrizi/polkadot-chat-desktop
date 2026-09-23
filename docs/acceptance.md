@@ -1781,3 +1781,101 @@ One `curl https://faucet.polkadot.io/` returned the SvelteKit shell only; no que
 - "Copy my address" was not pressed in the automation (it would write the machine's clipboard); the copy row is covered by `faucet.spec.ts`.
 - The automatic `/start` was not seen live: every running pca bot now sends `botInfo` with the accept, so none qualifies. It is covered by `manager.messaging.spec.ts` (two clients, one in-memory store: exactly one `/start`, none to a peer without a bot sign, none after `botInfo`).
 - The Assistant's `/reset` and `/model` were not run in the app; they are covered by `assistant.spec.ts`.
+
+## M11
+
+Run 2026-09-23 on this machine, headless, devnet. Bots `pcdfaucet.77` and `pcdmeter.01` were running (started by the pca agent, pca commit 4812bd7). Vectors: `docs/spec/vectors-0007.md` A and B decode byte for byte and encode back (`content.spec.ts`).
+
+### npm run check (last lines)
+
+```
+
+ Test Files  49 passed (49)
+      Tests  397 passed (397)
+   Start at  18:00:11
+   Duration  3.75s (transform 1.88s, setup 857ms, import 8.47s, tests 9.23s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (122 files)
+EXIT 0
+```
+
+### npm run smoke
+
+```
+✓ built in 186ms
+SMOKE_OK
+EXIT 0
+```
+
+### npm run e2e:meter
+
+```
+
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connected
+people best block #7052444
+ASSET_HUB 0xd6eec261… account 5H4Lootcg7w7A4xgsPFDabSiEqFUTpdykagVckcwcx6kyQYW free 24.9922 PAS
+FOUND pcdfaucet.77 0xe018148187403b5980aa5d91d38e108af1aadcb91ce5bc47f104ef04554e680f
+DRIP_SENT via=request to=pcdfaucet.77 (/drip 15zdx99gXuCabbyCq2JDikGs6TF8A8C7q5Qyn3cJB38H9sMf)
+DRIP_OK status=inBlock block=13620052 note="Dripped 1 PAS" hash=0xb46eba14c3aac9b9b982eb7d5c13c5122c0fd7512fbd06e196402c176c056269 at=10.8s
+FOUND pcdmeter.01 0x9eb681bc39734224669e4e261c271d628e8d87e4c3cb25636c0e248267ea2967
+REQUEST_SENT pcdmeter
+ACCEPTED pcdmeter at=16.0s
+BALANCE_BEFORE 0.7 PAS
+SENT /topup
+BUTTON "Top up 1 PAS" text="Add 1 PAS to your balance. Each reply costs 0.1 PAS." intent: Top up 1 PAS; calls=1 kind=1 to=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 value=10000000000
+DRYRUN ok=true fee=0.0014 PAS (14510503 planck) mapsAccount=false value=10000000000
+SIGNED hash=0x79fb550e97c00764073f78e436e4b590cadcd88e547523b5fd208464fbd7bf40 at=24.6s
+TOPUP_OK status=inBlock block=13620060 row="Top up (1 PAS)" at=26.6s
+BALANCE 1.6 PAS (16000000000 planck; before 0.7 PAS) · ~16 replies
+BALANCE_NOTE the top-up is not fully visible yet (a charge may have run meanwhile)
+ANSWER 1 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate, 
+BALANCE 1.5 PAS (-0.1) reference="balance: 15000000000" inBlock at=36.0s
+ANSWER 2 A parachain is an independent blockchain that runs on the Polkadot network, sharing security with other parach
+BALANCE 1.4 PAS (-0.1) reference="balance: 14000000000" inBlock at=46.5s
+ANSWER 3 Asset Hub is a Polkadot parachain that provides a common platform for creating, managing, and trading custom a
+BALANCE 1.3 PAS (-0.1) reference="balance: 13000000000" inBlock at=54.9s
+METERED_OK 3 answers charged: 1.6 → 1.3 PAS
+TOPUP_REFERENCE finalized
+METER_OK
+EXIT 0
+```
+
+Notes: BALANCE_BEFORE 0.7 PAS is what an earlier development run left. After the top-up the balance read 1.6 PAS, not 1.7: the bot charged 0.1 PAS for its answer to the chat request (a brain turn) before the read; the script prints BALANCE_NOTE for that. `mapsAccount=false`: devnet Asset Hub has `Revive.AutoMap` on and the account was already mapped. An earlier development run of the same script (17:48, first drip of this identity) also ended `METER_OK` (balance 1 → 0.7 PAS).
+
+### PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots
+
+```
+54.0s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+66.5s strip: "Send to yourself A test transfer of 0.01 PAS from your account back to it Amount 0.01 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 The test run passed. Cancel Sign"
+67.3s saved berlin-day/room-tx.png
+67.6s reference: "Send to yourself (0.01 PAS) · submitted"
+70.4s in block: "Send to yourself (0.01 PAS) · in block #13620113"
+95.6s finalized: "Send to yourself (0.01 PAS) · finalized in block #13620113"
+95.6s header: "Balance: 1.3 PAS · ~13 replies"
+96.4s saved berlin-day/room-tx-done.png
+120.4s faucet strip: "Open faucet.polkadot.io in your browser?CancelOpen"
+130.1s url strip: "Open docs.polkadot.com in your browser?CancelOpen"
+139.2s strip: "Send to yourself A test transfer of 0.01 PAS from your account back to it Amount 0.01 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 The test run passed. Cancel Sign"
+140.0s saved berlin-night/room-tx.png
+140.6s reference: "Send to yourself (0.01 PAS) · submitted"
+143.3s in block: "Send to yourself (0.01 PAS) · in block #13620146"
+169.3s finalized: "Send to yourself (0.01 PAS) · finalized in block #13620146"
+169.3s header: "Balance: 1.3 PAS · ~13 replies"
+170.1s saved berlin-night/room-tx-done.png
+185.5s faucet strip: "Open faucet.polkadot.io in your browser?CancelOpen"
+SCREENSHOTS_OK
+EXIT 0
+```
+
+I read the PNGs: `room-tx.png` (both themes) shows the tx button (Wallet icon, label, "0.01 PAS" caption, secondary) and the inline strip under it: title, description, Amount 0.01 PAS, Fee ≈ 0.0009 PAS, Signs as pcdecejakd.11, "The test run passed.", Cancel and Sign (the only primary control; Send is secondary while the strip is open). `room-tx-done.png` shows the reference bubble "Send to yourself (0.01 PAS) · finalized in block #…" with the double tick and the Copy button, the double tick on the pressed button, and the header "Balance: 1.3 PAS · ~13 replies · Answers staking questions…". Both runs of the tx signed for real on devnet Asset Hub. Earlier shots (room-buttons, room-bot, faucet with the new "Get 1 PAS" row) were read too.
+
+Earlier attempt (for the record): the first screenshot run missed `room-buttons.png` (its selector took the new tx keyboard) and night `room-bot.png` (the Meter line had replaced the bot description). Both are fixed (docs/decisions.md M11).
+
+### git status --short
+
+This file is part of the commit, so the result of `git status --short` after it is in the M11 hand-off report, not here.

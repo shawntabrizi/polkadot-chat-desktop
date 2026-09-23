@@ -2,9 +2,10 @@ import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/mes
 import { Bytes } from 'scale-ts';
 import { describe, expect, it, vi } from 'vitest';
 
-import { bytesToHex } from '../../app/bytes';
+import { type TxIntent, decodeTxIntent, encodeTxIntent } from '../../../shared/txIntent';
+import { bytesToHex, hexToBytes } from '../../app/bytes';
 
-import { fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, toWire } from './content';
+import { type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
 import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
@@ -488,5 +489,108 @@ describe('previewOf', () => {
     expect(previewOf({ type: 'unsupported', tag: 'send' })).toBe('Unsupported message (send)');
     expect(previewOf({ type: 'deleted' })).toBe('Message deleted');
     expect(previewOf({ type: 'botGreeting', text: 'Hi!' })).toBe('Hi!');
+  });
+});
+
+describe('kind 245 and the tx action: spec 0007', () => {
+  /*
+   * The two vectors of docs/spec/vectors-0007.md, produced by the pca codec
+   * (bot-core/vendor/app-chat-codec.mjs) on 2026-09-23. Both sides must read
+   * each other's bytes, or a bot's Top up button and our references are lost.
+   */
+  const VECTOR_A =
+    '0x35031054582d310030fd779001000000f248546f7020757020746f20636f6e74696e7565040430546f7020757020312050415303610201090130783030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303004010150111111111111111111111111111111111111111110deadbeef00e40b5402000000000000000000000000000018546f702075702841646473203120504153010431010c50415301601afe779001000000';
+  const INTENT_A =
+    '0x01090130783030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303004010150111111111111111111111111111111111111111110deadbeef00e40b5402000000000000000000000000000018546f702075702841646473203120504153010431010c50415301601afe7790010000';
+  const VECTOR_B =
+    '0x4502145245462d311057fd779001000000f5090130783030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303080222222222222222222222222222222222222222222222222222222222222222201017b0000003c546f702d7570206f66203120504153011054582d31';
+  const opaque = Bytes();
+  const ZERO_CHAIN = `0x${'0'.repeat(64)}`;
+  const intentA: TxIntent = {
+    version: 1,
+    chainId: ZERO_CHAIN,
+    calls: [
+      {
+        kind: 1,
+        to: new Uint8Array(20).fill(0x11),
+        data: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+        value: 10_000_000_000n,
+        gasRefTime: undefined,
+        gasProofSize: undefined,
+        storageDepositLimit: undefined,
+      },
+    ],
+    display: { title: 'Top up', description: 'Adds 1 PAS', amount: '1', asset: 'PAS' },
+    dryRunRequired: true,
+    expiresAt: 1_720_000_060_000n,
+  };
+  const reference = {
+    messageId: 'REF-1',
+    timestamp: 1_720_000_010_000n,
+    versioned: {
+      tag: 'v1' as const,
+      value: {
+        tag: 'transactionReference' as const,
+        value: { chainId: ZERO_CHAIN, hash: new Uint8Array(32).fill(0x22), status: 1, block: 123, note: 'Top-up of 1 PAS', intentMessageId: 'TX-1' },
+      },
+    },
+  };
+
+  it('decodes the TxIntent of vector A byte for byte, and encodes it back to the same bytes', () => {
+    expect(decodeTxIntent(hexToBytes(INTENT_A))).toEqual(intentA);
+    expect(bytesToHex(encodeTxIntent(intentA))).toBe(INTENT_A);
+  });
+
+  it('decodes vector A into a runnable tx button that keeps the intent bytes', () => {
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_A));
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(decoded)))).toBe(VECTOR_A);
+    const effect = fromWire(decoded.versioned.value);
+    expect(effect).toMatchObject({ kind: 'message', content: { type: 'buttons', text: 'Top up to continue' } });
+    const button = effect.kind === 'message' && effect.content.type === 'buttons' ? effect.content.rows[0]?.[0] : undefined;
+    expect(button?.label).toBe('Top up 1 PAS');
+    expect(button?.action.kind).toBe('tx');
+    expect(button?.action.kind === 'tx' ? bytesToHex(button.action.intent) : null).toBe(INTENT_A);
+  });
+
+  it('decodes vector B byte for byte, and encodes it back to the same bytes', () => {
+    expect(ChatMessageCodec.dec(opaque.dec(VECTOR_B))).toEqual(reference);
+    expect(bytesToHex(opaque.enc(ChatMessageCodec.enc(reference)))).toBe(VECTOR_B);
+  });
+
+  it('turns vector B into a reference effect with a hex hash, and our own reference into the same bytes', () => {
+    const effect = fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR_B)).versioned.value);
+    const expected: TxReference = { chainId: ZERO_CHAIN, hash: `0x${'22'.repeat(32)}`, status: 'inBlock', block: 123, note: 'Top-up of 1 PAS', intentMessageId: 'TX-1' };
+    expect(effect).toEqual({ kind: 'transactionReference', reference: expected });
+    expect(viaWire(toWire({ type: 'transactionReference', reference: { ...expected, error: 'local only' } }))).toEqual(reference.versioned.value);
+  });
+
+  it('shows a reference it cannot read (unknown status, trailing bytes, hash too long) as the unsupported bubble', () => {
+    const unsupported = { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
+    const bytes = opaque.dec(VECTOR_B);
+    const withStatus = (status: number) => {
+      const copy = new Uint8Array(bytes);
+      // The status byte follows the 32-byte hash: header 16, chainId 68, hash 33.
+      copy[16 + 68 + 33] = status;
+      return copy;
+    };
+    expect(fromWire(ChatMessageCodec.dec(withStatus(2)).versioned.value)).toMatchObject({ kind: 'transactionReference', reference: { status: 'finalized' } });
+    expect(fromWire(ChatMessageCodec.dec(withStatus(4)).versioned.value)).toEqual(unsupported);
+    expect(fromWire(ChatMessageCodec.dec(new Uint8Array([...bytes, 0])).versioned.value)).toEqual(unsupported);
+    const long = { ...reference, versioned: { tag: 'v1' as const, value: { ...reference.versioned.value, value: { ...reference.versioned.value.value, hash: new Uint8Array(65) } } } };
+    expect(fromWire(ChatMessageCodec.dec(ChatMessageCodec.enc(long)).versioned.value)).toEqual(unsupported);
+  });
+
+  it('keeps a tx button whose intent does not decode disabled', () => {
+    const keyboard = keyboardOf([[{ label: 'Pay', action: { tag: 'tx', value: new Uint8Array([...hexToBytes(INTENT_A), 0]) } }]]);
+    expect(keyboard[0]?.[0]?.action).toEqual({ kind: 'unsupported' });
+  });
+
+  it('the chat list line says what the transaction is and where it stands', () => {
+    const base: TxReference = { chainId: ZERO_CHAIN, hash: '0x22', status: 'submitted', block: null, note: 'Top-up of 1 PAS', intentMessageId: null };
+    expect(previewOf({ type: 'transactionReference', reference: base })).toBe('Top-up of 1 PAS · submitted');
+    expect(previewOf({ type: 'transactionReference', reference: { ...base, status: 'inBlock', block: 123 } })).toBe('Top-up of 1 PAS · in block #123');
+    expect(previewOf({ type: 'transactionReference', reference: { ...base, status: 'finalized', block: 123 } })).toBe('Top-up of 1 PAS · finalized in block #123');
+    expect(previewOf({ type: 'transactionReference', reference: { ...base, status: 'failed', error: 'not enough funds' } })).toBe('Top-up of 1 PAS · failed: not enough funds');
+    expect(referenceLine({ ...base, note: '' })).toBe('Transaction · submitted');
   });
 });

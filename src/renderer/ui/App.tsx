@@ -6,6 +6,7 @@ import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionSnapshot, createConnectionTracker } from '../app/connectionState';
 import { getPeopleConnection } from '../app/statementStore';
 import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
+import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import { ensureFaucet } from '../domain/faucet/faucet';
 import type { DeviceKeys } from '../domain/device/keys';
@@ -45,7 +46,7 @@ const start = async (identityApi: DesktopIdentityApi): Promise<Boot | null> => {
   return { username: summary.username, deviceKeys, identity, profileId: summary.profile };
 };
 
-type Runtime = { manager: ChatManager; lookup: IdentityLookup };
+type Runtime = { manager: ChatManager; lookup: IdentityLookup; transactions: TxRunner | null };
 
 const Centered = ({ children }: { children: ReactNode }) => (
   <main className="flex min-h-screen items-center justify-center p-4 text-center">{children}</main>
@@ -116,6 +117,7 @@ export const App = () => {
     if (!identity || !deviceKeys || !profileId) return;
     let active = true;
     let manager: ChatManager | null = null;
+    let transactions: TxRunner | null = null;
     const connection = getPeopleConnection(NETWORK_PROFILES[profileId]);
     const tracker = createConnectionTracker(connection);
     const stopStatus = tracker.subscribe(() => setConnection(tracker.snapshot()));
@@ -135,7 +137,10 @@ export const App = () => {
       .then(created => {
         if (!active) return created.dispose();
         manager = created;
-        setRuntime({ manager: created, lookup });
+        // Spec 0007: references of the transactions this app signs go out through the manager.
+        const chain = window.desktop?.chain;
+        transactions = chain ? createTxRunner({ chain, sendReference: created.sendReference }) : null;
+        setRuntime({ manager: created, lookup, transactions });
       })
       .catch((cause: unknown) => {
         console.error('[app] chat manager failed to start', cause);
@@ -145,6 +150,7 @@ export const App = () => {
       active = false;
       stopStatus();
       tracker.dispose();
+      transactions?.dispose();
       manager?.dispose();
       setRuntime(null);
     };

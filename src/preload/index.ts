@@ -35,6 +35,11 @@ const api: DesktopApi = {
     setMetadata: (codeHash, metadata) => {
       void ipcRenderer.invoke(IPC.chainMetadataSet, codeHash, metadata);
     },
+    dryRun: intent => ipcRenderer.invoke(IPC.chainDryRun, intent),
+    sign: dryRunId => ipcRenderer.invoke(IPC.chainSign, dryRunId),
+    watch: hash => ipcRenderer.invoke(IPC.chainWatch, hash),
+    onTxStatus: listen(IPC.chainTxStatus),
+    contractRead: (address, calldata) => ipcRenderer.invoke(IPC.chainContractRead, address, calldata),
   },
   assistant: {
     getSettings: () => ipcRenderer.invoke(IPC.assistantGetSettings),
