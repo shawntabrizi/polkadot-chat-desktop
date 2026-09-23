@@ -25,6 +25,12 @@ describe('markdownToHtml', () => {
     expect(html).toContain('<a href="https://example.com/a.png" target="_blank" rel="noopener noreferrer">logo</a>');
   });
 
+  it("renders a contact's message as markdown and strips raw HTML, as Room.tsx shows it", () => {
+    const html = markdownToHtml('**bold** <script>alert(1)</script>');
+    expect(html).toContain('<strong>bold</strong>');
+    expect(html).not.toContain('<script');
+  });
+
   it('opens links outside the app and refuses javascript: links', () => {
     expect(markdownToHtml('[x](https://example.com)')).toContain('target="_blank" rel="noopener noreferrer"');
     expect(markdownToHtml('[x](javascript:alert(1))')).not.toContain('href="javascript:');

@@ -109,8 +109,10 @@ export const Room = (props: Props) => {
     const { content } = row;
     switch (content.type) {
       case 'text':
-        if (assistant && row.direction === 'incoming') {
-          if (content.text === '') return <em>Thinking…</em>;
+        // Incoming text (Assistant replies and contacts, bots write markdown)
+        // renders as markdown; own messages stay plain.
+        if (row.direction === 'incoming') {
+          if (assistant && content.text === '') return <em>Thinking…</em>;
           // Sanitized by renderMarkdown (markdown-it without raw HTML, then DOMPurify).
           return <div className="md" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(content.text) }} />;
         }
