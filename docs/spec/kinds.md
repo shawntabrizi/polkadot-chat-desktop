@@ -7,3 +7,5 @@
 | 241 | `seen` | implemented (M9) | none; sent freely (development mode) | 0005 |
 | 242 | `buttons` | implemented (M8) | the message's own text (menu as text) | 0006 |
 | 243 | `buttonPress` | implemented (M8) | n/a | 0006 |
+| 244 | `botInfo` | M10 | none; sent freely | 0008 |
+| 245 | `transactionReference` | reserved (M11) | none | 0007 |
