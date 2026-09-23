@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 
 import { DEFAULT_NETWORK_PROFILE, NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import type { CreateIdentityResponse, DesktopIdentityApi, UsernameAvailability } from '../../shared/desktop-api';
@@ -20,8 +19,6 @@ const USERNAME = /^[a-z]{6,29}$/;
 const MAX_LENGTH = 29;
 const CHECK_DELAY_MS = 300;
 const CACHE_MS = 60_000;
-/** The digits Select's value for "Let the network pick". */
-const NETWORK_PICKS = 'auto';
 
 const TERMS_URL = 'https://www.polkadotcommunity.foundation/appterms';
 const PRIVACY_URL = 'https://www.polkadotcommunity.foundation/privacy';
@@ -48,12 +45,13 @@ const twoDigits = (n: number): string => String(n).padStart(2, '0');
 
 // The mobile app filters the field to letters and lowercases it.
 const cleanUsername = (raw: string): string => raw.toLowerCase().replace(/[^a-z]/g, '').slice(0, MAX_LENGTH);
+const cleanDigits = (raw: string): string => raw.replace(/\D/g, '').slice(0, 2);
 
 /** A centred card on the page surface: the one screen before any chat exists. */
 export const SignUp = ({ identityApi, onSignedUp }: Props) => {
   const [username, setUsername] = useState('');
-  // NETWORK_PICKS, or two digits the backend offered for this name.
-  const [digits, setDigits] = useState(NETWORK_PICKS);
+  // The number after the dot: the backend's first offer, which the user may edit.
+  const [digits, setDigits] = useState('');
   const [profile, setProfile] = useState<NetworkProfileId>(DEFAULT_NETWORK_PROFILE);
   const [availability, setAvailability] = useState<Availability>({ state: 'idle' });
   const [progress, setProgress] = useState<string[]>([]);
@@ -75,8 +73,11 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
         .then(answer => {
           if (!active) return;
           setAvailability({ state: 'known', answer });
-          // A choice the new answer no longer offers goes back to the network's pick.
-          setDigits(current => (current !== NETWORK_PICKS && answer.availableDigits.includes(Number(current)) ? current : NETWORK_PICKS));
+          // Digits the new answer still offers stay; otherwise the first offer fills in.
+          const first = answer.availableDigits[0];
+          setDigits(current =>
+            /^\d{2}$/.test(current) && answer.availableDigits.includes(Number(current)) ? current : first === undefined ? '' : twoDigits(first),
+          );
         })
         .catch((cause: unknown) => {
           if (active) setAvailability({ state: 'unknown', reason: plainError(cause, 'no answer came back') });
@@ -92,8 +93,11 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
 
   const answer = availability.state === 'known' ? availability.answer : null;
   const nameTaken = answer != null && (answer.status === 'TAKEN' || answer.availableDigits.length === 0);
-  const offered = answer && !nameTaken ? answer.availableDigits : [];
-  const canSubmit = valid && !nameTaken && availability.state !== 'checking' && !busy;
+  // The ".NN" suffix shows only once the name is valid, checked and free.
+  const showDigits = valid && answer != null && !nameTaken;
+  const digitsTaken = showDigits && !(/^\d{2}$/.test(digits) && answer.availableDigits.includes(Number(digits)));
+  const invalid = nameTaken || digitsTaken;
+  const canSubmit = valid && !nameTaken && !digitsTaken && availability.state !== 'checking' && !busy;
 
   const nameLine = (() => {
     if (!valid) return { text: 'Minimum 6 characters', tone: 'text-fg-tertiary' };
@@ -104,7 +108,9 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
       case 'unknown':
         return { text: `Could not check the name: ${availability.reason}. Try again in a moment.`, tone: 'text-fg-error' };
       case 'known':
-        return nameTaken ? { text: 'Taken. Try another.', tone: 'text-fg-error' } : { text: "It's yours!", tone: 'text-fg-success' };
+        if (nameTaken) return { text: 'Taken. Try another.', tone: 'text-fg-error' };
+        if (digitsTaken) return { text: 'Digits taken. Try again.', tone: 'text-fg-error' };
+        return { text: "It's yours!", tone: 'text-fg-success' };
     }
   })();
 
@@ -113,7 +119,7 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
     setError(null);
     setProgress([]);
     identityApi
-      .create({ username, digits: digits === NETWORK_PICKS ? null : digits, profile })
+      .create({ username, digits, profile })
       .then(onSignedUp)
       .catch((cause: unknown) => {
         setError(`${plainError(cause, 'The username was not created.')} Try again.`);
@@ -143,44 +149,57 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
             <label htmlFor="signup-username" className="text-label-m text-fg-secondary">
               Username
             </label>
-            <Input
-              id="signup-username"
-              aria-label="Username"
-              placeholder="Enter username"
-              value={username}
-              onChange={event => setUsername(cleanUsername(event.target.value))}
-              maxLength={MAX_LENGTH}
-              disabled={busy}
-              autoFocus
-              autoComplete="off"
-              spellCheck={false}
-              aria-invalid={nameTaken || undefined}
-              className="h-11 rounded-nested text-body-l md:text-body-l"
-            />
+            {/* One bordered field, like the phone: the name, then ".NN" inside the same border.
+                The field draws the focus outline; data-slot on the two inputs stands the
+                global per-element outline down (base.css), so only one indicator shows. */}
+            <div
+              data-invalid={invalid || undefined}
+              className={`flex h-11 items-center rounded-nested border px-3 transition-colors focus-within:outline-2 focus-within:outline-offset-2 ${
+                invalid ? 'border-stroke-error focus-within:outline-focus-error' : 'border-stroke-primary focus-within:outline-focus-ring'
+              } ${busy ? 'cursor-not-allowed opacity-50' : ''}`}
+            >
+              <input
+                data-slot="signup-field"
+                id="signup-username"
+                aria-label="Username"
+                placeholder="Enter username"
+                value={username}
+                onChange={event => setUsername(cleanUsername(event.target.value))}
+                maxLength={MAX_LENGTH}
+                disabled={busy}
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={nameTaken || undefined}
+                className="h-full min-w-0 flex-1 cursor-text bg-transparent text-body-l text-fg-primary placeholder:text-fg-tertiary disabled:cursor-not-allowed"
+              />
+              {showDigits ? (
+                <>
+                  <span className="text-body-l font-mono text-fg-tertiary" aria-hidden="true">
+                    .
+                  </span>
+                  <input
+                    data-slot="signup-field"
+                    aria-label="Number"
+                    data-testid="digits"
+                    value={digits}
+                    onChange={event => setDigits(cleanDigits(event.target.value))}
+                    maxLength={2}
+                    inputMode="numeric"
+                    disabled={busy}
+                    autoComplete="off"
+                    aria-invalid={digitsTaken || undefined}
+                    className="h-full w-7 min-w-7 cursor-text bg-transparent text-body-l font-mono text-fg-primary disabled:cursor-not-allowed"
+                  />
+                </>
+              ) : null}
+            </div>
             <p className={`text-body-s ${nameLine.tone}`} data-testid="availability">
               {nameLine.text}
             </p>
           </div>
 
           <div className="flex gap-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <label htmlFor="signup-digits" className="text-label-m text-fg-secondary">
-                Number
-              </label>
-              <Select value={digits} onValueChange={setDigits} disabled={busy}>
-                <SelectTrigger id="signup-digits" className="h-11 w-full rounded-nested text-body-m" data-testid="digits">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NETWORK_PICKS}>Let the network pick</SelectItem>
-                  {offered.map(number => (
-                    <SelectItem key={number} value={twoDigits(number)}>
-                      {username}.{twoDigits(number)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
             <div className="flex w-32 flex-col gap-1.5">
               <label htmlFor="signup-network" className="text-label-m text-fg-secondary">
                 Network

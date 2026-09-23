@@ -707,6 +707,42 @@ second reset, no Undo: identity.json=false .bak=true
 IndexedDB after commit: "contacts=0 device=0 messages=0 requests=0 rooms=0 secrets=0 settings=0 userIdentity=0"
 ```
 
+### Review fixes (docs/review/M5.md, 2026-09-23)
+
+Fix 1: the username and the number are one field, like the phone. The name is on the left; a "." in `text-fg-tertiary` and a two-digit editable input (`font-mono`, `text-fg-primary`, 28 px) sit on the right inside the same border. The suffix shows once the name is valid, checked and free, pre-filled with the first `availableDigits` entry. The "Number" Select and "Let the network pick" are gone; the claim sends the digits shown. Digits not in `availableDigits` turn the border `stroke-error`, the line reads "Digits taken. Try again." and Get username is disabled. The field draws one focus outline (`focus-within`); the two inputs carry a `data-slot` so the global per-element outline stands down.
+
+`npm run check` (last lines, exit 0):
+
+```
+ Test Files  30 passed (30)
+      Tests  189 passed (189)
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (89 files)
+```
+
+`npm run screenshots` without `PCD_SCREENSHOT_IDENTITY` (the script has no sign-up-only switch; the seeded screens were not changed by this fix and are reported missing, so the exit is 1 by design):
+
+```
+0.5s built
+5.2s saved berlin-day/signup.png
+10.6s saved berlin-night/signup.png
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+...
+SCREENSHOTS_PARTIAL
+```
+
+New PNGs: `.agent-runs/screens/berlin-day/signup.png`, `.agent-runs/screens/berlin-night/signup.png` (`polkadotfan` with ".01", "It's yours!"). The other ten PNGs listed above are from the M5 run.
+
+What the PNGs showed: the first run set the "." in Inter; on Berlin Night it was a speck next to the Martian Mono digits → the dot is `font-mono` too, so ".01" reads as one unit. Second run: both themes correct.
+
+Error state: a scratch copy of the sign-up part of the screenshot script (outside the repo) typed `00` into the number. Output, both themes: `Digits taken. Try again. | digits=00`; the PNG shows the red border, the red line and a disabled button, with one focus outline.
+
 ### Not run
 
 - Themes Lisbon, Malta and Tokyo were not screenshotted (step 11 asks for Berlin Day and Night). They are selectable in Settings.
