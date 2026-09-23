@@ -51,6 +51,7 @@ TransactionReference = {
 3. Sign with the identity's wallet key (the same account as the chat identity). Submit; watch at the best block; post a `transactionReference` (status 0, then 1, then 2) to the peer that sent the intent; show the same states on the pressed button and as a bubble.
 4. Revive: if the signer's account is not yet mapped, prepend `Revive.map_account` as the first call of the batch (once; remembered).
 5. Rate limit: one pending signing strip per room.
+6. **Appearance.** A `tx` button MUST look different from other buttons: a wallet icon, the amount and asset from `display` beside the label, and a tooltip saying it signs a transaction. It MUST never act on press; press opens the strip, and Sign stays disabled until the dry-run has returned. Expired intents render disabled.
 
 ### Bot rules (the author)
 
