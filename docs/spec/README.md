@@ -31,6 +31,6 @@ content. Please update the app." bubble. So:
 |---|---|---|
 | `kinds.md` | living | registry of provisional kinds and their fallbacks |
 | `0003-message-deletion.md` | upstream (chat-spec), implemented | desktop M7, pca `desktop/rfc-0003` |
-| `0005-typing-and-seen.md` | to write in M8 | |
+| `0005-typing-and-seen.md` | draft written 2026-09-23 | to implement in M8 |
 | `0006-buttons.md` | to write in M9 | |
 | `0007-bot-manifest.md` | to write in M10 | |
