@@ -34,6 +34,7 @@ Provisional kind numbers are in the range 240–249 (`kinds.md`); RFC-0003 takes
 |---|---|---|
 | `kinds.md` | living | registry of provisional kinds and their fallbacks |
 | `0003-message-deletion.md` | upstream (chat-spec), implemented | desktop M7, pca `desktop/rfc-0003` |
-| `0005-typing-and-seen.md` | draft written 2026-09-23 | to implement in M8 |
-| `0006-buttons.md` | draft written 2026-09-23 (action kinds command, callback, url; `tx` reserved) | to implement in M9 |
-| `0007-bot-manifest.md` | to write in M10 | |
+| `0005-typing-and-seen.md` | draft complete | desktop M9, pca `desktop/rfc-0003` |
+| `0006-buttons.md` | draft complete | desktop M8, pca `desktop/rfc-0003` |
+| `0007-transactions.md` | draft complete 2026-09-23; `tx` action + `transactionReference` | desktop M11, pca `desktop/rfc-0003` |
+| `0008-bot-info.md` | draft complete 2026-09-23 | desktop M10, pca `desktop/rfc-0003` |
