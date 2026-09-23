@@ -29,19 +29,19 @@ GroupInfo = {
     version: u32                // bumped by the admin on every change; higher wins
     createdAt: u64
 }
-Member = { account: AccountId, username: String, joinedAt: u64 }
+Member = { account: AccountId, username: String /* <= 64 */, joinedAt: u64 }
 GroupMessage = {
     groupId: UUID
     infoVersion: u32            // the roster version the sender fanned out to
     seq: u64                    // per-sender monotonic counter within the group
-    content: MessageContent     // any non-group kind: text, richText, reply, reacted, edited, deleted, buttons, buttonPress, transactionReference, botInfo …
+    content: MessageContent     // any non-group kind, encoded inline (kind byte + body to the end of the message; no length prefix, no inner envelope)
 }
 GroupLeave = { groupId: UUID }
 ```
 
 ### Rules
 
-- **Create.** The admin generates `groupId`, then sends `groupInfo` v1 to each member over the pairwise session (opening a chat request first where none exists; the request opener carries the `groupInfo`). A member who has not accepted the admin's chat cannot be reached; the client shows them as "invited".
+- **Create.** The admin generates `groupId`, then sends `groupInfo` v1 to each member over the pairwise session. Where no session exists, the admin first sends a normal chat request (the opener is rich text only and cannot carry `groupInfo`; use a text such as "Invite to group <name>") and sends the `groupInfo` on the session right after the accept. A member who has not accepted cannot be reached; the client shows them as "invited".
 - **Send.** A member sends `groupMessage { groupId, infoVersion, seq, content }` to every *other* member in the roster of the version it holds. `messageId` of the envelope is the same on every copy, so a member that receives two copies (through two paths) dedups by it. Receivers reject a `groupMessage` from an account not in their roster for that group.
 - **Roster change.** Admin-only in v1: the admin sends a new `groupInfo` (higher `version`) to every member including newcomers; a removed member receives the new `groupInfo` without itself and MUST stop sending to the group. Members apply the highest version they have seen. Non-admin `groupInfo` is ignored.
 - **Leave.** Any member sends `groupLeave` to every member; the admin then sends a new `groupInfo`.
