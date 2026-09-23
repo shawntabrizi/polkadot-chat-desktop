@@ -2,7 +2,7 @@
 // Draft room from .refs/polkadot-desktop/src/features/chat/ui/partials/DraftInvitationRoom.tsx
 // (2026-09-23); strings from docs/reference/mobile-ux.md "Starting a chat".
 
-import { SearchX, UserPlus } from 'lucide-react';
+import { SearchX, UserPlus, Users } from 'lucide-react';
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import { type HexString, bytesToHex } from '../app/bytes';
@@ -66,6 +66,10 @@ type PanelProps = {
   onOpenTarget: (target: ChatTarget) => void;
   onOpenMessage: (peer: PeerId, messageId: string) => void;
   onPickGlobal: (result: SearchResult) => void;
+  /** M12: "New group" at the top of the "+" panel. */
+  onNewGroup?: () => void;
+  /** The New group view is open (the row shows it). */
+  newGroupActive?: boolean;
   /** What the pane shows while the field is empty: the chat list. */
   children: ReactNode;
 };
@@ -117,6 +121,8 @@ export const SearchPane = ({
   onOpenTarget,
   onOpenMessage,
   onPickGlobal,
+  onNewGroup,
+  newGroupActive = false,
   children,
 }: PanelProps) => {
   const field = useRef<HTMLInputElement>(null);
@@ -255,6 +261,22 @@ export const SearchPane = ({
       />
       {active ? (
         <div ref={list} className="-mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2" data-testid="search-results">
+          {adding && typed === '' && onNewGroup ? (
+            <ChatRow
+              testId="new-group"
+              avatar={
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-action-tertiary" aria-hidden>
+                  <Users className="size-5 text-fg-primary" />
+                </span>
+              }
+              name="New group"
+              time={null}
+              preview="Pick members from your contacts"
+              unread={0}
+              selected={newGroupActive}
+              onClick={onNewGroup}
+            />
+          ) : null}
           {typed === '' ? (
             recent.length > 0 ? (
               <section aria-label="Recent" className="flex flex-col gap-0.5">

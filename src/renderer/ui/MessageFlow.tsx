@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 're
 
 import type { MessageRow, RequestRow } from '../app/database';
 import { isLiveFrame } from '../domain/chat/content';
+import { compareGroupRows } from '../domain/chat/groups';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
 
@@ -36,13 +37,19 @@ type Props = {
   reveal?: boolean;
   /** A message search hit to scroll to and highlight; `request` changes on every pick. */
   jumpTo?: { messageId: string; request: number } | null;
+  /**
+   * A group room (spec 0009): the sender's name of an incoming row, shown
+   * above the first bubble of each run; a run ends where the sender changes.
+   */
+  senderOf?: (row: MessageRow) => string | null;
 };
 
 type DayGroup = { day: string; rows: MessageRow[] };
 
 const byDay = (rows: readonly MessageRow[]): DayGroup[] => {
   const groups: DayGroup[] = [];
-  for (const row of [...rows].sort((a, b) => a.timestamp - b.timestamp)) {
+  // Spec 0009: a group sender's `seq` breaks a tie; other rows have none.
+  for (const row of [...rows].sort(compareGroupRows)) {
     const day = formatDay(row.timestamp);
     const current = groups.at(-1);
     if (current?.day === day) current.rows.push(row);
@@ -80,6 +87,7 @@ export const MessageFlow = ({
   deleting,
   reveal = false,
   jumpTo = null,
+  senderOf,
 }: Props) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -202,7 +210,11 @@ export const MessageFlow = ({
                     return (
                       <div key={row.messageId}>
                         {separator}
-                        {row.content.type === 'botGreeting' ? <GreetingRow text={row.content.text} /> : <SystemRow text={systemText(row, peerName, requests)} />}
+                        {row.content.type === 'botGreeting' ? (
+                          <GreetingRow text={row.content.text} />
+                        ) : (
+                          <SystemRow text={systemText(row, peerName, requests)} tone={row.content.type === 'notice' ? row.content.tone : 'info'} />
+                        )}
                       </div>
                     );
                   }
@@ -227,8 +239,9 @@ export const MessageFlow = ({
                                 : { sender: peerName, text: 'Message not available' }
                               : null
                           }
-                          first={separator !== null || previous?.direction !== row.direction}
-                          last={next?.direction !== row.direction || next?.messageId === firstUnreadId}
+                          first={separator !== null || previous?.direction !== row.direction || previous.senderAccountId !== row.senderAccountId}
+                          last={next?.direction !== row.direction || next.senderAccountId !== row.senderAccountId || next.messageId === firstUnreadId}
+                          sender={senderOf && row.direction === 'incoming' ? senderOf(row) : null}
                           thinking={assistant && row.direction === 'incoming' && messagePreview(row) === ''}
                           live={!assistant && row.direction === 'incoming' && isLiveFrame(row.content)}
                           deleting={deleting?.has(row.messageId) ?? false}

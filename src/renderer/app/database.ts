@@ -10,7 +10,7 @@
 import Dexie, { type Table } from 'dexie';
 
 import type { HexString } from './bytes';
-import type { BotInfo, MessageContent } from '../domain/chat/content';
+import type { BotInfo, GroupMember, MessageContent } from '../domain/chat/content';
 
 export const DEVICE_ROW_ID = 'self';
 
@@ -107,15 +107,24 @@ export type AssistantPeerId = 'local:assistant';
 /** The built-in Faucet's room (M10): local, nothing on the wire. */
 export type FaucetPeerId = 'local:faucet';
 
-/** Who a room is with: a contact's identity account, or a local contact. */
-export type PeerId = HexString | AssistantPeerId | FaucetPeerId;
+/** A spec 0009 group's room and message key: `group:<groupId>`. */
+export type GroupPeerId = `group:${string}`;
+
+/** Who a room is with: a contact's identity account, a local contact, or a group. */
+export type PeerId = HexString | AssistantPeerId | FaucetPeerId | GroupPeerId;
 
 /** A contact that lives in this app only (the Assistant, the Faucet): no account, no wire. */
 export const isLocalPeer = (peer: string): peer is AssistantPeerId | FaucetPeerId => peer === 'local:assistant' || peer === 'local:faucet';
 
+export const isGroupPeer = (peer: string): peer is GroupPeerId => peer.startsWith('group:');
+export const groupPeerOf = (groupId: string): GroupPeerId => `group:${groupId}`;
+export const groupIdOf = (peer: GroupPeerId): string => peer.slice('group:'.length);
+
 /** One chat per contact. Unread counts what arrived while the room was not open. */
 export type RoomRow = {
   peerAccountId: PeerId;
+  /** Spec 0009: set on a group's room (whose key is `group:<groupId>`). */
+  groupId?: string;
   unreadCount: number;
   /** Muted: no notification, not in the badge. Absent on rows from before M6. */
   muted?: boolean;
@@ -155,6 +164,11 @@ export type MessageRow = {
    * schema version.
    */
   seenAt?: number;
+  /** Spec 0009, a group's rows only: the group, and who sent an incoming row. */
+  groupId?: string;
+  senderAccountId?: HexString;
+  /** Spec 0009: the sender's `seq`, the tie-break after the timestamp. */
+  groupSeq?: number;
 };
 
 /**
@@ -184,6 +198,32 @@ export type PeerInfoRow = {
   startSentAt: number | null;
 };
 
+/**
+ * A spec 0009 group as this client holds it: the highest roster version from
+ * its admin, plus local state. `self` is `left` after our own leave and
+ * `removed` when a roster without us arrives; either way nothing more is sent.
+ */
+export type GroupRow = {
+  id: string;
+  name: string;
+  admin: HexString;
+  members: GroupMember[];
+  version: number;
+  createdAt: number;
+  self: 'member' | 'left' | 'removed';
+  /** Members that sent `groupLeave` since the roster was last changed. */
+  left: HexString[];
+  /** Admin only: members without a contact yet; the roster goes to each once the chat is accepted. */
+  invites: HexString[];
+  /** Our own `seq` for the next group message. */
+  nextSeq: number;
+  /** The highest `seq` seen from each sender (gap detection). */
+  lastSeq: Record<string, number>;
+  /** "Some messages may be missing" is shown once per group. */
+  gapNoted: boolean;
+  updatedAt: number;
+};
+
 export const DB_NAME = 'polkadot-chat-web';
 
 const dexie = new Dexie(DB_NAME);
@@ -210,6 +250,9 @@ dexie.version(5).stores({
 dexie.version(6).stores({
   peerInfo: 'peerId',
 });
+dexie.version(7).stores({
+  groups: 'id',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -226,6 +269,7 @@ export const db: {
   drafts: Table<DraftRow, PeerId>;
   pendingDeletions: Table<PendingDeletionRow, [PeerId, string]>;
   peerInfo: Table<PeerInfoRow, PeerId>;
+  groups: Table<GroupRow, string>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -238,4 +282,5 @@ export const db: {
   drafts: dexie.table('drafts'),
   pendingDeletions: dexie.table('pendingDeletions'),
   peerInfo: dexie.table('peerInfo'),
+  groups: dexie.table('groups'),
 };

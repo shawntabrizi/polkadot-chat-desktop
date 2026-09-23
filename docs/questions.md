@@ -93,3 +93,9 @@ Write the question, what you did meanwhile, and the date.
 - **`docs/spec/README.md` and `kinds.md`** do not yet say that 0008 v2 (`balance` hint) is implemented (desktop M11b, pca `061b470`). I may not edit `docs/spec/*.md`.
 - **Stakes left open in Flip.** The contract is global and `refund()` is owner-only after one hour. A stake left by a crashed run (or by anyone) pairs with the next person's stake. `e2e:flip` clears a stranger's stake with one extra stake. Should the bot show "someone is waiting" (the `pending()` view) before a person stakes?
 - **The faucet refuses two drips at once.** In the first flip run both identities asked `pcdfaucet.77` within the same second; one answer was "The transfer did not go through". `e2e:flip` now asks again after a pause. A nonce clash in the bot (two transfers from `//Alice` in one block)? That is a pca fix, not a client one.
+
+## M12 (2026-09-23)
+
+- **`docs/spec/kinds.md` and `docs/spec/README.md`** still say 246/247/248 are "M12" and 0009 is a draft. I may not edit `docs/spec/*.md`. Please mark them implemented (desktop M12, pca `desktop/rfc-0003`).
+- **Reactions by several members.** The client stores a reaction as `me` or `peer`; in a group two members with the same emoji show as one. Is a per-account reaction list (a schema change for all rooms) wanted in v1?
+- **`tx` buttons in groups.** Not pressable in v1 (see docs/decisions.md). Should a bot in a group send `tx` buttons at all, or only in 1:1 chats?

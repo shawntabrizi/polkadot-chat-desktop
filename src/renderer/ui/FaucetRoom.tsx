@@ -1,20 +1,23 @@
 // The built-in Faucet's room (M10 step 6): the Assistant's room shape, with
-// no composer: the Faucet only has its keyboard. Everything is local, except
-// "Get 1 PAS" (M11 step 6), which asks the faucet bot in its own chat.
+// no composer: the Faucet only has its keyboard. An embedded bot (M12): its
+// logic runs in this app; "Get 1 PAS" is a devnet transfer the main process
+// sends (main/chain/faucet.ts), shown by domain/faucet/dripFlow.ts.
 
 import { Droplets } from 'lucide-react';
 import { useState } from 'react';
 
 import { type MessageRow, db } from '../app/database';
 import { listMessages, markButtonPressed, markRoomRead } from '../domain/chat/messages';
-import type { DripResult } from '../domain/faucet/drip';
-import { COPY_ADDRESS_COMMAND, DRIP_COMMAND, FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME, addCopiedRow, addDripRow } from '../domain/faucet/faucet';
+import { isDripBusy, startDrip } from '../domain/faucet/dripFlow';
+import { COPY_ADDRESS_COMMAND, DRIP_COMMAND, FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME, addCopiedRow } from '../domain/faucet/faucet';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 import { BotBadge } from './BotBadge';
 import type { BubbleActions } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader } from './RoomHeader';
+import type { FaucetDrip } from '../../shared/desktop-api';
+
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
@@ -31,8 +34,8 @@ const PRESS_FLASH_MS = 1_000;
 
 type Props = {
   address: string;
-  /** Asks the faucet bot for 1 PAS; null until the chat manager runs. */
-  drip: ((address: string) => Promise<DripResult>) | null;
+  /** The in-app devnet drip (`faucet:drip`); null where it cannot run (not devnet, no desktop). */
+  drip: (() => Promise<FaucetDrip>) | null;
 };
 
 export const FaucetRoom = ({ address, drip }: Props) => {
@@ -57,9 +60,9 @@ export const FaucetRoom = ({ address, drip }: Props) => {
         await navigator.clipboard.writeText(address);
         await addCopiedRow();
       } else if (action.kind === 'command' && action.command === DRIP_COMMAND) {
-        if (!drip) throw new Error('Chat is still starting.');
-        const result = await drip(address);
-        await addDripRow(result.username, result.via);
+        if (!drip) throw new Error('The in-app faucet runs on devnet only.');
+        // The pending row, the reference and the balance come from dripFlow.ts; a press while busy does nothing.
+        if ((await startDrip(drip)) === 'ignored') return;
       } else {
         return;
       }
@@ -69,15 +72,30 @@ export const FaucetRoom = ({ address, drip }: Props) => {
     }
   };
 
-  const actionsFor = (row: MessageRow): BubbleActions | null =>
-    row.content.type === 'buttons'
-      ? {
-          keyboard: {
-            press: (r, i) => void press(row, r, i),
-            active: active?.messageId === row.messageId ? { row: active.row, index: active.index, busy: false } : null,
-          },
-        }
-      : {};
+  // "Get 1 PAS" spins while its request is pending, and a press then does nothing.
+  const pending = isDripBusy(messages ?? []);
+  const dripAt = (row: MessageRow): { row: number; index: number } | null => {
+    if (row.content.type !== 'buttons') return null;
+    for (const [r, buttons] of row.content.rows.entries()) {
+      const i = buttons.findIndex(button => button.action.kind === 'command' && button.action.command === DRIP_COMMAND);
+      if (i >= 0) return { row: r, index: i };
+    }
+    return null;
+  };
+
+  const actionsFor = (row: MessageRow): BubbleActions | null => {
+    if (row.content.type !== 'buttons') return {};
+    const drip = pending ? dripAt(row) : null;
+    return {
+      keyboard: {
+        press: (r, i) => {
+          if (drip && drip.row === r && drip.index === i) return;
+          void press(row, r, i);
+        },
+        active: drip ? { ...drip, busy: true } : active?.messageId === row.messageId ? { row: active.row, index: active.index, busy: false } : null,
+      },
+    };
+  };
 
   return (
     <>

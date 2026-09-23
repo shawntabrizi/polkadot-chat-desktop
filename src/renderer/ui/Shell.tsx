@@ -11,17 +11,17 @@ import { toast } from 'sonner';
 
 import { type HexString, bytesToHex } from '../app/bytes';
 import { CONNECTION_LABEL, type ConnectionSnapshot } from '../app/connectionState';
-import { type PeerId, db } from '../app/database';
+import { type PeerId, db, groupIdOf, groupPeerOf, isGroupPeer } from '../app/database';
 import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
-import { type DripDeps, requestDrip } from '../domain/faucet/drip';
+import { applyDripStatus, syncDrip } from '../domain/faucet/dripFlow';
 import { FAUCET_PEER } from '../domain/faucet/faucet';
 import type { TxRunner } from '../domain/chain/transactions';
 import type { ChatManager } from '../domain/chat/manager';
 import type { IdentityLookup } from '../domain/identity/lookup';
-import { type SearchResult, searchUsernames } from '../domain/identity/search';
+import type { SearchResult } from '../domain/identity/search';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +36,7 @@ import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingInco
 import { BalanceChip, Pocket } from './Pocket';
 import { Room } from './Room';
 import { FaucetRoom } from './FaucetRoom';
+import { GroupRoom, NewGroupRoom } from './GroupRoom';
 import { DraftRoom, SearchPane } from './Search';
 import { Settings } from './Settings';
 import { toSs58 } from './format';
@@ -51,7 +52,9 @@ export type Selection =
   | { kind: 'draft'; result: SearchResult }
   | { kind: 'settings' }
   /** M11b: the Pocket (balances and address), from the footer chip. */
-  | { kind: 'pocket' };
+  | { kind: 'pocket' }
+  /** M12: "New group" from the New chat panel. */
+  | { kind: 'newGroup' };
 
 type LeftView = 'chats' | 'requests';
 
@@ -123,6 +126,32 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   }, [unreadTotal, desktopApp]);
 
   useNotifications(desktopApp, selection.kind === 'room' ? selection.peer : null);
+
+  // The Faucet's "Get 1 PAS" (dripFlow.ts): mirror the faucet bot's answer, time out, add the balance.
+  const chatReady = runtime !== null;
+  useEffect(() => {
+    if (!chatReady) return;
+    const stopStatus = window.desktop?.chain.onTxStatus(event => void applyDripStatus(event).catch(() => undefined)) ?? (() => undefined);
+    let running = false;
+    const readBalance = async () => {
+      const chain = window.desktop?.chain;
+      if (!chain) throw new Error('no chain');
+      return BigInt((await chain.balance()).free);
+    };
+    const timer = setInterval(() => {
+      if (running) return;
+      running = true;
+      void syncDrip(readBalance)
+        .catch((cause: unknown) => console.warn('[faucet] sync failed', cause))
+        .finally(() => {
+          running = false;
+        });
+    }, 1_000);
+    return () => {
+      clearInterval(timer);
+      stopStatus();
+    };
+  }, [chatReady]);
 
   const exitSearch = () => {
     setSearch('');
@@ -209,15 +238,10 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
     return () => window.removeEventListener('keydown', listener);
   }, []);
 
-  // "Get 1 PAS" in the Faucet: the faucet bot, found by the same search a person uses.
-  const dripDeps = (live: NonNullable<Props['runtime']>): DripDeps => ({
-    contacts: () => db.contacts.toArray(),
-    requests: () => db.requests.toArray(),
-    search: async prefix => (await searchUsernames(NETWORK_PROFILES[profileId], prefix, identity.identityAccountId)).results,
-    getPeerIdentity: accountId => live.lookup.getPeerIdentity(accountId),
-    sendMessage: (peer, text) => live.manager.sendMessage(peer, { type: 'text', text }),
-    sendRequest: (peer, text) => live.manager.sendRequest(peer, text),
-  });
+  // "Get 1 PAS": the embedded Faucet's devnet transfer (main/chain/faucet.ts); devnet only.
+  const devnetAssetHub = profileId === 'devnet' ? NETWORK_PROFILES.devnet.assetHub?.genesis : undefined;
+  const chainApi = window.desktop?.chain;
+  const drip = devnetAssetHub && chainApi ? () => chainApi.faucetDrip(devnetAssetHub) : null;
 
   const listSelection: ChatSelection =
     selection.kind === 'room' || selection.kind === 'outgoing' ? selection : { kind: 'other' };
@@ -238,8 +262,22 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             />
           ) : null;
         }
+        if (isGroupPeer(selection.peer)) {
+          return runtime ? (
+            <GroupRoom
+              key={selection.peer}
+              groupId={groupIdOf(selection.peer)}
+              manager={runtime.manager}
+              self={bytesToHex(identity.identityAccountId)}
+              scrollToMessageId={selection.jump?.messageId ?? null}
+              scrollRequest={selection.jump?.seq ?? 0}
+            />
+          ) : (
+            <EmptyRoom title="Starting chat…" text="Connecting to the network. Your chats open when it is ready." />
+          );
+        }
         if (selection.peer === FAUCET_PEER) {
-          return <FaucetRoom key={FAUCET_PEER} address={toSs58(identity.identityAccountId)} drip={runtime ? address => requestDrip(dripDeps(runtime), address) : null} />;
+          return <FaucetRoom key={FAUCET_PEER} address={toSs58(identity.identityAccountId)} drip={drip} />;
         }
         return runtime ? (
           <Room
@@ -286,6 +324,17 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               setSelection({ kind: 'outgoing', peer });
             }}
             onClose={() => setSelection({ kind: 'none' })}
+          />
+        );
+      case 'newGroup':
+        return (
+          <NewGroupRoom
+            manager={runtime?.manager ?? null}
+            onCreated={groupId => {
+              setLeft('chats');
+              exitSearch();
+              setSelection({ kind: 'room', peer: groupPeerOf(groupId) });
+            }}
           />
         );
       case 'settings':
@@ -347,6 +396,8 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               }}
               onOpenMessage={(peer, messageId) => setSelection({ kind: 'room', peer, jump: { messageId, seq: Date.now() } })}
               onPickGlobal={result => void pick(result)}
+              onNewGroup={() => setSelection({ kind: 'newGroup' })}
+              newGroupActive={selection.kind === 'newGroup'}
             >
               {pendingIncoming.length > 0 ? (
                 <button
@@ -370,24 +421,32 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             </SearchPane>
           </>
         )}
-        <div className="mt-2 flex shrink-0 items-center gap-3 ps-2">
-          <PeerAvatar name={username} size="sm" />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-label-m text-fg-primary" data-testid="username">
+        {/* The account block (owner, 2026-09-23): its own nested surface, no hover, so it
+            never reads as a chat row; the chip has its own line, so the username never
+            shares its width. */}
+        <section className="mt-2 flex shrink-0 flex-col gap-1.5 rounded-nested bg-surface-nested px-3 py-2" aria-label="Your account" data-testid="account-block">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-overline text-fg-tertiary uppercase">You</p>
+            <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>
+              <SettingsIcon className="size-5" />
+            </IconButton>
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <PeerAvatar name={username} size="xs" />
+            <p className="min-w-0 text-label-m break-all text-fg-primary" data-testid="username">
               {username}
             </p>
             <p
-              className={cn('text-caption', connection.state === 'offline' ? 'text-fg-error' : 'text-fg-tertiary')}
+              className={cn('shrink-0 text-caption', connection.state === 'offline' ? 'text-fg-error' : 'text-fg-tertiary')}
               data-testid="connection-status"
             >
               {CONNECTION_LABEL[connection.state]}
             </p>
           </div>
-          <BalanceChip active={selection.kind === 'pocket'} onOpen={() => setSelection({ kind: 'pocket' })} />
-          <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>
-            <SettingsIcon className="size-5" />
-          </IconButton>
-        </div>
+          <div className="flex">
+            <BalanceChip active={selection.kind === 'pocket'} onOpen={() => setSelection({ kind: 'pocket' })} />
+          </div>
+        </section>
       </aside>
       {selection.kind === 'settings' ? (
         <main className="min-w-0 flex-1">

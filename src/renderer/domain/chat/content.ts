@@ -13,13 +13,14 @@
 import type { BalanceHint } from '../../../shared/balanceHint';
 import { openableUrl } from '../../../shared/openUrl';
 import { decodeTxIntent } from '../../../shared/txIntent';
-import { bytesToHex, hexToBytes } from '../../app/bytes';
+import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 
 import {
   BUTTONS_KIND,
   type BotInfoWire,
   type ButtonWire,
   type ChatContent,
+  type GroupInfoWire,
   TRANSACTION_REFERENCE_KIND,
   type TransactionReferenceWire,
 } from './identityEvents';
@@ -100,6 +101,23 @@ export type TxReference = {
 /** Spec 0007 limit on `note`. */
 export const MAX_REFERENCE_NOTE = 140;
 
+/** Spec 0009 `Member` as this client stores it: the account as 0x-hex. */
+export type GroupMember = { account: HexString; username: string; joinedAt: number };
+
+/** Spec 0009 `GroupInfo` as this client reads and sends it. */
+export type GroupInfo = {
+  groupId: string;
+  name: string;
+  admin: HexString;
+  members: GroupMember[];
+  version: number;
+  createdAt: number;
+};
+
+/** Spec 0009 limits. */
+export const MAX_GROUP_MEMBERS = 16;
+export const MAX_GROUP_NAME = 60;
+
 /** What a message row holds. Reactions and edits are not rows; they mutate one. */
 export type MessageContent =
   | { type: 'text'; text: string }
@@ -121,7 +139,11 @@ export type MessageContent =
   /** System-style row: a bot's spec 0008 greeting, once, when its info first arrives. */
   | { type: 'botGreeting'; text: string }
   /** Spec 0007: a transaction and its latest state, from either side. */
-  | { type: 'transactionReference'; reference: TxReference };
+  | { type: 'transactionReference'; reference: TxReference }
+  /** Spec 0009 system row of a group room: a roster event, in words, or a sequence gap. */
+  | { type: 'groupEvent'; text: string }
+  /** A local line of a local room (the Faucet): `error` shows in the error colour. */
+  | { type: 'notice'; text: string; tone: 'info' | 'error' };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -143,7 +165,13 @@ export type OutgoingContent =
   /** Spec 0008: a bot describes itself. A person's client never sends it; test scripts do. */
   | { type: 'botInfo'; info: BotInfo }
   /** Spec 0007: the state of a transaction this client submitted. */
-  | { type: 'transactionReference'; reference: TxReference };
+  | { type: 'transactionReference'; reference: TxReference }
+  /** Spec 0009: the roster (the admin sends it). */
+  | { type: 'groupInfo'; info: GroupInfo }
+  /** Spec 0009: any other content, for the group; the same envelope id on every copy. */
+  | { type: 'groupMessage'; groupId: string; infoVersion: number; seq: number; content: OutgoingContent }
+  /** Spec 0009: "I left". */
+  | { type: 'groupLeave'; groupId: string };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -156,6 +184,11 @@ export type IncomingEffect =
   | { kind: 'botInfo'; info: BotInfo }
   /** Spec 0007: merged into the row of the same hash, or a new row. */
   | { kind: 'transactionReference'; reference: TxReference }
+  /** Spec 0009: a roster; the manager checks who sent it. */
+  | { kind: 'groupInfo'; info: GroupInfo }
+  /** Spec 0009: the wrapped content's own effect, for the group. */
+  | { kind: 'groupMessage'; groupId: string; infoVersion: number; seq: number; effect: IncomingEffect }
+  | { kind: 'groupLeave'; groupId: string }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -190,8 +223,35 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'botInfo', value: botInfoWire(content.info) };
     case 'transactionReference':
       return { tag: 'transactionReference', value: referenceWire(content.reference) };
+    case 'groupInfo':
+      return { tag: 'groupInfo', value: groupInfoWire(content.info) };
+    case 'groupMessage':
+      return {
+        tag: 'groupMessage',
+        value: { groupId: content.groupId, infoVersion: content.infoVersion, seq: BigInt(content.seq), content: toWire(content.content) },
+      };
+    case 'groupLeave':
+      return { tag: 'groupLeave', value: { groupId: content.groupId } };
   }
 };
+
+const groupInfoWire = (info: GroupInfo): GroupInfoWire['value'] => ({
+  groupId: info.groupId,
+  name: clip(info.name, MAX_GROUP_NAME),
+  admin: hexToBytes(info.admin),
+  members: info.members.map(member => ({ account: hexToBytes(member.account), username: member.username, joinedAt: BigInt(member.joinedAt) })),
+  version: info.version,
+  createdAt: BigInt(info.createdAt),
+});
+
+const groupInfoOf = (value: GroupInfoWire['value']): GroupInfo => ({
+  groupId: value.groupId,
+  name: value.name,
+  admin: bytesToHex(value.admin),
+  members: value.members.map(member => ({ account: bytesToHex(member.account), username: member.username, joinedAt: Number(member.joinedAt) })),
+  version: value.version,
+  createdAt: Number(value.createdAt),
+});
 
 const referenceWire = (reference: TxReference): TransactionReferenceWire['value'] => ({
   chainId: reference.chainId,
@@ -347,6 +407,18 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       const reference = referenceOf(content.value);
       return reference ? { kind: 'transactionReference', reference } : { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
     }
+    case 'groupInfo':
+      return { kind: 'groupInfo', info: groupInfoOf(content.value) };
+    case 'groupMessage':
+      return {
+        kind: 'groupMessage',
+        groupId: content.value.groupId,
+        infoVersion: content.value.infoVersion,
+        seq: Number(content.value.seq),
+        effect: fromWire(content.value.content),
+      };
+    case 'groupLeave':
+      return { kind: 'groupLeave', groupId: content.value.groupId };
     case 'undecodable':
       // A keyboard or a reference we cannot read is still a message the peer
       // sent: the unsupported bubble. A press, typing, seen or botInfo we
@@ -414,6 +486,9 @@ export const previewOf = (content: MessageContent): string => {
       return content.text;
     case 'transactionReference':
       return referenceLine(content.reference);
+    case 'groupEvent':
+    case 'notice':
+      return content.text;
   }
 };
 

@@ -1,16 +1,20 @@
+// Moved from src/renderer/domain/faucet/drip.ts on 2026-09-23 (M12): the app's
+// Faucet is an embedded bot now (main/chain/faucet.ts), so talking to the pca
+// faucet bot lives only in the test scripts (e2e-meter, e2e-flip).
+
 /**
- * The Faucet's "Get 1 PAS" (M11 step 6): no transaction of ours. It asks the
+ * Test funds from the pca faucet bot: no transaction of ours. It asks the
  * devnet faucet bot `pcdfaucet.NN` (pca, `/drip <address>`), which transfers
  * from `//Alice` and answers with a spec 0007 `transactionReference` in its
  * own chat. The bot's two digits are not fixed, so it is found through the
  * username search, as a person would find it.
  */
 
-import type { HexString } from '../../app/bytes';
-import { bytesToHex } from '../../app/bytes';
-import type { ContactRow, RequestRow } from '../../app/database';
-import type { PeerIdentity } from '../identity/lookup';
-import type { SearchResult } from '../identity/search';
+import type { HexString } from '../../src/renderer/app/bytes';
+import { bytesToHex } from '../../src/renderer/app/bytes';
+import type { ContactRow, RequestRow } from '../../src/renderer/app/database';
+import type { PeerIdentity } from '../../src/renderer/domain/identity/lookup';
+import type { SearchResult } from '../../src/renderer/domain/identity/search';
 
 export const FAUCET_BOT_NAME = 'pcdfaucet';
 const FAUCET_BOT = /^pcdfaucet\.\d{2}$/;

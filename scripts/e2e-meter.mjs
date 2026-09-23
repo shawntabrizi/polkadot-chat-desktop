@@ -5,7 +5,7 @@
 // Same setup as e2e-botinfo.mjs (the identity file, fake-indexeddb, the
 // People connection). The bots' two digits are not fixed: both are found with
 // the app's username search (domain/identity/search.ts).
-//  1. Faucet: the app's "Get 1 PAS" path (domain/faucet/drip.ts) sends
+//  1. Faucet: the pca faucet bot (scripts/lib/faucet-bot.ts, the app's M11 path) sends
 //     `/drip <address>` to pcdfaucet; a reference with status >= 1 must come
 //     back within 90 s (DRIP_OK).
 //  2. Meter: request/accept with pcdmeter, `/topup`, and the "Top up 1 PAS"
@@ -88,7 +88,7 @@ const { createIdentityLookup } = await load('src/renderer/domain/identity/lookup
 const { searchUsernames } = await load('src/renderer/domain/identity/search.ts');
 const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
 const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
-const { requestDrip } = await load('src/renderer/domain/faucet/drip.ts');
+const { requestDrip } = await load('scripts/lib/faucet-bot.ts');
 const { toSs58 } = await load('src/renderer/ui/format.ts');
 const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
 const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');

@@ -2,7 +2,18 @@ import { MessagesSquare } from 'lucide-react';
 import { type ReactNode, useSyncExternalStore } from 'react';
 
 import type { HexString } from '../app/bytes';
-import { type ContactRow, type DraftRow, type MessageRow, type PeerId, type PeerInfoRow, type RequestRow, type RoomRow, db } from '../app/database';
+import {
+  type ContactRow,
+  type DraftRow,
+  type GroupRow,
+  type MessageRow,
+  type PeerId,
+  type PeerInfoRow,
+  type RequestRow,
+  type RoomRow,
+  db,
+  groupPeerOf,
+} from '../app/database';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import { isLiveFrame } from '../domain/chat/content';
 import { draftPreview } from '../domain/chat/drafts';
@@ -10,7 +21,7 @@ import { setRoomMuted } from '../domain/chat/messages';
 import { FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { PeerTyping, TypingStore } from '../domain/chat/signals';
 
-import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { AssistantAvatar, GroupAvatar, PeerAvatar } from './Avatar';
 import { BotBadge } from './BotBadge';
 import { ChatRow } from './ChatRow';
 import { FaucetAvatar } from './FaucetRoom';
@@ -41,15 +52,18 @@ export type ListData = {
   drafts: Map<PeerId, DraftRow>;
   /** Spec 0008 info per peer: the bot badge and the search's Bots section. */
   peerInfo: Map<PeerId, PeerInfoRow>;
+  /** Spec 0009 groups this client is (or was) in. */
+  groups: GroupRow[];
 };
 
 const loadList = async (): Promise<ListData> => {
-  const [contacts, rooms, requests, drafts, peerInfo] = await Promise.all([
+  const [contacts, rooms, requests, drafts, peerInfo, groups] = await Promise.all([
     db.contacts.toArray(),
     db.rooms.toArray(),
     db.requests.toArray(),
     db.drafts.toArray(),
     db.peerInfo.toArray(),
+    db.groups.toArray(),
   ]);
   const lastMessages = new Map<PeerId, MessageRow>();
   await Promise.all(
@@ -68,7 +82,21 @@ const loadList = async (): Promise<ListData> => {
     requests,
     drafts: new Map(drafts.map(draft => [draft.peerId, draft])),
     peerInfo: new Map(peerInfo.map(row => [row.peerId, row])),
+    groups,
   };
+};
+
+/** "3 members" (spec 0009 list row and header). */
+export const memberCount = (group: GroupRow): string => `${group.members.length} ${group.members.length === 1 ? 'member' : 'members'}`;
+
+/** A group's last line: "alice: …", "You: …", a roster event, or the member count before anything is said. */
+const groupPreview = (group: GroupRow, last: MessageRow | undefined): string => {
+  if (!last) return memberCount(group);
+  if (last.direction === 'system') return messagePreview(last);
+  const text = plainText(messagePreview(last));
+  if (last.direction === 'outgoing') return `You: ${text}`;
+  const sender = group.members.find(member => member.account === last.senderAccountId)?.username;
+  return sender ? `${sender}: ${text}` : text;
 };
 
 /** The badge of a peer that described itself (spec 0008). */
@@ -215,6 +243,34 @@ const buildRows = (
     };
   });
 
+  const groupRows: Row[] = data.groups.map(group => {
+    const peer = groupPeerOf(group.id);
+    const room = data.rooms.get(peer);
+    const last = data.lastMessages.get(peer);
+    const target: ChatTarget = { kind: 'room', peer };
+    return {
+      key: peer,
+      name: group.name,
+      at: room && room.lastMessageAt > 0 ? room.lastMessageAt : group.createdAt,
+      target,
+      render: highlighted => (
+        <ChatRow
+          key={peer}
+          testId="chat-row-group"
+          avatar={<GroupAvatar name={group.name} />}
+          name={group.name}
+          time={last ? formatListTime(last.timestamp) : null}
+          preview={previewWithDraft(data, peer, groupPreview(group, last))}
+          unread={room?.unreadCount ?? 0}
+          selected={selected.kind === 'room' && selected.peer === peer}
+          highlighted={highlighted}
+          onClick={() => open(target)}
+          mute={muteOf(room)}
+        />
+      ),
+    };
+  });
+
   const contactIds = new Set(data.contacts.map(contact => contact.accountId));
   const outgoingRows: Row[] = data.requests
     .filter(request => request.direction === 'outgoing' && request.status === 'pending' && !contactIds.has(request.peerAccountId))
@@ -242,7 +298,7 @@ const buildRows = (
       };
     });
 
-  const others = [...contactRows, ...outgoingRows].sort((a, b) => b.at - a.at);
+  const others = [...contactRows, ...groupRows, ...outgoingRows].sort((a, b) => b.at - a.at);
   return { rows: [assistantRow, ...(faucetRow ? [faucetRow] : []), ...others], others: others.length };
 };
 

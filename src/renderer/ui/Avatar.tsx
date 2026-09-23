@@ -2,7 +2,7 @@
 // on 2026-09-23; changes: the tone list is the design system's ten avatar pairs
 // (same order as @novasamatech/tr-ui `avatarTones`), rendered on shadcn Avatar.
 
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Users } from 'lucide-react';
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/cn';
@@ -32,9 +32,10 @@ export const getAvatarTone = (name: string): Tone => {
   return TONES[hash % TONES.length] ?? 'amethyst';
 };
 
-type Size = 'sm' | 'md';
+type Size = 'xs' | 'sm' | 'md';
 
-const SIZE_CLASS: Record<Size, string> = { sm: 'size-8', md: 'size-10' };
+/** 28, 32 and 40 px; `xs` is the footer's account block (smaller than a chat row's avatar). */
+const SIZE_CLASS: Record<Size, string> = { xs: 'size-7', sm: 'size-8', md: 'size-10' };
 
 export const PeerAvatar = ({ name, size = 'md' }: { name: string; size?: Size }) => (
   <Avatar className={SIZE_CLASS[size]} aria-hidden>
@@ -48,6 +49,15 @@ export const AssistantAvatar = ({ size = 'md' }: { size?: Size }) => (
   <Avatar className={SIZE_CLASS[size]} aria-hidden>
     <AvatarFallback className="bg-surface-container-inverted text-fg-primary-inverted">
       <Sparkles className={size === 'md' ? 'size-5' : 'size-4'} />
+    </AvatarFallback>
+  </Avatar>
+);
+
+/** A spec 0009 group: the `Users` icon on the name's tone, so each group keeps one colour. */
+export const GroupAvatar = ({ name, size = 'md' }: { name: string; size?: Size }) => (
+  <Avatar className={SIZE_CLASS[size]} aria-hidden>
+    <AvatarFallback className={TONE_CLASS[getAvatarTone(name)]}>
+      <Users className={size === 'md' ? 'size-5' : 'size-4'} />
     </AvatarFallback>
   </Avatar>
 );

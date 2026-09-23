@@ -6,7 +6,7 @@ import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Re
 import { type ReactNode, useState } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
-import { liveFrameText, previewOf } from '../domain/chat/content';
+import { keyboardOf, liveFrameText, previewOf } from '../domain/chat/content';
 import { renderMarkdown } from '../domain/markdown/markdown';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,17 @@ import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmSt
 import { ReferenceBody } from './Transactions';
 import { formatClock } from './format';
 import { useTypingReveal } from './reveal';
+import { streamingView } from './streamingFence';
+
+import { toButtonWire } from '../../shared/buttonsBlock';
+
+/** Two chip-shaped placeholders where a streaming reply's buttons will be (no text, a shimmer). */
+export const KeyboardPlaceholder = () => (
+  <div className="flex gap-1.5 pt-1" data-testid="keyboard-placeholder" aria-label="Buttons are on their way">
+    <span className="h-8 w-24 animate-pulse rounded-medium bg-surface-nested" data-testid="chip-placeholder" />
+    <span className="h-8 w-20 animate-pulse rounded-medium bg-surface-nested" data-testid="chip-placeholder" />
+  </div>
+);
 
 /** The eight quick reactions every Polkadot app offers (mobile-ux.md). */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏'];
@@ -53,9 +64,9 @@ export const systemText = (row: MessageRow, peerName: string, requests: readonly
 export const messagePreview = (row: MessageRow): string =>
   row.content.type === 'unsupported' ? 'Unsupported message content. Please update the app.' : previewOf(row.content);
 
-export const SystemRow = ({ text }: { text: string }) => (
-  <div className="flex justify-center py-2" data-testid="message-system">
-    <span className="rounded-full bg-surface-nested px-3 py-1 text-label-s text-fg-secondary">{text}</span>
+export const SystemRow = ({ text, tone = 'info' }: { text: string; tone?: 'info' | 'error' }) => (
+  <div className="flex justify-center py-2" data-testid="message-system" data-tone={tone}>
+    <span className={cn('rounded-full bg-surface-nested px-3 py-1 text-label-s', tone === 'error' ? 'text-fg-error' : 'text-fg-secondary')}>{text}</span>
   </div>
 );
 
@@ -154,6 +165,8 @@ type Props = {
   actions: BubbleActions | null;
   /** A quiet line under the bubble: what a running assistant reply is doing. */
   note?: string | null;
+  /** A group room (spec 0009): who sent this incoming message; shown on the first bubble of a run. */
+  sender?: string | null;
 };
 
 const textOf = (row: MessageRow): string | null =>
@@ -163,7 +176,7 @@ const textOf = (row: MessageRow): string | null =>
       ? row.content.text
       : null;
 
-export const MessageBubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null }: Props) => {
+export const MessageBubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null, sender = null }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirm, setConfirm] = useState<(ButtonPosition & { url: string }) | null>(null);
   const own = row.direction === 'outgoing';
@@ -197,6 +210,17 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
     if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} />;
+    if (row.content.type === 'text' && !own && row.status === 'streaming') {
+      // A reply still arriving: a client directive fence (```buttons) is never shown raw.
+      const view = streamingView(painted);
+      return (
+        <>
+          {view.text ? <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(view.text) }} /> : null}
+          {view.placeholder ? <KeyboardPlaceholder /> : null}
+          {view.block ? <ButtonKeyboard rows={keyboardOf(view.block.rows.map(r => r.map(toButtonWire)))} keyboard={null} onAskUrl={() => undefined} confirming={null} /> : null}
+        </>
+      );
+    }
     if ((row.content.type === 'text' || row.content.type === 'buttons') && !own) {
       // Incoming text (contacts, bots and the Assistant write markdown) renders as
       // markdown, sanitized by renderMarkdown; own messages stay plain.
@@ -300,6 +324,11 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
               : undefined
           }
         >
+          {sender && first && !own ? (
+            <p className="truncate text-label-s text-fg-secondary" data-testid="sender-name">
+              {sender}
+            </p>
+          ) : null}
           {quote ? (
             <div
               className={cn(

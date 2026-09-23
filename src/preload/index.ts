@@ -42,6 +42,7 @@ const api: DesktopApi = {
     contractRead: (chainId, address, calldata) => ipcRenderer.invoke(IPC.chainContractRead, chainId, address, calldata),
     balance: () => ipcRenderer.invoke(IPC.chainBalance),
     onBestBlock: listen(IPC.chainBestBlock),
+    faucetDrip: chainId => ipcRenderer.invoke(IPC.faucetDrip, chainId),
   },
   assistant: {
     getSettings: () => ipcRenderer.invoke(IPC.assistantGetSettings),

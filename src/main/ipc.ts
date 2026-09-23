@@ -26,6 +26,7 @@ import {
   type NotifyRequest,
   type RendererSecrets,
   type TxDryRun,
+  type FaucetDrip,
   type TxStatusEvent,
   type UsernameAvailability,
 } from '../shared/desktop-api';
@@ -35,7 +36,8 @@ import { openableUrl } from '../shared/openUrl';
 import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
-import { type TxService, createTxService, openAssetHub } from './chain/assetHub';
+import { type AssetHubChain, type TxService, createTxService, openAssetHub } from './chain/assetHub';
+import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
@@ -80,14 +82,25 @@ const GENESIS = /^0x[0-9a-fA-F]{64}$/;
  * next press tries again. The service holds the wallet key's sign function,
  * never the mnemonic.
  */
-let txService: { key: string; service: Promise<TxService> } | null = null;
+let txService: { key: string; service: Promise<TxService>; chain: Promise<AssetHubChain> } | null = null;
+/** The Asset Hub connection the tx service uses (the embedded Faucet sends on it too). */
+const assetHubFor = async (getWindow: () => BrowserWindow | null): Promise<AssetHubChain> => {
+  await txServiceFor(getWindow);
+  if (!txService) throw new Error('Asset Hub is not open.');
+  return txService.chain;
+};
+const sendTxStatus = (getWindow: () => BrowserWindow | null, event: TxStatusEvent): void => {
+  const win = getWindow();
+  if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainTxStatus, event);
+};
 const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService> => {
   const identity = loadIdentity();
   if (!identity) return Promise.reject(new Error('This computer has no identity yet.'));
   const key = `${identity.profile}:${identity.accountHex}`;
   if (txService?.key === key) return txService.service;
   void txService?.service.then(old => old.dispose(), () => undefined);
-  const service = openAssetHub(identity.profile).then(chain => {
+  const chain = openAssetHub(identity.profile);
+  const service = chain.then(chain => {
     const keys = deriveIdentityKeys(identity.mnemonic);
     const created = createTxService(chain, { publicKey: keys.accountId, sign: keys.sign });
     created.onStatus((event: TxStatusEvent) => {
@@ -100,7 +113,7 @@ const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService>
     });
     return created;
   });
-  const entry = { key, service };
+  const entry = { key, service, chain };
   txService = entry;
   service.catch(() => {
     if (txService === entry) txService = null;
@@ -280,6 +293,14 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     return (await txServiceFor(getWindow)).contractRead(chainId, address, calldata);
   });
   ipcMain.handle(IPC.chainBalance, async (): Promise<AccountBalance> => (await txServiceFor(getWindow)).balance());
+  // The embedded Faucet: devnet Asset Hub only (the guard is checked before anything opens).
+  ipcMain.handle(IPC.faucetDrip, async (_event, chainId: unknown): Promise<FaucetDrip> => {
+    const allowed = assertDevnetChain(chainId);
+    const identity = loadIdentity();
+    if (!identity) throw new Error('This computer has no identity yet.');
+    const to = deriveIdentityKeys(identity.mnemonic).accountId;
+    return dripDevnet(await assetHubFor(getWindow), allowed, to, event => sendTxStatus(getWindow, event));
+  });
 
   ipcMain.handle(IPC.assistantGetSettings, (): AssistantSettings => publicSettings());
   ipcMain.handle(IPC.assistantSetSettings, (_event, value: unknown): AssistantSettings => {

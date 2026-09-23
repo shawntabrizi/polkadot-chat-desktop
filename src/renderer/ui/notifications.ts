@@ -9,7 +9,7 @@
 import { useEffect, useRef } from 'react';
 
 import { readChatPrefs } from '../app/chatPrefs';
-import { type MessageRow, type PeerId, type RequestRow, db, isLocalPeer } from '../app/database';
+import { type MessageRow, type PeerId, type RequestRow, db, groupIdOf, isGroupPeer, isLocalPeer } from '../app/database';
 import { previewOf } from '../domain/chat/content';
 
 import type { DesktopAppApi } from '../../shared/desktop-api';
@@ -54,12 +54,21 @@ export const useNotifications = (app: DesktopAppApi | null, selectedPeer: PeerId
 
   useEffect(() => {
     if (!app) return;
+    /** The title: the contact, or the group; a group's body names the sender. */
+    const titleOf = async (row: MessageRow): Promise<{ title: string; sender: string | null } | null> => {
+      const peer = row.peerAccountId;
+      if (isLocalPeer(peer)) return null;
+      if (isGroupPeer(peer)) {
+        const group = await db.groups.get(groupIdOf(peer));
+        if (!group) return null;
+        const sender = group.members.find(member => member.account === row.senderAccountId)?.username ?? null;
+        return { title: group.name, sender };
+      }
+      const contact = await db.contacts.get(peer);
+      return contact ? { title: contact.username, sender: null } : null;
+    };
     const notifyMessage = async (row: MessageRow) => {
-      const [prefs, room, contact] = await Promise.all([
-        readChatPrefs(),
-        db.rooms.get(row.peerAccountId),
-        isLocalPeer(row.peerAccountId) ? undefined : db.contacts.get(row.peerAccountId),
-      ]);
+      const [prefs, room, title] = await Promise.all([readChatPrefs(), db.rooms.get(row.peerAccountId), titleOf(row)]);
       const ok = shouldNotify({
         row,
         selectedPeer: selected.current,
@@ -68,8 +77,9 @@ export const useNotifications = (app: DesktopAppApi | null, selectedPeer: PeerId
         enabled: prefs.notifications,
         now: Date.now(),
       });
-      if (!ok || !contact) return;
-      app.notify({ title: contact.username, body: oneLine(previewOf(row.content)), peerId: row.peerAccountId, sound: prefs.sound });
+      if (!ok || !title) return;
+      const body = oneLine(`${title.sender ? `${title.sender}: ` : ''}${previewOf(row.content)}`);
+      app.notify({ title: title.title, body, peerId: row.peerAccountId, sound: prefs.sound });
     };
     const notifyRequest = async (row: RequestRow) => {
       if (row.direction !== 'incoming' || row.status !== 'pending' || Date.now() - row.timestamp > STALE_MS) return;

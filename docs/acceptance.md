@@ -2039,3 +2039,125 @@ Earlier attempts: two runs with `PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia` missed `r
 ### git status --short
 
 This file is part of the commit, so the result of `git status --short` after it is in the M11b hand-off report.
+
+## M12
+
+Run 2026-09-23 on this machine, headless, devnet. pcdguide.70 ran the group-aware pca code (pca `3c5cde2`, restarted by the pca agent; I did not start or stop bots). Vectors: `docs/spec/vectors-0009.md` (pca) — all three (groupInfo GRP-1, 176 bytes; groupMessage GRM-1, 46 bytes; groupLeave GRL-1, 23 bytes) decode to the pinned values and the values encode to the same bytes (`content.spec.ts`, "vectors-0009" specs).
+
+### npm run check (last lines)
+
+```
+ Test Files  53 passed (53)
+      Tests  442 passed (442)
+   Start at  19:44:35
+   Duration  3.76s (transform 1.97s, setup 850ms, import 9.23s, tests 10.81s, environment 3ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (131 files)
+EXIT 0
+```
+
+### npm run smoke
+
+```
+✓ built in 184ms
+SMOKE_OK
+EXIT 0
+```
+
+### npm run e2e:group
+
+Final run, on the committed code. No `[a:err]`/`[b:err]` lines were printed.
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:group
+> node scripts/e2e-group.mjs
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b
+[a] READY username=pcdecejakd.11
+[b] READY username=pcdeceb.89
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 bot=pcdguide.70 at=2.5s
+[a] REQUEST_SENT id=843e390a-0282-4dce-9a50-967a45b2e79d to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11 id=843e390a-0282-4dce-9a50-967a45b2e79d
+[a] CONTACT pcdeceb.89 devices=1
+CONTACTS_OK pcdecejakd.11 ↔ pcdeceb.89 at=7.1s
+[b] BOT_CONTACT pcdguide.70 0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06
+[a] BOT_CONTACT pcdguide.70 0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06
+[a] GROUP_CREATED id=bd0562e5-bc6c-446e-afb0-d86a7af149de version=1 members=pcdecejakd.11,pcdeceb.89,pcdguide.70 invites=0
+[b] JOINED id=bd0562e5-bc6c-446e-afb0-d86a7af149de version=1 members=pcdecejakd.11,pcdeceb.89,pcdguide.70 admin=0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+GROUP_JOINED b version=1 members=pcdecejakd.11,pcdeceb.89,pcdguide.70 at=11.1s
+[a] SENT id=822a798d-8601-469b-aa50-b5e61c42b685 at=1790207459726 status=sent
+[b] GOT id=822a798d-8601-469b-aa50-b5e61c42b685 sender=0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 text="hello all"
+FANOUT_OK b got id=822a798d-8601-469b-aa50-b5e61c42b685 from a (copies went to b and pcdguide.70) at=12.1s
+[b] BOT_REPLY id=E0BF3673-2EF0-439D-BDA1-27F4E7E3035F type=text text="Hello pcdecejakd.11! 👋 Welcome to the group. I'm **pcdguide**, your friendly Polkadot support guide. I'm here"
+[a] BOT_REPLY id=E0BF3673-2EF0-439D-BDA1-27F4E7E3035F type=text text="Hello pcdecejakd.11! 👋 Welcome to the group. I'm **pcdguide**, your friendly Polkadot support guide. I'm here"
+BOT_REPLY_OK id=E0BF3673-2EF0-439D-BDA1-27F4E7E3035F (the same envelope on a and b) at=17.2s
+[a] ROSTER_SENT version=2 members=pcdecejakd.11,pcdguide.70
+[b] REMOVED version=2 self=removed
+ROSTER_OK b removed at version=2 self=removed at=18.2s
+[b] EXIT
+[a] EXIT
+GROUP_OK at=18.2s
+EXIT 0
+```
+
+Notes: the first run (before pca restarted pcdguide.70 on group code) reached GROUP_JOINED, FANOUT_OK and ROSTER_OK and ended `E2E_TIMEOUT bot reply (a=no b=no): the bot may not run group-aware code yet` → `GROUP_INCOMPLETE 1 step(s) timed out`, exit 13. The second run, after the restart, ended `GROUP_OK at=20.8s` (exit 0). The run above is the third, after the last code change.
+
+### npm run screenshots
+
+Command: `PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdbenchcold npm run screenshots` (headless). 51 PNGs saved. M12 lines and the end of the log:
+
+```
+97.0s saved berlin-day/room-tx-done.png
+103.7s contact with pcdbenchfina.25
+107.2s contact with pcdguide.70
+108.1s saved berlin-day/group-create.png
+109.3s member joined: JOINED id=7fcacd8c-3d61-4181-8aea-bfd89584d1e6 version=1 members=pcdecejakd.11,pcdbenchfina.25,pcdguide.70 admin=0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+115.6s group senders: ["pcdbenchfina.25","pcdguide.70"]
+115.6s group header: "3 members · admin pcdecejakd.11"
+116.5s saved berlin-day/room-group.png
+116.5s members: ["P pcdecejakd.11 you · admin · member","P pcdbenchfina.25 member Remove","P pcdguide.70 member Remove"]
+117.6s saved berlin-day/group-members.png
+167.7s saved berlin-day/chats.png
+186.2s faucet room: "ee test tokens (PAS) to try payments and contracts on the test network. They have no value. What do you need? Get 1 PAS Get test funds Copy my address 07:45 PM Dripped 1 PAS from //Alice · in block #13623127 07:47 PM Balance now 29.4586 PAS"
+187.0s saved berlin-day/faucet.png
+294.6s missed berlin-night/room-tx-done.png: the transaction did not reach a block: Send to yourself (0.01 PAS) · submitted
+296.8s saved berlin-night/group-create.png
+297.1s group senders: ["pcdbenchfina.25","pcdguide.70"]
+297.1s group header: "3 members · admin pcdecejakd.11"
+298.0s saved berlin-night/room-group.png
+298.0s members: ["P pcdecejakd.11 you · admin · member","P pcdbenchfina.25 member Remove","P pcdguide.70 member Remove"]
+299.1s saved berlin-night/group-members.png
+305.6s saved berlin-night/chats.png
+317.8s saved berlin-night/faucet.png
+Not captured:
+  berlin-night/room-tx-done.png (the transaction did not reach a block: Send to yourself (0.01 PAS) · submitted)
+SCREENSHOTS_PARTIAL
+EXIT 1
+```
+
+Result: **SCREENSHOTS_PARTIAL** (exit 1). One shot was not captured: `berlin-night/room-tx-done.png` (M11): the room peer's 0.01 PAS self-transfer stayed "submitted" for 90 s. The same flow in the day theme of the same run reached a block in 1.5 s and was finalized (`in block #13623096`), so I read it as a slow chain or transaction pool, not an M12 regression; not proved. Every M12 PNG was captured in both themes.
+
+An earlier screenshot run with `PCD_SCREENSHOT_ROOM_WITH=pcdbenchqmwk` missed every room-peer shot (the peer's log ends `E2E_TIMEOUT accept`, the old-request problem of M11b); I stopped it. `pcdbenchcold` had no old requests and worked.
+
+I read the PNGs:
+- `group-create.png` (both): "+" panel with the New group row (selected), the New group view: name "Weekend crew", three contact checkbox rows with pcdbenchfina.25 and pcdguide.70 checked, the Create pill; header "3 members".
+- `room-group.png` (both): header "Weekend crew · 3 members · admin pcdecejakd.11" with the Members and Mute buttons; "You created Weekend crew"; own "hello all" (delivered); pcdbenchfina.25's message with its name above; pcdguide.70's reply with its name and its keyboard (Staking, Governance, Colour of the day, Docs). Three senders.
+- `group-members.png` (both): the members side panel (no modal): pcdecejakd.11 "you · admin · member", pcdbenchfina.25 with Remove shown on the hovered row, pcdguide.70 with the bot badge; the Add member field; Leave group as a Danger button at rounded-medium.
+- `faucet.png` (day): the embedded Faucet after "Get 1 PAS": the reference "Dripped 1 PAS from //Alice · in block #13623127" and "Balance now 29.4586 PAS" (the pending row is transient and is not in the shot; the script checked it and the busy button before the answer). The "Get test funds" confirm strip is open, as in M10.
+- `chats.png` (both): the footer account block: "YOU" caption with Settings on the right, 28 px avatar, "pcdecejakd.11" in full with "Connected" beside it, the balance chip on its own line; the group row "Weekend crew" with the Users avatar and "pcdguide.70: …".
+
+### Other checks run
+
+- In-app devnet drip through the main module (`.agent-runs/m12/drip-check.mjs`, to pcdeceb.89): `STATUS submitted`, `BROADCAST hash=0xa7cc3ec67cb09c846a33ec1ccf7a511f631873b9dcc505a993c9fcdc86af6dc5 from=//Alice`, `STATUS inBlock block=13622982`.
+
+### Not run
+
+- `npm run e2e:meter` and `npm run e2e:flip` were not rerun. Their faucet step now loads `scripts/lib/faucet-bot.ts` (the moved `drip.ts`, same code) instead of the renderer file. The screenshot run's flip helper (`e2e-flip.mjs --role b`) did run with the moved file and reached READY and STAKE ("second player stakes", "Flip settled: pcdeceb.89 won 1 PAS").
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12 hand-off report.

@@ -75,6 +75,22 @@
 // started at the beginning so its drip and accept are done) stakes too, and
 // the shot shows the bot's "Flip settled: … won 1 PAS" reference.
 //
+// M12 (spec 0009): a group of three: the app, a second test identity
+// (PCD_SCREENSHOT_GROUP_WITH, default pcdbenchfina, driven through
+// `e2e-group.mjs --role b`) and the bot pcdguide.70. The first theme makes
+// both contacts (the helper's request, accepted in the app; the app's request
+// to the bot, from a global search hit). group-create.png is "+" → New group
+// with the name typed and both checked; the first theme then presses Create
+// (the second leaves the view). room-group.png: the app's "hello all", the
+// helper's answer and, when the bot runs group-aware code, the bot's reply
+// (three senders; a missing bot reply is reported). group-members.png opens
+// the members panel and hovers the helper's row, so the admin's Remove shows.
+//
+// M12 owner rulings: faucet.png presses "Get 1 PAS" in the first theme: the
+// embedded Faucet's pending row with its shimmer and the busy button, then the
+// in-app devnet transfer's reference ("Dripped 1 PAS from //Alice") and
+// "Balance now …". chats.png shows the footer's account block.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -113,6 +129,9 @@ const roomWith = process.env.PCD_SCREENSHOT_ROOM_WITH ?? null;
 const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
 const flipWith = process.env.PCD_SCREENSHOT_FLIP_WITH ?? 'pcdeceb';
 const FLIP_BOT = 'pcdflip';
+const groupWith = process.env.PCD_SCREENSHOT_GROUP_WITH ?? 'pcdbenchfina';
+const GROUP_BOT = 'pcdguide.70';
+const GROUP_NAME = 'Weekend crew';
 const DRAFT = 'Ask about the People chain later';
 const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
 
@@ -261,7 +280,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -330,6 +349,33 @@ app.whenReady().then(() => {
     }
   });
   let flipSettled = false;
+
+  // The second group member: waits for commands on its stdin (e2e-group.mjs child protocol).
+  const groupErr = openSync(join(outDir, 'group-peer.err.log'), 'w');
+  writeFileSync(join(outDir, 'group-peer.log'), '');
+  const groupPeer = spawn('node', ['scripts/e2e-group.mjs', '--role', 'b', '--identity', groupWith, '--other', source.accountHex, '--bot', GROUP_BOT], {
+    cwd: root,
+    stdio: ['pipe', 'pipe', groupErr],
+  });
+  const groupLines = [];
+  groupPeer.stdout.on('data', chunk => {
+    for (const line of String(chunk).split('\n').filter(Boolean)) {
+      groupLines.push(line);
+      writeFileSync(join(outDir, 'group-peer.log'), `${line}\n`, { flag: 'a' });
+    }
+  });
+  /** Sends a command to the group member; its first answer line matching `pattern`, or null. */
+  const groupAsk = async (command, pattern, ms) => {
+    const from = groupLines.length;
+    groupPeer.stdin.write(`${command}\n`);
+    for (const until = Date.now() + ms; Date.now() < until; await sleep(250)) {
+      const hit = groupLines.slice(from).find(line => pattern.test(line));
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const groupPeerName = JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${groupWith}`, 'identity.json'), 'utf8')).username;
+  let groupCreated = false;
 
   for (const theme of THEMES) {
     const app = await launch(profile);
@@ -575,6 +621,108 @@ app.whenReady().then(() => {
         log('pocket:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid^=pocket-]')].filter(e => e.dataset.testid !== 'pocket-address').map(e => e.innerText.replace(/\\s+/g, ' ')).join(' | ')`)));
       });
 
+      // M12: a group of three. The first theme makes the two members contacts, once.
+      const groupRow = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(GROUP_NAME)}))`;
+      const contactRow = name => `[...document.querySelectorAll('[data-testid=chat-row],[data-testid=chat-row-outgoing]')].some(r => r.textContent.includes(${JSON.stringify(name)}))`;
+      await shot('group-create', async () => {
+        if (!(await app.evaluate(`!!${groupRow}`))) {
+          for (let i = 0; i < 240 && !groupLines.some(line => /^READY /.test(line)); i++) await sleep(500);
+          if (!groupLines.some(line => /^READY /.test(line))) throw new Error('the group member never got ready (see .agent-runs/screens/group-peer.log)');
+          if (!(await app.evaluate(contactRow(groupPeerName)))) {
+            const botLine = await groupAsk('OPEN_BOT', /^BOT_CONTACT |_FAILED /, 150_000);
+            if (!botLine || /_FAILED/.test(botLine)) throw new Error(`the group member could not open ${GROUP_BOT}: ${botLine}`);
+            const sent = await groupAsk('REQUEST_OTHER', /^REQUEST_SENT |_FAILED /, 60_000);
+            if (!sent || /_FAILED/.test(sent)) throw new Error(`the group member's request did not go out: ${sent}`);
+            if (!(await app.waitFor(app.exists('[data-testid=new-requests]'), 120_000))) throw new Error(`no request from ${groupPeerName} arrived`);
+            await app.click('[data-testid=new-requests]');
+            const row = `[...document.querySelectorAll('[data-testid=incoming-request]')].find(r => r.textContent.includes(${JSON.stringify(groupPeerName)}))`;
+            if (!(await app.waitFor(`!!${row}`, 120_000))) throw new Error(`no request from ${groupPeerName} in the list`);
+            await app.evaluate(`${row}.click()`);
+            await app.waitFor(app.exists('[data-testid=request-banner]'), 10_000);
+            await app.clickText('[data-testid=request-banner] button', 'Accept');
+            if (!(await groupAsk('WAIT_CONTACT', /^CONTACT /, 120_000))) throw new Error(`${groupPeerName} never saw the accept`);
+            log('contact with', groupPeerName);
+            await app.click('[aria-label="Back to chats"]');
+          }
+          if (!(await app.evaluate(contactRow(GROUP_BOT)))) {
+            await app.click('[aria-label="New chat"]');
+            await app.type('[aria-label=Search]', GROUP_BOT.split('.')[0]);
+            const hit = `[...document.querySelectorAll('[data-testid=search-global-row]')].find(b => b.textContent.includes(${JSON.stringify(GROUP_BOT)}))`;
+            if (!(await app.waitFor(`!!${hit}`, 90_000))) throw new Error(`${GROUP_BOT} not found by search`);
+            await app.evaluate(`${hit}.click()`);
+            await app.waitFor(app.exists('textarea[aria-label=Message]'), 10_000);
+            await app.clickText('button', 'Send Request');
+            if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(GROUP_BOT)} && ${app.exists('[aria-label=Send]')}`, 150_000))) {
+              throw new Error(`${GROUP_BOT} did not accept the request`);
+            }
+            log('contact with', GROUP_BOT);
+            await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+          }
+        }
+        await app.click('[aria-label="New chat"]');
+        if (!(await app.waitFor(app.exists('[data-testid=new-group]'), 5_000))) throw new Error('no "New group" in the New chat panel');
+        await app.click('[data-testid=new-group]');
+        if (!(await app.waitFor(app.exists('[aria-label="Group name"]'), 5_000))) throw new Error('the New group view did not open');
+        await app.type('[aria-label="Group name"]', GROUP_NAME);
+        for (const name of [groupPeerName, GROUP_BOT]) {
+          const box = `[...document.querySelectorAll('[data-testid=group-candidate]')].find(r => r.textContent.includes(${JSON.stringify(name)}))?.querySelector('[role=checkbox]')`;
+          if (!(await app.evaluate(`!!${box}`))) throw new Error(`${name} is not among the contacts to pick`);
+          await app.evaluate(`${box}.click(); true`);
+        }
+        if (!(await app.waitFor(`document.querySelectorAll('[data-testid=group-candidate] [role=checkbox][data-state=checked]').length === 2 && !document.querySelector('[data-testid=group-create]').disabled`, 5_000))) {
+          throw new Error('the two members are not checked');
+        }
+      });
+      await shot('room-group', async () => {
+        if (!groupCreated) {
+          if (!(await app.evaluate(app.exists('[data-testid=group-create]:not([disabled])')))) throw new Error('nothing to create');
+          await app.click('[data-testid=group-create]');
+          if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(GROUP_NAME)} && ${app.exists('[data-testid=group-status]')}`, 30_000))) throw new Error('the group room did not open');
+          groupCreated = true;
+          const joined = await groupAsk('WAIT_GROUP any', /^JOINED /, 120_000);
+          if (!joined) throw new Error(`${groupPeerName} did not receive the roster (see .agent-runs/screens/group-peer.log)`);
+          log('member joined:', joined);
+          await app.type('textarea[aria-label=Message]', 'hello all');
+          await app.click('[aria-label=Send]');
+          await sleep(4_000);
+          const said = await groupAsk(`SEND Hi! ${groupPeerName} here, ready for Saturday.`, /^SENT |_FAILED /, 60_000);
+          if (!said || /_FAILED/.test(said)) throw new Error(`${groupPeerName} could not post: ${said}`);
+        } else {
+          // Leave "+" (Esc in the search field), then the New group view (Esc in the window).
+          await app.evaluate(`document.querySelector('[aria-label=Search]').focus(); true`);
+          await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+          await app.evaluate(`document.activeElement?.blur(); true`);
+          await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+          if (!(await app.waitFor(`!!${groupRow}`, 10_000))) throw new Error('no group row in the chat list');
+          await app.evaluate(`${groupRow}.click()`);
+        }
+        const peerText = `[...document.querySelectorAll('[data-testid=message-incoming]')].some(m => m.textContent.includes(${JSON.stringify(groupPeerName)}))`;
+        if (!(await app.waitFor(peerText, 60_000))) throw new Error(`no message from ${groupPeerName} with its sender name`);
+        // The bot's reply, if it runs group-aware code: a third sender name.
+        const botText = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=sender-name]')].some(n => n.textContent === ${JSON.stringify(GROUP_BOT)}) && !document.querySelector('[data-testid=live-frame]')`;
+        if (!(await app.waitFor(botText, theme === THEMES[0] ? 180_000 : 20_000))) missing.push(`${theme}/room-group.png: no reply from ${GROUP_BOT} (the bot may not run group-aware code yet); taken with two senders`);
+        log('group senders:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=sender-name]')].map(n => n.textContent)`)));
+        log('group header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=group-status]').textContent`)));
+      });
+      await shot(
+        'group-members',
+        async () => {
+          if (!(await app.evaluate(app.exists('[data-testid=group-status]')))) throw new Error('the group room is not open');
+          if (!(await app.evaluate(app.exists('[data-testid=members-panel]')))) await app.click('[data-testid=members-toggle]');
+          if (!(await app.waitFor(`document.querySelectorAll('[data-testid=member-row]').length === 3`, 10_000))) throw new Error('the members panel does not list three members');
+          log('members:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=member-row]')].map(r => r.innerText.replace(/\\s+/g, ' '))`)));
+          await app.settle();
+          // Hover the member's row: the admin's Remove shows (design system §10).
+          const box = await app.evaluate(
+            `(() => { const r = [...document.querySelectorAll('[data-testid=member-row]')].find(e => e.textContent.includes(${JSON.stringify(groupPeerName)})).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+          );
+          await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(box.x), y: Math.round(box.y) });
+          await sleep(500);
+        },
+        { now: true },
+      );
+      await app.evaluate(`document.querySelector('[aria-label="Close members"]')?.click(); true`);
+
       // M11b: the coin flip. The stake button and its strip; then the settlement.
       const flipTitle = `/^${FLIP_BOT}\\.\\d{2}$/.test(document.querySelector('[data-testid=room-title]')?.textContent ?? '')`;
       const stakeKeyboard = `[...document.querySelectorAll('[data-testid=message-incoming] [data-testid=keyboard]')].filter(k => [...k.querySelectorAll('[data-action=tx]:not([disabled])')].some(b => b.textContent.includes('Stake'))).pop()`;
@@ -804,6 +952,21 @@ app.whenReady().then(() => {
         if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === 'Faucet' && ${app.exists('[data-testid=keyboard]')}`, 10_000))) {
           throw new Error('the Faucet room did not open with its keyboard');
         }
+        // M12: "Get 1 PAS" is the embedded Faucet's own transfer: pending row, reference, balance (first theme only: one drip per run).
+        if (theme === THEMES[0]) {
+          const dripButton = `[...document.querySelectorAll('[data-testid=keyboard] [data-action=command]')].find(b => b.textContent.includes('Get 1 PAS'))`;
+          await app.evaluate(`${dripButton}.click(); true`);
+          if (!(await app.waitFor(`${app.exists('[data-testid=live-frame]')} && ${dripButton}.getAttribute('aria-busy') === 'true'`, 10_000))) throw new Error('"Get 1 PAS" shows no pending row or spinner');
+          await app.evaluate(`${dripButton}.click(); true`);
+          await sleep(500);
+          if ((await app.evaluate(`document.querySelectorAll('[data-testid=live-frame]').length`)) !== 1) missing.push(`${theme}: a second "Get 1 PAS" press stacked a row`);
+          const ended = `[...document.querySelectorAll('[data-testid=message-system]')].some(r => /Balance now|did not answer|empty|Try again|devnet/.test(r.textContent))`;
+          if (!(await app.waitFor(ended, 120_000))) throw new Error('the Faucet room shows no outcome of "Get 1 PAS"');
+          if (!(await app.evaluate(`[...document.querySelectorAll('[data-testid=message-system]')].some(r => /Balance now/.test(r.textContent))`))) {
+            missing.push(`${theme}/faucet.png: "Get 1 PAS" did not end with a balance`);
+          }
+          log('faucet room:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=messages]').innerText.replace(/\\s+/g, ' ').slice(-240)`)));
+        }
         await app.evaluate(`document.querySelector('[data-testid=keyboard] [data-action=url]').click(); true`);
         if (!(await app.waitFor(app.exists('[data-testid=url-confirm]'), 5_000))) throw new Error('no confirm strip for "Get test funds"');
         log('faucet strip:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=url-confirm]').textContent`)));
@@ -841,6 +1004,8 @@ app.whenReady().then(() => {
   roomPeerRun?.kill('SIGTERM');
   flipPeer.stdin.write('EXIT\n');
   flipPeer.kill('SIGTERM');
+  groupPeer.stdin.write('EXIT\n');
+  groupPeer.kill('SIGTERM');
   rmSync(profile, { recursive: true, force: true });
   log('seeded profile removed:', !existsSync(profile));
 }

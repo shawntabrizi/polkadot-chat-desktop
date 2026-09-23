@@ -51,7 +51,7 @@ export const DRY_RUN_VALID_MS = 120_000;
 /** Weight and storage-deposit limits are the dry-run's estimate plus this share. */
 const MARGIN_PERCENT = 20n;
 /** Asset Hub's extension without a default (a bool): false, the "not used" value. */
-const CUSTOM_EXTENSIONS = { RestrictOrigins: { value: false } } as const;
+export const CUSTOM_EXTENSIONS = { RestrictOrigins: { value: false } } as const;
 /** `ReturnFlags::REVERT` of pallet-revive. */
 const REVERT_FLAG = 1;
 

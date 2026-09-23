@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { type TxIntent, decodeTxIntent, encodeTxIntent } from '../../../shared/txIntent';
 import { bytesToHex, hexToBytes } from '../../app/bytes';
 
-import { type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
-import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec } from './identityEvents';
+import { type OutgoingContent, type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
+import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec, GROUP_BOUNDS } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
 const viaWire = (content: ChatContent): ChatContent =>
@@ -681,5 +681,144 @@ describe('kind 245 and the tx action: spec 0007', () => {
     expect(previewOf({ type: 'transactionReference', reference: { ...base, status: 'finalized', block: 123 } })).toBe('Top-up of 1 PAS · finalized in block #123');
     expect(previewOf({ type: 'transactionReference', reference: { ...base, status: 'failed', error: 'not enough funds' } })).toBe('Top-up of 1 PAS · failed: not enough funds');
     expect(referenceLine({ ...base, note: '' })).toBe('Transaction · submitted');
+  });
+});
+
+describe('kinds 246/247/248: spec 0009 groups', () => {
+  const alice = `0x${'aa'.repeat(32)}` as const;
+  const bob = `0x${'bb'.repeat(32)}` as const;
+  const info = {
+    groupId: '6f1f5c1e-2b7a-4c55-9f0e-0f5d6c7b8a90',
+    name: 'Crew',
+    admin: alice,
+    members: [
+      { account: alice, username: 'alice.01', joinedAt: 1_700_000_000_000 },
+      { account: bob, username: 'bob.02', joinedAt: 1_700_000_000_500 },
+    ],
+    version: 3,
+    createdAt: 1_700_000_000_000,
+  };
+  const encode = (content: ChatContent): Uint8Array => ChatMessageCodec.enc({ messageId: 'env', timestamp: 7n, versioned: { tag: 'v1', value: content } });
+
+  it('round-trips groupInfo and groupLeave through the codec and back to the stored form', () => {
+    expect(fromWire(viaWire(toWire({ type: 'groupInfo', info })))).toEqual({ kind: 'groupInfo', info });
+    expect(fromWire(viaWire(toWire({ type: 'groupLeave', groupId: info.groupId })))).toEqual({ kind: 'groupLeave', groupId: info.groupId });
+  });
+
+  it('writes the kind byte after the header: 246, 247, 248', () => {
+    // Header: messageId "env" (compact 3 + 3 bytes), timestamp u64, version 0; then the kind.
+    const kindAt = 1 + 3 + 8 + 1;
+    expect(encode(toWire({ type: 'groupInfo', info }))[kindAt]).toBe(246);
+    expect(encode(toWire({ type: 'groupMessage', groupId: 'g', infoVersion: 1, seq: 1, content: { type: 'text', text: 'x' } }))[kindAt]).toBe(247);
+    expect(encode(toWire({ type: 'groupLeave', groupId: 'g' }))[kindAt]).toBe(248);
+  });
+
+  it('wraps a base kind and an extension kind: the inner bytes are the 1:1 content bytes after the header', () => {
+    const inners: OutgoingContent[] = [
+      { type: 'text', text: 'hello all' },
+      { type: 'reply', messageId: 'm1', text: 'yes' },
+      { type: 'buttons', text: 'Pick', rows: [[{ label: 'Go', action: { tag: 'command', value: '/go' } }]], oneShot: false },
+      { type: 'deleted', targetMessageId: 'm1' },
+      { type: 'typing', kind: 'working', until: 5 },
+    ];
+    for (const inner of inners) {
+      const wrapped = toWire({ type: 'groupMessage', groupId: 'g-1', infoVersion: 2, seq: 9, content: inner });
+      const effect = fromWire(viaWire(wrapped));
+      expect(effect).toMatchObject({ kind: 'groupMessage', groupId: 'g-1', infoVersion: 2, seq: 9 });
+      if (effect.kind === 'groupMessage') expect(effect.effect).toEqual(fromWire(viaWire(toWire(inner))));
+      // Byte layout: the 1:1 message's content (after messageId "env", timestamp and version) ends the group message.
+      const plain = encode(toWire(inner)).slice(1 + 3 + 8 + 1);
+      const whole = encode(wrapped);
+      expect(bytesToHex(whole.slice(whole.length - plain.length))).toBe(bytesToHex(plain));
+    }
+  });
+
+  it('refuses to nest a group kind, both ways', () => {
+    expect(() => encode(toWire({ type: 'groupMessage', groupId: 'g', infoVersion: 1, seq: 1, content: { type: 'groupLeave', groupId: 'g' } }))).toThrow();
+    // Hand-built: a groupMessage whose inner kind is 248.
+    const leave = encode(toWire({ type: 'groupLeave', groupId: 'g' })).slice(1 + 3 + 8 + 1);
+    const text = encode(toWire({ type: 'groupMessage', groupId: 'g', infoVersion: 1, seq: 1, content: { type: 'text', text: 'x' } }));
+    const innerAt = text.length - encode(toWire({ type: 'text', text: 'x' })).slice(1 + 3 + 8 + 1).length;
+    const nested = new Uint8Array([...text.slice(0, innerAt), ...leave]);
+    expect(ChatMessageCodec.dec(nested).versioned.value).toEqual({ tag: 'undecodable', value: { kind: 247 } });
+    expect(fromWire(ChatMessageCodec.dec(nested).versioned.value)).toEqual({ kind: 'ignore' });
+  });
+
+  it('a roster over the bounds (17 members, a long name) is undecodable and ignored', () => {
+    const many = Array.from({ length: GROUP_BOUNDS.members + 1 }, (_, i) => ({ account: `0x${i.toString(16).padStart(2, '0').repeat(32)}` as const, username: `m${i}`, joinedAt: 1 }));
+    const over = encode({ tag: 'groupInfo', value: { groupId: 'g', name: 'x', admin: hexToBytes(alice), members: many.map(m => ({ account: hexToBytes(m.account), username: m.username, joinedAt: 1n })), version: 1, createdAt: 1n } });
+    expect(ChatMessageCodec.dec(over).versioned.value).toEqual({ tag: 'undecodable', value: { kind: 246 } });
+    const long = encode({ tag: 'groupInfo', value: { groupId: 'g', name: 'é'.repeat(121), admin: hexToBytes(alice), members: [{ account: hexToBytes(alice), username: 'a', joinedAt: 1n }], version: 1, createdAt: 1n } });
+    expect(fromWire(ChatMessageCodec.dec(long).versioned.value)).toEqual({ kind: 'ignore' });
+  });
+
+  /*
+   * docs/spec/vectors-0009.md, produced by the pca codec (GROUP_INFO_VECTOR,
+   * GROUP_MESSAGE_VECTOR, GROUP_LEAVE_VECTOR in bot-core/test/codec.test.mjs).
+   * Each is the opaque form: a compact length, then the remote message.
+   */
+  const one = `0x${'01'.repeat(32)}` as const;
+  const two = `0x${'02'.repeat(32)}` as const;
+  const VECTOR_INFO =
+    '0xb902144752502d310030fd779001000000f6144752502d3128546573742067726f7570010101010101010101010101010101010101010101010101010101010101010108010101010101010101010101010101010101010101010101010101010101010120616c6963652e30310030fd7790010000020202020202020202020202020202020202020202020202020202020202020218626f622e3032e833fd7790010000010000000030fd7790010000';
+  const VECTOR_MESSAGE = '0xb41447524d2d31d037fd779001000000f7144752502d31010000000100000000000000002468656c6c6f20616c6c';
+  const VECTOR_LEAVE = '0x581447524c2d31b83bfd779001000000f8144752502d31';
+  const GRP_1 = {
+    groupId: 'GRP-1',
+    name: 'Test group',
+    admin: one,
+    members: [
+      { account: one, username: 'alice.01', joinedAt: 1720000000000 },
+      { account: two, username: 'bob.02', joinedAt: 1720000001000 },
+    ],
+    version: 1,
+    createdAt: 1720000000000,
+  };
+  const opaque = Bytes();
+  const opaqueOf = (messageId: string, timestamp: bigint, content: ChatContent) =>
+    bytesToHex(opaque.enc(ChatMessageCodec.enc({ messageId, timestamp, versioned: { tag: 'v1', value: content } })));
+
+  it('decodes vector (a) groupInfo GRP-1 to the pinned values and encodes them to the same 176 bytes', () => {
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_INFO));
+    expect(decoded.messageId).toBe('GRP-1');
+    expect(decoded.timestamp).toBe(1720000000000n);
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'groupInfo', info: GRP_1 });
+    expect(opaqueOf('GRP-1', 1720000000000n, toWire({ type: 'groupInfo', info: GRP_1 }))).toBe(VECTOR_INFO);
+    expect(hexToBytes(VECTOR_INFO).length).toBe(176);
+  });
+
+  it('decodes vector (b) groupMessage GRM-1 (text "hello all" inline) and encodes it to the same 46 bytes', () => {
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_MESSAGE));
+    expect(decoded.messageId).toBe('GRM-1');
+    expect(decoded.timestamp).toBe(1720000002000n);
+    expect(fromWire(decoded.versioned.value)).toEqual({
+      kind: 'groupMessage',
+      groupId: 'GRP-1',
+      infoVersion: 1,
+      seq: 1,
+      effect: { kind: 'message', content: { type: 'text', text: 'hello all' } },
+    });
+    const wire = toWire({ type: 'groupMessage', groupId: 'GRP-1', infoVersion: 1, seq: 1, content: { type: 'text', text: 'hello all' } });
+    expect(opaqueOf('GRM-1', 1720000002000n, wire)).toBe(VECTOR_MESSAGE);
+    expect(hexToBytes(VECTOR_MESSAGE).length).toBe(46);
+  });
+
+  it('decodes vector (c) groupLeave GRL-1 and encodes it to the same 23 bytes', () => {
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_LEAVE));
+    expect(decoded.messageId).toBe('GRL-1');
+    expect(decoded.timestamp).toBe(1720000003000n);
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'groupLeave', groupId: 'GRP-1' });
+    expect(opaqueOf('GRL-1', 1720000003000n, toWire({ type: 'groupLeave', groupId: 'GRP-1' }))).toBe(VECTOR_LEAVE);
+    expect(hexToBytes(VECTOR_LEAVE).length).toBe(23);
+  });
+
+  it('a groupMessage with no content byte is undecodable (vectors-0009 rule)', () => {
+    const empty = opaque.dec(VECTOR_MESSAGE).slice(0, -('hello all'.length + 2));
+    expect(ChatMessageCodec.dec(empty).versioned.value).toEqual({ tag: 'undecodable', value: { kind: 247 } });
+  });
+
+  it('clips a long name to 60 characters on the way out', () => {
+    const effect = fromWire(viaWire(toWire({ type: 'groupInfo', info: { ...info, name: 'n'.repeat(80) } })));
+    expect(effect.kind === 'groupInfo' ? [...effect.info.name].length : 0).toBe(60);
   });
 });

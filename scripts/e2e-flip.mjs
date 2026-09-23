@@ -232,7 +232,7 @@ async function child(name) {
   const { searchUsernames } = await load('src/renderer/domain/identity/search.ts');
   const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
   const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
-  const { requestDrip } = await load('src/renderer/domain/faucet/drip.ts');
+  const { requestDrip } = await load('scripts/lib/faucet-bot.ts');
   const { toSs58 } = await load('src/renderer/ui/format.ts');
   const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
   const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');

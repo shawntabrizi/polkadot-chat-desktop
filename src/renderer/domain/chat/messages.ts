@@ -29,8 +29,9 @@ const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta
     lastPreview: newest ? previewOf(message.content) : existing.lastPreview,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-    // A new message must not unmute the room.
+    // A new message must not unmute the room, nor detach it from its group.
     ...(existing?.muted ? { muted: true } : {}),
+    ...(existing?.groupId ? { groupId: existing.groupId } : {}),
   });
 };
 
@@ -217,13 +218,15 @@ export type DeletionResult = 'tombstoned' | 'pending' | 'ignored';
  * - a message we sent, or one from another peer, is not touched;
  * - an unknown id is kept in the peer's pending set and applied on arrival
  *   (`addMessage`); the set keeps the newest `PENDING_DELETIONS_PER_PEER`.
- * Re-processing is a no-op.
+ * Re-processing is a no-op. In a spec 0009 group (`peer` is the group's
+ * room) `sender` must also be the author of the message.
  */
-export const applyDeletion = (peer: PeerId, messageId: string, now: number = Date.now()): Promise<DeletionResult> =>
+export const applyDeletion = (peer: PeerId, messageId: string, now: number = Date.now(), sender?: HexString): Promise<DeletionResult> =>
   appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
     const row = await db.messages.get(messageId);
     if (row) {
       if (row.peerAccountId !== peer || row.direction !== 'incoming') return 'ignored';
+      if (sender !== undefined && row.senderAccountId !== sender) return 'ignored';
       if (row.content.type === 'deleted') return 'tombstoned';
       await tombstoneMessage(messageId);
       return 'tombstoned';

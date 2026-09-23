@@ -106,6 +106,7 @@ export const App = () => {
   const identity = boot?.identity ?? null;
   const deviceKeys = boot?.deviceKeys ?? null;
   const profileId = boot?.profileId ?? null;
+  const username = boot?.username ?? null;
 
   // The Faucet (M10 step 6) is local, but its link carries this identity's address.
   useEffect(() => {
@@ -114,7 +115,7 @@ export const App = () => {
   }, [identity]);
 
   useEffect(() => {
-    if (!identity || !deviceKeys || !profileId) return;
+    if (!identity || !deviceKeys || !profileId || !username) return;
     let active = true;
     let manager: ChatManager | null = null;
     let transactions: TxRunner | null = null;
@@ -133,6 +134,7 @@ export const App = () => {
       statementStore: connection.adapter,
       lookup,
       onConnectionStatus: connection.onStatus,
+      username,
     })
       .then(created => {
         if (!active) return created.dispose();
@@ -154,7 +156,7 @@ export const App = () => {
       manager?.dispose();
       setRuntime(null);
     };
-  }, [identity, deviceKeys, profileId]);
+  }, [identity, deviceKeys, profileId, username]);
 
   const signedUp = (result: CreateIdentityResponse) => {
     // Confirmed = in a best block; finality is shown, not awaited (PLAN.md "Best block first").

@@ -98,6 +98,25 @@ export type TransactionReferenceWire = {
   value: { chainId: string; hash: Uint8Array; status: number; block: number | undefined; note: string; intentMessageId: string | undefined };
 };
 
+/** Spec 0009 `Member`: `account` is the 32-byte identity account; `joinedAt` unix ms. */
+export type GroupMemberWire = { account: Uint8Array; username: string; joinedAt: bigint };
+/**
+ * Spec 0009 `groupInfo(GroupInfo)`, provisional kind 246: the roster. Only
+ * the admin's is applied; the highest `version` wins. Never a row.
+ */
+export type GroupInfoWire = {
+  tag: 'groupInfo';
+  value: { groupId: string; name: string; admin: Uint8Array; members: GroupMemberWire[]; version: number; createdAt: bigint };
+};
+/**
+ * Spec 0009 `groupMessage(GroupMessage)`, provisional kind 247: any non-group
+ * content, wrapped. `content` is the inner `MessageContent` (its kind byte and
+ * body, the same bytes as in a 1:1 message after the header).
+ */
+export type GroupMessageWire = { tag: 'groupMessage'; value: { groupId: string; infoVersion: number; seq: bigint; content: ChatContent } };
+/** Spec 0009 `groupLeave(GroupLeave)`, provisional kind 248: "I left". */
+export type GroupLeaveWire = { tag: 'groupLeave'; value: { groupId: string } };
+
 export type ChatContent =
   | SdkChatMessageWire['versioned']['value']
   | DeletedWire
@@ -107,6 +126,9 @@ export type ChatContent =
   | SeenWire
   | BotInfoWire
   | TransactionReferenceWire
+  | GroupInfoWire
+  | GroupMessageWire
+  | GroupLeaveWire
   | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
@@ -128,6 +150,11 @@ export const SEEN_KIND = 241;
 export const BOT_INFO_KIND = 244;
 /** Spec 0007 provisional kind (docs/spec/kinds.md). */
 export const TRANSACTION_REFERENCE_KIND = 245;
+/** Spec 0009 provisional kinds (docs/spec/kinds.md). */
+export const GROUP_INFO_KIND = 246;
+export const GROUP_MESSAGE_KIND = 247;
+export const GROUP_LEAVE_KIND = 248;
+const GROUP_KINDS: readonly number[] = [GROUP_INFO_KIND, GROUP_MESSAGE_KIND, GROUP_LEAVE_KIND];
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -200,7 +227,35 @@ const withinReferenceBounds = (reference: TransactionReferenceWire['value']): bo
   utf8Length(reference.note) <= REFERENCE_BOUNDS.note &&
   reference.status <= REFERENCE_BOUNDS.status;
 
-type ExtensionWire = DeletedWire | ButtonsWire | ButtonPressWire | TypingWire | SeenWire | BotInfoWire | TransactionReferenceWire;
+// Spec 0009 layout. A group id is a UUID string, as message ids are; an
+// account is 32 bytes.
+const GroupMemberCodec = Struct({ account: Bytes(32), username: str, joinedAt: u64 });
+const GroupInfoCodec = Struct({ groupId: str, name: str, admin: Bytes(32), members: Vector(GroupMemberCodec), version: u32, createdAt: u64 });
+const GroupLeaveCodec = Struct({ groupId: str });
+
+/**
+ * Spec 0009 decoder bounds: at most 16 members, the name at most 240 bytes
+ * (4 per character of the 60 limit), usernames at most 256 bytes (64
+ * characters), the same as pca's. Outside
+ * them the message is undecodable.
+ */
+export const GROUP_BOUNDS = { members: 16, name: 240, username: 256 } as const;
+const withinGroupBounds = (info: GroupInfoWire['value']): boolean =>
+  info.members.length >= 1 &&
+  info.members.length <= GROUP_BOUNDS.members &&
+  utf8Length(info.name) <= GROUP_BOUNDS.name &&
+  info.members.every(member => utf8Length(member.username) <= GROUP_BOUNDS.username);
+
+type ExtensionWire =
+  | DeletedWire
+  | ButtonsWire
+  | ButtonPressWire
+  | TypingWire
+  | SeenWire
+  | BotInfoWire
+  | TransactionReferenceWire
+  | GroupInfoWire
+  | GroupLeaveWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -215,6 +270,16 @@ const SeenMessage = envelope(SeenContentCodec);
 const BotInfoMessage = envelope(BotInfoContentCodec);
 const BotInfoV2Message = envelope(BotInfoV2ContentCodec);
 const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
+const GroupInfoMessage = envelope(GroupInfoCodec);
+const GroupLeaveMessage = envelope(GroupLeaveCodec);
+// `groupMessage`: the header and the wrapper's own fields; the inner content
+// is the rest of the message (its kind byte and body).
+const GroupMessageHead = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, groupId: str, infoVersion: u32, seq: u64 });
+/**
+ * The header of a message with an empty id and timestamp 0, without its kind
+ * byte: prefixed to an inner content, the whole codec reads it as a message.
+ */
+const INNER_PREFIX = Header.enc({ messageId: '', timestamp: 0n, version: V1, kind: 0 }).slice(0, -1);
 
 const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
   value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
@@ -274,16 +339,61 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       const value = decoded?.versioned.value;
       return decoded && value?.tag === 'transactionReference' && withinReferenceBounds(value.value) ? decoded : undecodable(header);
     }
+    case GROUP_INFO_KIND: {
+      const decoded = decodeWith(GroupInfoMessage, bytes, value => ({ tag: 'groupInfo', value }));
+      const value = decoded?.versioned.value;
+      return decoded && value?.tag === 'groupInfo' && withinGroupBounds(value.value) ? decoded : undecodable(header);
+    }
+    case GROUP_MESSAGE_KIND:
+      return decodeGroupMessage(bytes) ?? undecodable(header);
+    case GROUP_LEAVE_KIND:
+      return decodeWith(GroupLeaveMessage, bytes, value => ({ tag: 'groupLeave', value })) ?? undecodable(header);
     default:
       return null;
   }
 };
 
 /**
+ * Spec 0009 `groupMessage`: the wrapper, then the inner content through the
+ * whole codec (so an extension kind wraps as well as a base one). A group
+ * kind inside, or an inner content that does not decode, makes the message
+ * undecodable: a group message is never nested.
+ */
+const decodeGroupMessage = (bytes: Uint8Array): ChatMessageWire | null => {
+  try {
+    const head = GroupMessageHead.dec(bytes);
+    const inner = bytes.slice(GroupMessageHead.enc(head).length);
+    const kind = inner[0];
+    if (kind === undefined || GROUP_KINDS.includes(kind)) return null;
+    const wrapped = new Uint8Array(INNER_PREFIX.length + inner.length);
+    wrapped.set(INNER_PREFIX);
+    wrapped.set(inner, INNER_PREFIX.length);
+    const content = ChatMessageCodec.dec(wrapped).versioned.value;
+    if (content.tag === 'undecodable') return null;
+    return {
+      messageId: head.messageId,
+      timestamp: head.timestamp,
+      versioned: { tag: 'v1', value: { tag: 'groupMessage', value: { groupId: head.groupId, infoVersion: head.infoVersion, seq: head.seq, content } } },
+    };
+  } catch {
+    return null;
+  }
+};
+
+/** The inner content's bytes (kind byte and body) for a `groupMessage`. */
+const encodeInner = (content: ChatContent): Uint8Array => {
+  if (GROUP_KINDS_TAGS.includes(content.tag)) throw new Error('a group message cannot wrap a group kind');
+  const whole = ChatMessageCodec.enc({ messageId: '', timestamp: 0n, versioned: { tag: 'v1', value: content } });
+  return whole.slice(INNER_PREFIX.length);
+};
+const GROUP_KINDS_TAGS: readonly string[] = ['groupInfo', 'groupMessage', 'groupLeave'];
+
+/**
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
  * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005), kinds 242
  * `buttons` / 243 `buttonPress` (spec 0006), kind 244 `botInfo` (spec 0008) and
- * kind 245 `transactionReference` (spec 0007).
+ * kind 245 `transactionReference` (spec 0007), and kinds 246 `groupInfo` /
+ * 247 `groupMessage` / 248 `groupLeave` (spec 0009).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -308,6 +418,19 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
           : BotInfoV2Message.enc({ ...head, kind: BOT_INFO_KIND, content: { ...content.value, balance: content.value.balance } });
       case 'transactionReference':
         return TransactionReferenceMessage.enc({ ...head, kind: TRANSACTION_REFERENCE_KIND, content: content.value });
+      case 'groupInfo':
+        return GroupInfoMessage.enc({ ...head, kind: GROUP_INFO_KIND, content: content.value });
+      case 'groupLeave':
+        return GroupLeaveMessage.enc({ ...head, kind: GROUP_LEAVE_KIND, content: content.value });
+      case 'groupMessage': {
+        const { groupId, infoVersion, seq } = content.value;
+        const wrapper = GroupMessageHead.enc({ ...head, kind: GROUP_MESSAGE_KIND, groupId, infoVersion, seq });
+        const inner = encodeInner(content.value.content);
+        const out = new Uint8Array(wrapper.length + inner.length);
+        out.set(wrapper);
+        out.set(inner, wrapper.length);
+        return out;
+      }
       case 'undecodable':
         throw new Error('an undecodable message is receive-only');
       default:
