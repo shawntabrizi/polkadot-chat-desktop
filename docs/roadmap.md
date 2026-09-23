@@ -11,3 +11,23 @@ Goal: an agent-native, Telegram-quality chat client on Polkadot's encrypted rail
 | M11 | Publish the local agent as an on-chain peer | none | a phone user chats with the desktop's agent |
 
 Decisions (owner, 2026-09-23): the running specification lives in this repo under `docs/spec/`, written as upstream-shaped RFCs as we go, and is sent to `paritytech/chat-spec` only when the owner decides; nothing is pushed to chat-spec meanwhile. `pca` work goes on branches in `polkadot-chat-agents` with the goal of merging later; nothing may break the phone apps, so every extension follows the compatibility rule in `docs/spec/README.md` (receive always, send only after evidence). Provisional kinds 240+ (`docs/spec/kinds.md`); RFC-0003 takes 21 (20 is taken by DeviceChatAccepted).
+
+## Backlog from the landscape review (2026-09-23)
+
+Source: `polkadot-brain/references/blockchain-chat-landscape.md` (XMTP, Farcaster, Towns, Session, Status, DarkFi).
+
+Protocol (into `docs/spec/`):
+- **0006 buttons**: add an optional `input` field on a button (Farcaster Frames v1 text input) so a bot can ask for one value without a form.
+- **0007 tx action**: model on EIP-5792 `wallet_sendCalls`: a batch of calls plus display metadata (description, amount, asset, kind), `dryRunRequired: true`, chain id; Polkadot payloads are extrinsic call data or a Revive call. Add a **`transactionReference`** kind (XMTP has one): a first-class bubble "landed in block N / failed" with the hash, sent by whoever submitted.
+- **Bot manifest (0007b)**: name, description, commands, capabilities, "bot" marker; published under the DotNS name. Serves what XMTP's agent-metadata proposal wants, without a wire kind old clients would choke on.
+- **Block list on the protocol**: today decline is local. Add a synced deny list (mds) so a block holds on every device (XIP-42 shape). No wire message to the blocked peer.
+- **Ephemeral-kind rule for agents**: bots must never reply to typing/seen/receipt kinds (XMTP's loop lesson). Put it in 0005 and in pca.
+
+Product:
+- **Person vs bot badge**: personhood is the stack's edge over fee-gated networks; show it. A verified-person mark from the People-chain record, a bot mark from the manifest.
+- **Bot directory**: search results from the manifest registry (DotNS), like Base App's agent listing.
+- **Allowance awareness for agents**: bots are lite persons with a statement allowance; show remaining allowance in the Assistant/bot settings and warn before it runs out.
+- **Tip / pay quick action on a bot message** (Towns): reuse coinage send with a preset amount.
+- **Disappearing messages** (Session/Status): client-enforced TTL on top of RFC-0003 tombstones.
+- **Metadata privacy note** (DarkFi): session topics are pairwise hashes on a public store; write down what an observer can infer and what Tor/mixnet transport would add. Research item, not a milestone.
+- **Packaging bot-core as an SDK** for third-party agents (XMTP Agent SDK shape): event-driven, middleware, content-type filters. After M11.

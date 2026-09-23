@@ -107,4 +107,6 @@ Telegram inline keyboards (`callback_data`, `url`, and web-app buttons), Slack B
 
 ## Future Directions
 
-RFC 0007 `tx` action: `{ chainId, to, data | abiCall, value, dryRunRequired }` with the client obliged to dry-run and show effects before signing; the bot manifest (commands list, description, greeting) resolvable by DotNS name; a `menu` capability so a bot can publish its command list once.
+An optional `input: { placeholder: String, kind: text|number }` on a button (Farcaster Frames v1 pattern) so a bot can ask for one value; the press then carries the value in `payload`.
+
+RFC 0007 `tx` action (model: EIP-5792 `wallet_sendCalls` with display metadata, plus a `transactionReference` kind for the result): `{ chainId, to, data | abiCall, value, dryRunRequired }` with the client obliged to dry-run and show effects before signing; the bot manifest (commands list, description, greeting) resolvable by DotNS name; a `menu` capability so a bot can publish its command list once.
