@@ -67,7 +67,7 @@ ButtonPressContent = {
 - `callback`: send `buttonPress{messageId, row, index, payload}`; show nothing as a bubble; the UI marks the press on the button (spinner until the bot's next message or 10 s).
 - `url`: open in the system browser after confirmation with the host visible; never auto-open.
 - `tx`: disabled until RFC 0007; label shown, tooltip "This client cannot run chain actions yet".
-- Fenced-block authoring (bots and local agents): a reply ending with a ```buttons fence holding `{ "rows": [[{ "label", "action": { "command" | "callback" | "url" } }]], "oneShot"? }` becomes one `buttons` message; a `callback` string with the prefix `base64:` is raw bytes, any other string is UTF-8, max 256 bytes; invalid blocks stay text.
+- Fenced-block authoring (bots and local agents): a reply ending with a ```buttons fence holding `{ "rows": [[{ "label", "action": { "command" | "callback" | "url" } }]], "oneShot"? }` becomes one `buttons` message; a `callback` string with the prefix `base64:` is raw bytes, any other string is UTF-8, max 256 bytes; invalid blocks stay text; a `tx` action in the block follows spec 0007.
 - A `buttonPress` MUST be accepted only from the peer the `buttons` message was sent to, and only for a `messageId` the recipient sent. Duplicate presses are delivered as duplicates (bots dedupe by their own means).
 
 ### Compatibility (this spec set's rule)
