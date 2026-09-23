@@ -431,3 +431,109 @@ Empty after the commit (checked before the report).
 - Sign-up and restart **in the packaged app**. The packaged app has the name `polkadot-chat-desktop` (package.json `name`), so its `safeStorage` uses the keychain entry "polkadot-chat-desktop Safe Storage", which the dev Electron binary created. An unsigned binary that reads that entry makes macOS show a permission prompt, which an unattended run cannot answer and which would appear on the owner's screen. The restart test above ran the same code with the dev Electron binary. The packaged app was checked with `--smoke` in a throwaway profile, and the wasm path was checked in the packaged app. See docs/questions.md.
 - The reset confirm dialog was answered by replacing `window.confirm`; the native dialog itself was not clicked.
 - `docs/milestones/M3.check.sh` was not run by me (reviewer script). Its steps (check, package, dmg, smoke:packaged, M3 section) were each run above.
+
+## M4
+
+Run 2026-09-23 on this machine (macOS, Apple Silicon). The proxy key came from `LLM_PROXY_KEY` in the shell; it is not printed anywhere below.
+
+### `npm run check`
+
+```
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+
+
+ Test Files  30 passed (30)
+      Tests  188 passed (188)
+   Start at  12:04:25
+   Duration  1.19s (transform 1.21s, setup 549ms, import 8.54s, tests 3.41s, environment 1ms)
+
+```
+
+Exit code 0 (eslint prints nothing when clean). New specs: `src/main/assistant/client.spec.ts` (6), `src/renderer/domain/assistant/assistant.spec.ts` (9), `src/renderer/domain/markdown/markdown.spec.ts` (4).
+
+### `npm run e2e:assistant`
+
+```
+
+> polkadot-chat-desktop@0.1.0 e2e:assistant
+> node scripts/e2e-assistant.mjs
+
+proxy https://llm.substrate.dev model auto/deepseek-v4.1-flash
+prompt: Reply with exactly: proxy ok
+reply: proxy ok
+deltas 2, 8 chars
+ASSISTANT_OK
+```
+
+The model (`auto/deepseek-v4.1-flash`) first streams a reasoning block (`delta.reasoning_content`, `delta.content: ""`), which the client skips. For this short reply the proxy sent the text in 2 content deltas.
+
+Failure paths of the same script:
+
+```
+$ LLM_PROXY_KEY=wrong-test-value node scripts/e2e-assistant.mjs | tail -1   # exit 5
+ASSISTANT_FAIL The proxy refused the API key (HTTP 401).
+$ env -u LLM_PROXY_KEY node scripts/e2e-assistant.mjs                      # exit 2
+LLM_PROXY_KEY is not set
+```
+
+The proxy's own 401 body quotes the first and last 4 characters of the key it got (`Received=wron****alue`), so the client does not show a 401/403 body.
+
+### The Assistant in the app (step 7)
+
+`npm run build`, then a scratch script (`.agent-runs/m4/gui.mjs`, git-ignored) started `electron .` three times with `PCD_USER_DATA_DIR=<new temp folder>` and `--remote-debugging-port`, and drove the renderer through the Chrome DevTools protocol (DOM clicks, `Input.insertText` for typing). The owner's profile was not opened. The Chats tab needs an identity, so the first start signed up a throwaway name on devnet through `window.desktop.identity.create`. The script compared (never printed) the key against Dexie, `assistant.json` and the app's stdout/stderr. The temp profile was deleted at the end. Output:
+
+```
+0.0s profile /var/folders/_1/q03733qd0pv42n1dvkcvyx0c0000gn/T/pcd-m4-gv28UA
+0.5s sign-up screen: true
+27.9s signed up pcdassistabzk.13 confirmed true
+28.1s chats shown: true
+28.1s first row of Chats: chat-row-assistant | Assistant AI, in this app
+28.1s settings seen by renderer: {"model":"auto/deepseek-v4.1-flash","baseUrl":"https://llm.substrate.dev","hasKey":false,"envKey":true}
+28.1s room title: Assistant
+36.9s Stop button shown while streaming: true | distinct text lengths seen while streaming: 2 34,94
+36.9s samples (first 6, last 3): ["28.1s idle len=0","28.3s streaming len=34","28.4s streaming len=34","28.6s streaming len=34","28.7s streaming len=34","28.9s streaming len=34","...","36.6s streaming len=94","36.7s streaming len=94","36.9s idle len=199"]
+36.9s markdown html: "<ol>\n<li>Polkadot connects <strong>independent</strong> blockchains through its relay chain.</li>\n<li>It provides <strong>shared</strong> security for all connected parachains.</li>\n<li>The native token <strong>DOT</strong> powers staking and governance.</li>\n</ol>\n"
+36.9s rendered text: "Polkadot connects independent blockchains through its relay chain.\nIt provides shared security for all connected parachains.\nThe native token DOT powers staking and governance.\n9/23/2026, 12:02:26 PM"
+36.9s has <li>/<strong>: true/true
+43.4s follow-up reply: "3\n\n9/23/2026, 12:02:35 PM"
+74.1s after Stop, last two rows: [{"d":"incoming","s":"failed","t":"The history of distributed ledgers is not a single story but…"},{"d":"system","s":"received","t":"Assistant: Stopped."}]
+74.6s Chats preview after all: Assistant AI, in this app | Assistant: Stopped. 9/23/2026, 12:03:12 PM
+74.6s settings form: model= auto/deepseek-v4.1-flash baseUrl= https://llm.substrate.dev | key state: no key stored; the app uses LLM_PROXY_KEY from its environment
+80.7s Test -> Reply: proxy ok
+80.7s Dexie holds the key: false | Dexie assistant rows: 7
+81.3s main output mentions key: false
+82.0s no env key, key state: no key stored
+82.0s Test without key -> Test failed: No API key for the LLM proxy. Set one in Settings.
+82.0s after Save, key state: key stored | password field empty: true
+82.0s assistant.json fields: version,model,baseUrl,keyEncrypted | holds plaintext key: false
+82.1s getSettings has no key field: {"model":"auto/deepseek-v4.1-flash","baseUrl":"https://llm.substrate.dev","hasKey":true,"envKey":false}
+88.7s Test with stored key -> Reply: proxy ok
+90.1s after restart: rows shown 10 | markdown blocks 3 | Dexie rows 7
+90.1s Dexie holds the key: false
+90.8s main output mentions key: false
+90.8s profile removed: true
+```
+
+What this shows:
+
+- The Assistant is the first row of Chats ("Assistant AI, in this app"), with no contact on chain.
+- The reply row appears at once as "Thinking…" with `…` and a Stop button; the text grew while streaming (34 → 94 characters of row text in the samples, then 199 when done). Send is disabled until the reply ends.
+- The reply renders as markdown: `<ol><li>…<strong>…</strong>…` in the room.
+- The follow-up "How many items did your previous answer have?" got `3`: the earlier turns go as context.
+- Stop kept the partial text (row `failed`) and added the notice "Assistant: Stopped.".
+- Settings shows the default model and base URL, the key state, and Test answers "Reply: proxy ok" with the key from the environment and with a key stored through the form. Without any key, Test shows "No API key for the LLM proxy. Set one in Settings." `assistant.json` holds `version,model,baseUrl,keyEncrypted`, no plaintext key; `getSettings` returns `hasKey`/`envKey` only.
+- After a restart the room shows the same 7 Dexie rows (10 `li` elements: 7 rows plus the 3 list items of the markdown reply) and 3 markdown blocks.
+- Dexie and the app's output never contained the key.
+
+After this run, the key-state text in Settings changed from "…uses LLM_PROXY_KEY from its environment" to "…uses the proxy key from its environment", because `M4.check.sh` refuses the name `LLM_PROXY_KEY` anywhere in `src/renderer`. `npm run check` above ran after that change; the GUI run was not repeated for one string.
+
+`npm run dev` itself (Vite dev server) was started once with `PCD_USER_DATA_DIR=<temp folder>` and `--remoteDebuggingPort`: the page loaded from `http://localhost:5173/` at sign-up (new profile), `window.desktop.assistant` had `getSettings,setSettings,send,cancel,onDelta,onDone,onError`, and `getSettings()` returned `{"model":"auto/deepseek-v4.1-flash","baseUrl":"https://llm.substrate.dev","hasKey":false,"envKey":true}`. The chat itself was checked in the built app above, not in the dev server.
+
+### `git status --short`
+
+Empty after the commit (checked before the report).
+
+### Not run
+
+- The native macOS keychain prompt path: the stored key uses the dev Electron binary's existing keychain entry, so no prompt appeared. The packaged app was not started with a stored key.
+- `docs/milestones/M4.check.sh` is the reviewer's script; its steps (clean tree, M4 commit, files, renderer grep, check, e2e, M4 section) were each run above or at commit time.

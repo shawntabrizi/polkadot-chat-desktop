@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
 import { registerIpc } from './ipc';
@@ -32,6 +32,14 @@ function createWindow(smoke: boolean): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  // Message text (assistant replies included) renders links with
+  // target=_blank. They open in the system browser, never in a new app window
+  // (which would get this window's preload).
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   if (smoke) watchSmoke(win);

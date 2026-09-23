@@ -2,6 +2,17 @@ import { type IpcRendererEvent, contextBridge, ipcRenderer } from 'electron';
 
 import { type DesktopApi, IPC } from '../shared/desktop-api';
 
+/** Subscribes to one main → renderer channel; returns the unsubscribe function. */
+const listen =
+  <T>(channel: string) =>
+  (listener: (event: T) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, value: T) => listener(value);
+    ipcRenderer.on(channel, handler);
+    return () => {
+      ipcRenderer.removeListener(channel, handler);
+    };
+  };
+
 const api: DesktopApi = {
   version: process.versions.electron,
   identity: {
@@ -23,6 +34,15 @@ const api: DesktopApi = {
     setMetadata: (codeHash, metadata) => {
       void ipcRenderer.invoke(IPC.chainMetadataSet, codeHash, metadata);
     },
+  },
+  assistant: {
+    getSettings: () => ipcRenderer.invoke(IPC.assistantGetSettings),
+    setSettings: update => ipcRenderer.invoke(IPC.assistantSetSettings, update),
+    send: request => ipcRenderer.invoke(IPC.assistantSend, request),
+    cancel: conversationId => ipcRenderer.invoke(IPC.assistantCancel, conversationId),
+    onDelta: listen(IPC.assistantDelta),
+    onDone: listen(IPC.assistantDone),
+    onError: listen(IPC.assistantError),
   },
 };
 

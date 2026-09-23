@@ -17,7 +17,8 @@
     "postinstall": "node -e \"const fs = require('fs'); const d = 'node_modules/electron/dist'; process.exit(fs.existsSync(d) && fs.readdirSync(d).length > 0 ? 0 : 1)\" || node node_modules/electron/install.js",
     "prepare": "papi generate",
     "identity:register": "node scripts/identity-register.mjs",
-    "e2e:chat": "node scripts/e2e-chat.mjs"
+    "e2e:chat": "node scripts/e2e-chat.mjs",
+    "e2e:assistant": "node scripts/e2e-assistant.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",

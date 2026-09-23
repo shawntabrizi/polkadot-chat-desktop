@@ -13,6 +13,13 @@ export const IPC = {
   identityReset: 'identity:reset',
   chainMetadataGet: 'chain:metadataGet',
   chainMetadataSet: 'chain:metadataSet',
+  assistantGetSettings: 'assistant:getSettings',
+  assistantSetSettings: 'assistant:setSettings',
+  assistantSend: 'assistant:send',
+  assistantCancel: 'assistant:cancel',
+  assistantDelta: 'assistant:delta',
+  assistantDone: 'assistant:done',
+  assistantError: 'assistant:error',
 } as const;
 
 /** The public part of the identity saved on this machine. */
@@ -79,7 +86,50 @@ export type DesktopChainApi = {
   setMetadata: (codeHash: string, metadata: Uint8Array) => void;
 };
 
-export type DesktopApi = { version: string; identity: DesktopIdentityApi; chain: DesktopChainApi };
+/** Assistant settings as the renderer sees them: never the key itself. */
+export type AssistantSettings = {
+  model: string;
+  baseUrl: string;
+  /** An API key is stored (encrypted) in `<userData>/assistant.json`. */
+  hasKey: boolean;
+  /** `LLM_PROXY_KEY` is set in the app's environment (used when no key is stored). */
+  envKey: boolean;
+};
+
+/** Fields to change. `key: ''` removes the stored key. */
+export type AssistantSettingsUpdate = { model?: string; baseUrl?: string; key?: string };
+
+export type AssistantChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+export type AssistantSendRequest = { conversationId: string; messages: AssistantChatMessage[] };
+
+/** One piece of reply text for the reply `messageId` (the id `send` returned). */
+export type AssistantDelta = { conversationId: string; messageId: string; text: string };
+export type AssistantDone = { conversationId: string; messageId: string };
+export type AssistantError = { conversationId: string; messageId: string; message: string };
+
+/**
+ * The LLM proxy, reached through the main process, which holds the key.
+ * `send` starts one streamed reply and returns its id; the reply then comes
+ * as `delta` events and ends with one `done` or one `error` (a cancel ends
+ * with `error` too).
+ */
+export type DesktopAssistantApi = {
+  getSettings: () => Promise<AssistantSettings>;
+  setSettings: (update: AssistantSettingsUpdate) => Promise<AssistantSettings>;
+  send: (request: AssistantSendRequest) => Promise<{ messageId: string }>;
+  cancel: (conversationId: string) => Promise<void>;
+  onDelta: (listener: (event: AssistantDelta) => void) => () => void;
+  onDone: (listener: (event: AssistantDone) => void) => () => void;
+  onError: (listener: (event: AssistantError) => void) => () => void;
+};
+
+export type DesktopApi = {
+  version: string;
+  identity: DesktopIdentityApi;
+  chain: DesktopChainApi;
+  assistant: DesktopAssistantApi;
+};
 
 declare global {
   interface Window {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 
-import type { HexString } from '../app/bytes';
-import { appDatabase } from '../app/database';
+import { type PeerId, appDatabase } from '../app/database';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionStatus, getPeopleConnection } from '../app/statementStore';
+import { ASSISTANT_PEER, type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
@@ -60,7 +60,7 @@ export const App = () => {
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [tab, setTab] = useState<Tab>('chats');
-  const [openPeer, setOpenPeer] = useState<HexString | null>(null);
+  const [openPeer, setOpenPeer] = useState<PeerId | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
 
   useEffect(() => {
@@ -84,6 +84,24 @@ export const App = () => {
       active = false;
     };
   }, [startCount]);
+
+  // The Assistant needs no identity or chain, only the main process.
+  const [assistant, setAssistant] = useState<AssistantChat | null>(null);
+  useEffect(() => {
+    const api = window.desktop?.assistant;
+    if (!api) return;
+    let active = true;
+    const chat = createAssistantChat(api);
+    // Set off the effect's synchronous path, as the connection status is.
+    void Promise.resolve().then(() => {
+      if (active) setAssistant(chat);
+    });
+    return () => {
+      active = false;
+      chat.dispose();
+      setAssistant(null);
+    };
+  }, []);
 
   // The chat manager lives as long as the identity: it starts once the pairing
   // is known and is disposed on logout or a profile change.
@@ -169,7 +187,12 @@ export const App = () => {
             </small>
           </nav>
           {!runtime && !error ? <p>Starting chat...</p> : null}
-          {tab === 'chats' && runtime && openPeer ? <Room peer={openPeer} manager={runtime.manager} onBack={() => setOpenPeer(null)} /> : null}
+          {tab === 'chats' && assistant && openPeer === ASSISTANT_PEER ? (
+            <Room peer={ASSISTANT_PEER} assistant={assistant} onBack={() => setOpenPeer(null)} />
+          ) : null}
+          {tab === 'chats' && runtime && openPeer && openPeer !== ASSISTANT_PEER ? (
+            <Room peer={openPeer} manager={runtime.manager} onBack={() => setOpenPeer(null)} />
+          ) : null}
           {tab === 'chats' && !openPeer ? <Chats onOpen={setOpenPeer} /> : null}
           {tab === 'requests' && runtime ? <Requests manager={runtime.manager} /> : null}
           {tab === 'search' && runtime ? (
@@ -186,6 +209,7 @@ export const App = () => {
               identity={boot.identity}
               deviceKeys={boot.deviceKeys}
               profileId={boot.profileId}
+              assistantApi={window.desktop?.assistant ?? null}
               onReset={async () => {
                 const desktop = window.desktop;
                 if (!desktop) throw new Error('This app runs only inside Polkadot Chat Desktop.');

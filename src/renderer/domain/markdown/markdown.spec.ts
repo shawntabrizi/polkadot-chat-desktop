@@ -1,0 +1,32 @@
+import { describe, expect, it } from 'vitest';
+
+import { markdownToHtml } from './markdown';
+
+// The LLM's reply is untrusted text shown in the app's own page. These check
+// the first layer (markdown-it); DOMPurify, the second, needs a DOM.
+describe('markdownToHtml', () => {
+  it('renders the markdown an assistant writes', () => {
+    const html = markdownToHtml('**bold** and `code`\n\n- one\n- two');
+    expect(html).toContain('<strong>bold</strong>');
+    expect(html).toContain('<code>code</code>');
+    expect(html).toContain('<li>one</li>');
+  });
+
+  it('shows raw HTML as text, so a reply cannot inject markup', () => {
+    const html = markdownToHtml('<img src=x onerror=alert(1)> Vec<T>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img');
+    expect(html).toContain('Vec&lt;T&gt;');
+  });
+
+  it('turns an image into a link, so a reply cannot make the app fetch a URL', () => {
+    const html = markdownToHtml('![logo](https://example.com/a.png)');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('<a href="https://example.com/a.png" target="_blank" rel="noopener noreferrer">logo</a>');
+  });
+
+  it('opens links outside the app and refuses javascript: links', () => {
+    expect(markdownToHtml('[x](https://example.com)')).toContain('target="_blank" rel="noopener noreferrer"');
+    expect(markdownToHtml('[x](javascript:alert(1))')).not.toContain('href="javascript:');
+  });
+});

@@ -5,19 +5,19 @@
  */
 
 import type { HexString } from '../../app/bytes';
-import { type MessageRow, type MessageStatus, type RoomRow, appDatabase, db } from '../../app/database';
+import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
 
 import { type MessageContent, previewOf } from './content';
 
 export const listRooms = async (): Promise<RoomRow[]> =>
   (await db.rooms.toArray()).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
 
-export const listMessages = (peerAccountId: HexString): Promise<MessageRow[]> =>
+export const listMessages = (peerAccountId: PeerId): Promise<MessageRow[]> =>
   db.messages.where('[peerAccountId+timestamp]').between([peerAccountId, -Infinity], [peerAccountId, Infinity]).toArray();
 
 export const getMessage = (messageId: string): Promise<MessageRow | undefined> => db.messages.get(messageId);
 
-const touchRoom = async (peerAccountId: HexString, message: MessageRow, unreadDelta: number): Promise<void> => {
+const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta: number): Promise<void> => {
   const existing = await db.rooms.get(peerAccountId);
   const now = Date.now();
   const newest = !existing || message.timestamp >= existing.lastMessageAt;
@@ -45,7 +45,7 @@ export const addMessage = (row: MessageRow, options: { read?: boolean } = {}): P
   });
 
 /** Make sure a room exists for a contact with nothing said yet (the chat list shows it). */
-export const ensureRoom = (peerAccountId: HexString): Promise<void> =>
+export const ensureRoom = (peerAccountId: PeerId): Promise<void> =>
   appDatabase.transaction('rw', db.rooms, async () => {
     if (await db.rooms.get(peerAccountId)) return;
     const now = Date.now();
@@ -85,5 +85,5 @@ export const applyEdit = (messageId: string, text: string, editedAt: number): Pr
       row.editedAt = editedAt;
     });
 
-export const markRoomRead = (peerAccountId: HexString): Promise<number> =>
+export const markRoomRead = (peerAccountId: PeerId): Promise<number> =>
   db.rooms.update(peerAccountId, { unreadCount: 0 });

@@ -23,3 +23,8 @@ Write the question, what you did meanwhile, and the date.
 
 - **Metadata cache file name.** Step 1a says `<userData>/metadata/<genesis>.bin`. I used `<codeHash>.bin`: polkadot-api hands the cache the runtime code hash, bot-core keys by it, and a genesis key would keep serving old metadata after a runtime upgrade. Keep the code hash?
 - **Packaged app and dev share a profile.** The packaged app is named `polkadot-chat-desktop` (package.json `name`), like `npm run dev`, so it opens the identity in `~/Library/Application Support/polkadot-chat-desktop` (your `shawntest.76`). Because the dmg is unsigned and the keychain entry was made by the dev Electron binary, macOS will ask once for keychain access when the packaged app first reads the identity ("Always Allow" ends it). I did not start the packaged app against that profile. Do you want this, or a separate profile for the packaged app (set `productName: "Polkadot Chat"` in package.json; then the installed app starts at sign-up with its own keychain entry)?
+
+## M4 (2026-09-23)
+
+- **Markdown in contact rooms.** Only Assistant replies render as markdown. Bots (`pca`) also write markdown. Should incoming messages from contacts render as markdown too? It is a small change in `Room.tsx`, with the same sanitizer.
+- **Streaming granularity.** With `auto/deepseek-v4.1-flash` the proxy sends the answer in few, large content deltas (2 for "proxy ok", after about 8 s of reasoning deltas that are not shown). The app shows "Thinking…" during the reasoning. Should the reasoning be shown (for example, dimmed), or is "Thinking…" enough?

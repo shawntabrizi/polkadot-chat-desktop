@@ -1,25 +1,31 @@
 import { type FormEvent, type KeyboardEvent, useEffect, useState } from 'react';
 
 import type { HexString } from '../app/bytes';
-import { type MessageRow, db } from '../app/database';
+import { type AssistantPeerId, type MessageRow, db } from '../app/database';
+import { ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
 import { previewOf } from '../domain/chat/content';
 import type { ChatManager } from '../domain/chat/manager';
-import { listMessages } from '../domain/chat/messages';
+import { listMessages, markRoomRead } from '../domain/chat/messages';
+import { renderMarkdown } from '../domain/markdown/markdown';
 
 import { formatTime } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
-type Props = {
-  peer: HexString;
-  manager: ChatManager;
-  onBack: VoidFunction;
-};
+/**
+ * A contact's room sends through the chat manager. The Assistant's room
+ * (local, not on chain) sends to the LLM proxy instead and has no replies,
+ * reactions or edits; its replies render as markdown.
+ */
+type Props =
+  | { peer: HexString; manager: ChatManager; onBack: VoidFunction }
+  | { peer: AssistantPeerId; assistant: AssistantChat; onBack: VoidFunction };
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂'];
 
 const statusMark = (row: MessageRow): string => {
   switch (row.status) {
     case 'sending':
+    case 'streaming':
       return '…';
     case 'sent':
       return '✓';
@@ -34,8 +40,11 @@ const statusMark = (row: MessageRow): string => {
 
 type Composer = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
 
-export const Room = ({ peer, manager, onBack }: Props) => {
-  const contact = useLiveQuery(() => db.contacts.get(peer), [peer]);
+export const Room = (props: Props) => {
+  const { peer, onBack } = props;
+  const manager = 'manager' in props ? props.manager : null;
+  const assistant = 'assistant' in props ? props.assistant : null;
+  const contact = useLiveQuery(async () => (manager ? db.contacts.get(peer as HexString) : undefined), [peer, manager]);
   const messages = useLiveQuery(() => listMessages(peer), [peer]);
   const [draft, setDraft] = useState('');
   const [composer, setComposer] = useState<Composer>({ mode: 'new' });
@@ -44,23 +53,29 @@ export const Room = ({ peer, manager, onBack }: Props) => {
   // Everything that arrives while the room is open is read.
   const messageCount = messages?.length ?? 0;
   useEffect(() => {
-    void manager.markRead(peer);
+    void (manager ? manager.markRead(peer as HexString) : markRoomRead(peer));
   }, [manager, peer, messageCount]);
+
+  // One assistant reply at a time: Send waits until it ends or is stopped.
+  const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
 
   const byId = new Map((messages ?? []).map(row => [row.messageId, row]));
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text) return;
+    if (!text || answering) return;
     setError(null);
     const current = composer;
     setDraft('');
     setComposer({ mode: 'new' });
     try {
-      if (current.mode === 'edit') await manager.edit(peer, current.target.messageId, text);
-      else if (current.mode === 'reply') await manager.sendMessage(peer, { type: 'reply', messageId: current.target.messageId, text });
-      else await manager.sendMessage(peer, { type: 'text', text });
+      if (assistant) await assistant.send(text);
+      else if (!manager) return;
+      else if (current.mode === 'edit') await manager.edit(peer as HexString, current.target.messageId, text);
+      else if (current.mode === 'reply')
+        await manager.sendMessage(peer as HexString, { type: 'reply', messageId: current.target.messageId, text });
+      else await manager.sendMessage(peer as HexString, { type: 'text', text });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not send.');
     }
@@ -74,10 +89,11 @@ export const Room = ({ peer, manager, onBack }: Props) => {
   };
 
   const toggleReaction = async (row: MessageRow, emoji: string) => {
+    if (!manager) return;
     const mine = row.reactions.some(r => r.emoji === emoji && r.by === 'me');
     setError(null);
     try {
-      await manager.react(peer, row.messageId, emoji, !mine);
+      await manager.react(peer as HexString, row.messageId, emoji, !mine);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not react.');
     }
@@ -93,6 +109,11 @@ export const Room = ({ peer, manager, onBack }: Props) => {
     const { content } = row;
     switch (content.type) {
       case 'text':
+        if (assistant && row.direction === 'incoming') {
+          if (content.text === '') return <em>Thinking…</em>;
+          // Sanitized by renderMarkdown (markdown-it without raw HTML, then DOMPurify).
+          return <div className="md" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(content.text) }} />;
+        }
         return <span style={{ whiteSpace: 'pre-wrap' }}>{content.text}</span>;
       case 'reply': {
         const target = byId.get(content.messageId);
@@ -128,7 +149,7 @@ export const Room = ({ peer, manager, onBack }: Props) => {
           ← Chats
         </button>
       </p>
-      <h2>{contact?.username ?? peer}</h2>
+      <h2>{assistant ? ASSISTANT_USERNAME : (contact?.username ?? peer)}</h2>
       {contact && contact.devices.length === 0 ? <p role="alert">This contact has no known device yet; messages cannot be sent.</p> : null}
       <ol style={{ listStyle: 'none', padding: 0 }} data-testid="messages">
         {messages?.map(row => (
@@ -147,7 +168,7 @@ export const Room = ({ peer, manager, onBack }: Props) => {
             <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
               {formatTime(row.timestamp)} {row.editedAt ? '(edited)' : ''} {statusMark(row)}
               {row.reactions.length > 0 ? <span> · {row.reactions.map(r => r.emoji).join(' ')}</span> : null}
-              {row.direction !== 'system' ? (
+              {row.direction !== 'system' && manager ? (
                 <span style={{ marginLeft: 8 }}>
                   {QUICK_REACTIONS.map(emoji => (
                     <button key={emoji} type="button" onClick={() => void toggleReaction(row, emoji)} title="React">
@@ -196,9 +217,17 @@ export const Room = ({ peer, manager, onBack }: Props) => {
           placeholder="Message (Enter sends, Shift+Enter for a new line)"
           aria-label="Message"
         />
-        <button type="submit" disabled={!draft.trim()}>
+        <button type="submit" disabled={!draft.trim() || answering}>
           {composer.mode === 'edit' ? 'Save' : 'Send'}
         </button>
+        {answering ? (
+          <>
+            {' '}
+            <button type="button" onClick={() => void assistant?.stop()}>
+              Stop
+            </button>
+          </>
+        ) : null}
       </form>
     </section>
   );

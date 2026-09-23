@@ -21,6 +21,7 @@ then fails with "Electron uninstall"). It does nothing when the binary is there.
 - `npm run smoke` — build, start the app hidden, print `SMOKE_OK` when the renderer loads.
 - `npm run package` — build and package an unsigned macOS Apple Silicon `.dmg` into `dist/`.
 - `npm run smoke:packaged` — run the packaged app with `--smoke` against a throwaway profile.
+- `LLM_PROXY_KEY=... npm run e2e:assistant` — send one prompt through the main-process LLM proxy client and print the streamed reply, then `ASSISTANT_OK`.
 - `npm run identity:register -- <name> [--profile devnet|paseo]` — create and register an identity without Electron (test use; stores it unencrypted under `.agent-runs/`).
 
 Profiles: the packaged app keeps its profile in

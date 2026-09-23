@@ -87,9 +87,15 @@ export type RequestRow = {
   createdAt: number;
 };
 
+/** The built-in assistant's room and message key: local, not an account on chain. */
+export type AssistantPeerId = 'local:assistant';
+
+/** Who a room is with: a contact's identity account, or the local assistant. */
+export type PeerId = HexString | AssistantPeerId;
+
 /** One chat per contact. Unread counts what arrived while the room was not open. */
 export type RoomRow = {
-  peerAccountId: HexString;
+  peerAccountId: PeerId;
   unreadCount: number;
   lastMessageAt: number;
   lastPreview: string;
@@ -102,15 +108,16 @@ export type MessageDirection = 'incoming' | 'outgoing' | 'system';
 /**
  * Outgoing: `sending` until the session queued it, `sent` once on a
  * statement, `delivered` on the peer's ACK, `failed` if it can never go out.
- * Incoming and system rows are `received`.
+ * Incoming and system rows are `received`. An assistant reply is `streaming`
+ * while its text still arrives, then `received`, or `failed` if it broke off.
  */
-export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'failed' | 'received';
+export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'failed' | 'received' | 'streaming';
 
 export type Reaction = { emoji: string; by: 'me' | 'peer' };
 
 export type MessageRow = {
   messageId: string;
-  peerAccountId: HexString;
+  peerAccountId: PeerId;
   timestamp: number;
   direction: MessageDirection;
   status: MessageStatus;
@@ -147,7 +154,7 @@ export const db: {
   settings: Table<SettingRow, SettingKey>;
   contacts: Table<ContactRow, HexString>;
   requests: Table<RequestRow, string>;
-  rooms: Table<RoomRow, HexString>;
+  rooms: Table<RoomRow, PeerId>;
   messages: Table<MessageRow, string>;
 } = {
   device: dexie.table('device'),
