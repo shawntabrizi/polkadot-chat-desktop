@@ -70,6 +70,13 @@ Rules that shape the code:
 - Node-only code (`node:wasi`, `node:fs`, `electron`) lives in `src/main` only.
   `src/renderer` must build for the browser. Enforce with an eslint
   `no-restricted-imports` rule (M0 adds it).
+- **Best block first, finality as a signal.** Every chain read and every wait
+  uses the best (latest) block, never the finalized block: username lookups,
+  identifier-key lookups, sign-up confirmation, message delivery, contract
+  calls. Finality is shown, not awaited: a state such as `sent → in block →
+  finalized` with a visible indicator, and a reorg is handled by re-reading,
+  never by blocking the user. Statement Store traffic has no finality at all.
+  (Rule from Shawn, 2026-09-23.)
 - `npm run check` = `tsc --noEmit -p tsconfig.json && vitest run && eslint .`.
   It must be green at the end of every milestone.
 

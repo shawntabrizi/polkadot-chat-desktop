@@ -39,6 +39,10 @@ milestone file you were given in `docs/milestones/`. Do only that milestone.
 - Never log, print, or commit a mnemonic, seed, private key, or API key. Not in
   tests, not in docs, not in `console.log`. Use the `LLM_PROXY_KEY` environment
   variable for the proxy key; never write its value anywhere.
+- Chain reads and waits use the best block, never the finalized block.
+  Show finality as an indicator; never block on it (PLAN.md "Best block
+  first"). With `polkadot-api` that means `getTypedApi(...).query.*.getValue(..., { at: 'best' })`
+  and `client.bestBlocks$` / `blocks$`, not `finalizedBlock$`.
 - TypeScript strict. Small modules, plain functions, explicit types. No class
   hierarchies. Comments explain why, not what.
 - Tests: vitest. Anything that touches the Statement Store uses
