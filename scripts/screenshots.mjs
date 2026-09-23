@@ -4,7 +4,14 @@
 // Berlin Day and Berlin Night to .agent-runs/screens/<theme>/:
 //   signup.png                         a fresh profile
 //   room.png assistant.png chats.png   a seeded identity (PCD_SCREENSHOT_IDENTITY)
-//   requests.png settings.png
+//   requests.png settings.png keyboard.png
+//
+// M6: the seeded profile's Assistant runs on PCD_SCREENSHOT_ENGINE (default
+// `claude`, tools off; `proxy` for the LLM proxy), so assistant.png shows the
+// engine in the header. room.png mutes the room (the list shows the icon);
+// chats.png shows a "Draft:" preview left in the Assistant room (cleared
+// again afterwards); settings.png shows the Chat and Assistant sections after
+// "Detect installed"; keyboard.png the Keyboard section.
 //
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
@@ -37,6 +44,8 @@ const BOT = 'pcdpeer.47';
 const identitySource = process.env.PCD_SCREENSHOT_IDENTITY;
 const requester = process.env.PCD_SCREENSHOT_REQUESTER ?? 'pcdtestggji';
 const roomWith = process.env.PCD_SCREENSHOT_ROOM_WITH ?? null;
+const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
+const DRAFT = 'Ask about the People chain later';
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const t0 = Date.now();
@@ -129,6 +138,16 @@ const launch = async profile => {
     saved.push(file);
     log('saved', `${theme}/${name}.png`);
   };
+  const key = async (keyName, code, extra = {}) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: keyName, code, ...extra });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: keyName, code, ...extra });
+  };
+  /** Empties a React-controlled field the way a person would: select all, delete. */
+  const clearField = async selector => {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+    await key('a', 'KeyA', { modifiers: 4, commands: ['selectAll'] });
+    await key('Backspace', 'Backspace', { windowsVirtualKeyCode: 8 });
+  };
   const setTheme = async theme => {
     // What theme.ts setTheme does (the key and the attribute), then a reload
     // so the anti-flash script applies it before the first paint.
@@ -144,7 +163,7 @@ const launch = async profile => {
   };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
-  return { evaluate, waitFor, exists, click, clickText, type, capture, setTheme, quit, send };
+  return { evaluate, waitFor, exists, click, clickText, type, capture, setTheme, quit, send, key, clearField };
 };
 
 // ── Sign-up (a fresh profile per theme) ──────────────────────────────────
@@ -171,7 +190,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'assistant', 'settings', 'requests']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'assistant', 'settings', 'keyboard', 'requests']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -205,6 +224,13 @@ app.whenReady().then(() => {
     process.exit(1);
   }
   log('seeded', source.username);
+  // The Assistant's engine, as Settings would write it (tools off).
+  writeFileSync(
+    join(profile, 'assistant.json'),
+    `${JSON.stringify({ version: 1, model: 'auto/deepseek-v4.1-flash', baseUrl: 'https://llm.substrate.dev', keyEncrypted: null, engine, tools: [] }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  log('assistant engine', engine);
 
   // An incoming request for requests.png, from another test identity. The
   // script waits for an accept that never comes and times out; it is stopped
@@ -291,6 +317,9 @@ app.whenReady().then(() => {
         // A reaction on the echo, so the chips show.
         await app.evaluate(`(() => { const rows = document.querySelectorAll('[data-testid=message-incoming]'); rows[rows.length - 1].querySelector('[aria-label="React with 👍"]')?.click(); return true; })()`);
         await app.waitFor(`document.querySelectorAll('[aria-pressed=true]').length > 0`, 20_000);
+        // Mute the room (once: the profile is shared by both themes).
+        await app.click('[data-testid=mute-toggle][aria-pressed=false]');
+        await app.waitFor(app.exists('[data-testid=mute-toggle][aria-pressed=true]'), 10_000);
       });
 
       await shot('assistant', async () => {
@@ -302,7 +331,8 @@ app.whenReady().then(() => {
           await sleep(1000);
         }
         const done = `document.querySelectorAll('[data-testid=markdown]').length > 0 && ![...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Stop')`;
-        if (!(await app.waitFor(done, 120_000))) throw new Error('no assistant reply (is LLM_PROXY_KEY set?)');
+        if (!(await app.waitFor(done, 180_000))) throw new Error(`no assistant reply from engine ${engine}`);
+        await app.waitFor(app.exists('[data-testid=assistant-engine]'), 10_000);
       });
 
       // A reload clears the selection: the list with the empty right pane.
@@ -312,7 +342,23 @@ app.whenReady().then(() => {
       await app.waitFor(app.exists('[data-testid=new-requests]'), theme === THEMES[0] ? 120_000 : 15_000);
       await shot('chats', async () => {
         await app.waitFor(`document.querySelectorAll('[data-testid=chat-row]').length > 0`, 20_000);
+        // A draft left in the Assistant room; Esc goes back to the list.
+        await app.click('[data-testid=chat-row-assistant]');
+        await app.waitFor(app.exists('textarea[aria-label=Message]'), 10_000);
+        await app.type('textarea[aria-label=Message]', DRAFT);
+        await sleep(800);
+        await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+        if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=chat-row-assistant]')].some(r => r.textContent.includes('Draft: ${DRAFT}'))`, 10_000))) {
+          throw new Error('no draft preview in the list');
+        }
       });
+      // The draft goes again, so the next theme's Assistant room starts empty.
+      await app.click('[data-testid=chat-row-assistant]');
+      await app.waitFor(`document.querySelector('textarea[aria-label=Message]')?.value === ${JSON.stringify(DRAFT)}`, 10_000);
+      await app.clearField('textarea[aria-label=Message]');
+      await sleep(800);
+      await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+      await app.waitFor(app.exists('[data-testid=empty-room]'), 10_000);
 
       await shot('requests', async () => {
         if (!(await app.click('[data-testid=new-requests]'))) throw new Error(`no incoming request arrived (see .agent-runs/screens/requester.log)`);
@@ -325,6 +371,13 @@ app.whenReady().then(() => {
         await app.click('[aria-label="Back to chats"]');
         await app.click('[aria-label=Settings]');
         if (!(await app.waitFor(app.exists('[data-testid=assistant-key-state]'), 20_000))) throw new Error('settings did not load');
+        await app.click('[data-testid=engine-detect]');
+        if (!(await app.waitFor(app.exists('[data-testid=engine-status]'), 30_000))) throw new Error('engine detection did not answer');
+        await app.evaluate(`document.querySelector('[data-testid=send-key-select]').closest('section').scrollIntoView({ block: 'start' }); true`);
+      });
+
+      await shot('keyboard', async () => {
+        await app.evaluate(`document.querySelector('[data-testid=keyboard-shortcuts]').closest('section').scrollIntoView({ block: 'center' }); true`);
       });
     } catch (error) {
       missing.push(`${theme}: ${error.message}`);

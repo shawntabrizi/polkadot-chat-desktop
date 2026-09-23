@@ -3,7 +3,8 @@ import { toast } from 'sonner';
 
 import { appDatabase } from '../app/database';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
-import { type ConnectionStatus, getPeopleConnection } from '../app/statementStore';
+import { type ConnectionSnapshot, createConnectionTracker } from '../app/connectionState';
+import { getPeopleConnection } from '../app/statementStore';
 import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import type { DeviceKeys } from '../domain/device/keys';
@@ -56,7 +57,7 @@ export const App = () => {
   const [startCount, setStartCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
-  const [connection, setConnection] = useState<ConnectionStatus>('connecting');
+  const [connection, setConnection] = useState<ConnectionSnapshot>({ state: 'connecting', notConnectedSince: null });
 
   useEffect(() => {
     let active = true;
@@ -108,11 +109,12 @@ export const App = () => {
     let active = true;
     let manager: ChatManager | null = null;
     const connection = getPeopleConnection(NETWORK_PROFILES[profileId]);
-    const stopStatus = connection.onStatus(setConnection);
+    const tracker = createConnectionTracker(connection);
+    const stopStatus = tracker.subscribe(() => setConnection(tracker.snapshot()));
     // The initial status is read off the effect's synchronous path (a
     // subscription only reports changes).
     void Promise.resolve().then(() => {
-      if (active) setConnection(connection.status());
+      if (active) setConnection(tracker.snapshot());
     });
     const lookup = createIdentityLookup(connection);
     createChatManager({
@@ -134,6 +136,7 @@ export const App = () => {
     return () => {
       active = false;
       stopStatus();
+      tracker.dispose();
       manager?.dispose();
       setRuntime(null);
     };

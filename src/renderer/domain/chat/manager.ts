@@ -28,7 +28,7 @@ import { addRequest, getRequest, listRequests, setRequestStatus } from '../reque
 import { type MessageContent, type OutgoingContent, fromWire, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { IdentityChannelEvent } from './identityEvents';
-import { addMessage, applyEdit, applyReaction, ensureRoom, markRoomRead, setMessageStatus } from './messages';
+import { addMessage, applyEdit, applyReaction, ensureRoom, getMessage, markRoomRead, setMessageStatus } from './messages';
 import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
 
@@ -49,6 +49,8 @@ export type ChatManager = {
   sendMessage: (peer: HexString, content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string }) => Promise<void>;
   react: (peer: HexString, messageId: string, emoji: string, add: boolean) => Promise<void>;
   edit: (peer: HexString, messageId: string, text: string) => Promise<void>;
+  /** Sends a `failed` message again with the same id and timestamp; `failed` again if it still cannot go out. */
+  retry: (peer: HexString, messageId: string) => Promise<void>;
   markRead: (peer: HexString) => Promise<void>;
   dispose: VoidFunction;
 };
@@ -371,6 +373,20 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       const now = Date.now();
       await applyEdit(messageId, text, now);
       await submit(peer, { type: 'edit', messageId, text }, { messageId: randomId(), timestamp: now });
+    },
+
+    retry: async (peer, messageId) => {
+      const row = await getMessage(messageId);
+      if (!row || row.peerAccountId !== peer || row.direction !== 'outgoing' || row.status !== 'failed') return;
+      if (row.content.type !== 'text' && row.content.type !== 'reply') throw new Error('Only a text message can be sent again.');
+      const content: OutgoingContent =
+        row.content.type === 'reply' ? { type: 'reply', messageId: row.content.messageId, text: row.content.text } : { type: 'text', text: row.content.text };
+      await setMessageStatus(messageId, 'sending');
+      // The same id: the peer dedups by it, so a first attempt that did land is not shown twice.
+      await submit(peer, content, { messageId, timestamp: row.timestamp }).catch(async error => {
+        await setMessageStatus(messageId, 'failed');
+        throw error;
+      });
     },
 
     markRead: async peer => {

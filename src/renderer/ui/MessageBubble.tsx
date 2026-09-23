@@ -91,6 +91,8 @@ export type BubbleActions = {
   react?: (emoji: string) => void;
   reply?: () => void;
   edit?: () => void;
+  /** A failed own message: send it again with the same id. */
+  retry?: () => void;
 };
 
 type Props = {
@@ -104,12 +106,14 @@ type Props = {
   thinking?: boolean;
   /** Null for a read-only bubble (a request's welcome message). */
   actions: BubbleActions | null;
+  /** A quiet line under the bubble: what a running assistant reply is doing. */
+  note?: string | null;
 };
 
 const textOf = (row: MessageRow): string | null =>
   row.content.type === 'text' || row.content.type === 'reply' ? row.content.text : row.content.type === 'richText' ? row.content.text : null;
 
-export const MessageBubble = ({ row, quote, first, last, thinking = false, actions }: Props) => {
+export const MessageBubble = ({ row, quote, first, last, thinking = false, actions, note = null }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const own = row.direction === 'outgoing';
   const text = textOf(row);
@@ -231,6 +235,24 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, actio
             {own ? <StatusIcon status={row.status} /> : null}
           </div>
         </div>
+        {own && row.status === 'failed' ? (
+          <p className="text-caption text-fg-error" data-testid="not-sent">
+            Not sent
+            {actions?.retry ? (
+              <>
+                {' · '}
+                <button type="button" className="cursor-pointer underline-offset-2 hover:underline" onClick={actions.retry}>
+                  Retry
+                </button>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        {note ? (
+          <p className="text-caption text-fg-tertiary" data-testid="assistant-activity">
+            {note}
+          </p>
+        ) : null}
         {reactions.length > 0 ? (
           <div className="flex flex-wrap gap-1">
             {reactions.map(reaction => (

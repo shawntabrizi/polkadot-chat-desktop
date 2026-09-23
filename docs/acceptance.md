@@ -747,3 +747,153 @@ Error state: a scratch copy of the sign-up part of the screenshot script (outsid
 
 - Themes Lisbon, Malta and Tokyo were not screenshotted (step 11 asks for Berlin Day and Night). They are selectable in Settings.
 - `git status --short` is checked after the commit (it cannot be in the committed file).
+
+## M6
+
+Run on 2026-09-23 (macOS, Apple Silicon). `claude` 2.1.280, `codex` 0.154.0, `opencode` 1.14.21 installed; `LLM_PROXY_KEY` set in the environment (value not printed). The run happens inside a Claude Code session.
+
+### `npm run check`
+
+```
+ Test Files  38 passed (38)
+      Tests  235 passed (235)
+   Start at  13:40:12
+   Duration  3.69s (transform 1.33s, setup 700ms, import 8.09s, tests 7.02s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (100 files)
+```
+
+(`tsc` and `eslint` print nothing when clean; exit code 0.)
+
+### `npm run smoke`
+
+```
+✓ built in 180ms
+SMOKE_OK
+```
+
+### `npm run e2e:engines`
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:engines
+> node scripts/e2e-engines.mjs
+
+workspace /private/var/folders/_1/q03733qd0pv42n1dvkcvyx0c0000gn/T/pcd-e2e-engines-3ewQa0 (empty, tools off)
+prompt: Reply with exactly: engine ok
+ENGINE proxy ok engine ok
+  LLM proxy · 6.3s · 1 deltas · events thinking,done · session no
+ENGINE claude ok engine ok
+  2.1.280 (Claude Code) · 3.5s · 2 deltas · events thinking,done · session yes
+ENGINE codex fail Codex: You hit your spend cap set by the owner of your works
+  codex-cli 0.154.0 · error: Codex: You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.
+ENGINE opencode fail OpenCode: litellm.BadRequestError: You passed in model=deeps
+  1.14.21 · error: OpenCode: litellm.BadRequestError: You passed in model=deepseek-flash. There are no healthy deployments for this modelNo fallback model group found for original model_group=deepseek-flash. Fallbacks=[{'auto/deepseek-v4.1-flash': ['openrouter/deepseek/deepseek-v4.1-flash']}]. Received Model Group=dee
+ENGINES_FAIL 2 of 4 did not answer
+exit 6
+```
+
+**Not ENGINES_OK.** The proxy and Claude Code answered. Codex and OpenCode started, spoke their JSON protocol, and reported an account or configuration error that the app shows as it is:
+
+- Codex: the machine's Codex account is over its workspace spend cap. The same error comes from a plain `codex exec` outside the app (checked with and without `--ignore-user-config`).
+- OpenCode: the machine's OpenCode config (`~/.config/opencode/opencode.json`) sets the default model `parity-proxy/deepseek-flash`, and the LLM proxy has no deployment for `deepseek-flash`. The same error comes from a plain `opencode run` outside the app. Before the app passed `LLM_PROXY_KEY` to OpenCode (the config reads `{env:LLM_PROXY_KEY}`), the error was "No api key passed in"; see decisions.md.
+- Claude Code did not refuse as a nested session: the app drops `CLAUDECODE` and every `CLAUDE_CODE_*` variable from the child's environment (step 10), so the "skipped (nested session)" branch did not trigger.
+
+Both fixes are outside this repo (docs/questions.md). With them, the run is expected to reach ENGINES_OK; that is not proven here.
+
+### Tool policy, live (Claude Code)
+
+A scratch script (not committed) ran the claude engine twice in a temp workspace holding `notes.txt` ("The secret word is banana."), asking for the word:
+
+```
+tools=[] answer="unknown\n\nTools are off in this session, so I can't read notes.txt. You can turn " events=thinking,done
+tools=[read] answer="banana" events=thinking,tool_use:reading notes.txt,done
+```
+
+The first try, before the engines told the model about its tools, answered tools-off with invented `<tool_result>` markup and the word "lighthouse"; `toolsInstruction` (decisions.md) fixed that.
+
+### `npm run screenshots`
+
+```
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
+...
+48.1s saved berlin-night/room.png
+48.9s saved berlin-night/assistant.png
+51.6s saved berlin-night/chats.png
+54.0s saved berlin-night/requests.png
+55.9s saved berlin-night/settings.png
+56.7s saved berlin-night/keyboard.png
+57.3s seeded profile removed: true
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+```
+
+The seeded identity is `pcdecejakd.11`; the room is with the live bot `pcdpeer.47`; the Assistant runs on Claude Code (tools off).
+
+What the PNGs show (all read): `assistant.png` has the header "Claude Code, in this app · tools: off" and a markdown answer; `room.png` has the room muted (BellOff in the header); `chats.png` has "Draft: Ask about the People chain…" on the Assistant row and the BellOff icon on `pcdpeer.47`; `settings.png` has the Chat section (send key, Notifications, Sound) and the Assistant section after "Detect installed" (Proxy "LLM proxy", Claude Code 2.1.280, Codex 0.154.0, OpenCode 1.14.21; Tools checkboxes and the workspace note); `keyboard.png` has the Keyboard section.
+
+Found in the first run and fixed: in Berlin Night the room was no longer muted. A new message rewrote the room row (`touchRoom` → `put`) and dropped `muted`. `touchRoom` now keeps it; a spec covers it; the second run (above) shows the icon in both themes.
+
+### Live keyboard and unread check
+
+A scratch CDP script (not committed; same launch and seeding code as the screenshot script) drove the built app with a fresh profile of `pcdecejakd.11`. `CHECK_DRAFT_TARGET=pcdpeer.47` sends a real chat request to the bot from the draft room. Output:
+
+```
+PASS connection label (Connected)
+PASS window title (Polkadot Chat)
+PASS draft room composer focused
+PASS Esc closes the draft
+PASS Enter in the draft room sends the request (Enter mode)
+PASS the peer accepted; its room opened
+PASS Up arrow edits the last own message
+PASS Esc cancels the edit and keeps the room
+PASS the echo is unread while another room is open
+PASS window title counts it ((1) Polkadot Chat)
+PASS "New messages" sits above the unread echo
+PASS seen in the focused window: read, title cleared (window focused)
+PASS Cmd+K opens New chat with the field focused
+PASS Esc closes the panel
+PASS Cmd+N opens New chat
+PASS Cmd+1 opens the first chat (Assistant)
+PASS composer focused on open
+PASS Cmd+Down moves to the next chat (pcdpeer.47)
+PASS Alt+Up moves back
+PASS Shift+Enter adds a newline in Enter mode
+PASS Cmd+, opens Settings
+PASS Esc from Settings returns to the empty room
+PASS send key setting saved
+PASS Enter adds a newline in Cmd+Enter mode
+PASS Cmd+Enter sends in Cmd+Enter mode (0 -> 1)
+PASS composer refocused after send
+PASS notify:show IPC accepted
+PASS title after the checks (Polkadot Chat)
+```
+
+A first run found that ⌥↑ in a contact room started an edit instead of moving to the previous chat (the composer's ↑ handler ignored modifiers). Fixed: only a plain ↑ edits.
+
+### Not run / not seen
+
+- **Native notification banners.** `notify:show` was accepted over IPC and `app:setBadge` is called on every unread change, but I did not look at the macOS screen, so I did not see a banner, the dock badge, or a click on a banner. The click path (restore, show, focus, `notify:open` with the room or request) is covered by `src/main/notify.spec.ts` with a fake window. Unpackaged Electron may not show banners at all.
+- **The macOS menu** cannot be captured by a CDP page screenshot. Its template (app menu with About, Preferences… ⌘, → `menu:settings`, Hide, Quit; Edit roles; View with Reload and DevTools in dev only; Window; Help → README) is covered by `src/main/menu.spec.ts`. The spell-check context menu was not exercised.
+- **Jump-to-bottom button and the reconnect banner** were not screenshotted (the rooms were short and the connection stayed up). The banner rule (5 s) is covered by `connectionState.spec.ts`.
+- **Failed send → "Not sent · Retry"** was not seen live (no send failed); `manager.retry` is covered by two specs.
+- **Stop on a CLI engine** was not pressed live; SIGTERM then SIGKILL after 3 s is covered by a spec against a real child process that ignores SIGTERM.
+- `git status --short` is checked after the commit.

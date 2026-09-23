@@ -28,6 +28,8 @@ const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta
     lastPreview: newest ? previewOf(message.content) : existing.lastPreview,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
+    // A new message must not unmute the room.
+    ...(existing?.muted ? { muted: true } : {}),
   });
 };
 
@@ -87,3 +89,10 @@ export const applyEdit = (messageId: string, text: string, editedAt: number): Pr
 
 export const markRoomRead = (peerAccountId: PeerId): Promise<number> =>
   db.rooms.update(peerAccountId, { unreadCount: 0 });
+
+/** A muted room does not notify and does not count in the badge (M6 step 7). */
+export const setRoomMuted = (peerAccountId: PeerId, muted: boolean): Promise<number> => db.rooms.update(peerAccountId, { muted });
+
+/** Unread messages of the rooms that are not muted: the window title and the dock badge. */
+export const countUnread = async (): Promise<number> =>
+  (await db.rooms.toArray()).reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0);

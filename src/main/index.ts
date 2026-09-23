@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
 import { registerIpc } from './ipc';
+import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
 import { loadWindowBounds, rememberWindowBounds } from './windowState';
 
@@ -31,8 +32,10 @@ function createWindow(smoke: boolean): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      spellcheck: true,
     },
   });
+  installContextMenu(win);
 
   // Message text (assistant replies included) renders links with
   // target=_blank. They open in the system browser, never in a new app window
@@ -74,10 +77,27 @@ function watchSmoke(win: BrowserWindow): void {
   });
 }
 
+let mainWindow: BrowserWindow | null = null;
+const getWindow = (): BrowserWindow | null => mainWindow;
+
 void app.whenReady().then(() => {
   setMetadataCacheDir(join(app.getPath('userData'), 'metadata'));
-  registerIpc();
-  createWindow(process.argv.includes('--smoke'));
+  registerIpc(getWindow);
+  installAppMenu(getWindow);
+  mainWindow = createWindow(process.argv.includes('--smoke'));
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+});
+
+// macOS: clicking the dock icon with no window open opens one again.
+app.on('activate', () => {
+  if (mainWindow === null && app.isReady()) {
+    mainWindow = createWindow(false);
+    mainWindow.on('closed', () => {
+      mainWindow = null;
+    });
+  }
 });
 
 app.on('window-all-closed', () => {

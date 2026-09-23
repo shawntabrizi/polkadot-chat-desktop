@@ -44,6 +44,18 @@ const api: DesktopApi = {
     onDelta: listen(IPC.assistantDelta),
     onDone: listen(IPC.assistantDone),
     onError: listen(IPC.assistantError),
+    onActivity: listen(IPC.assistantEvent),
+    detect: () => ipcRenderer.invoke(IPC.assistantDetect),
+  },
+  app: {
+    setBadge: count => {
+      void ipcRenderer.invoke(IPC.appSetBadge, count);
+    },
+    notify: request => {
+      void ipcRenderer.invoke(IPC.notifyShow, request);
+    },
+    onNotifyOpen: listen(IPC.notifyOpen),
+    onMenuSettings: listener => listen<void>(IPC.menuSettings)(() => listener()),
   },
 };
 

@@ -1,6 +1,8 @@
 import { Copy, Eye, EyeOff } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
+import { DEFAULT_CHAT_PREFS, type SendKey, readChatPrefs, writeNotifications, writeSendKey, writeSound } from '../app/chatPrefs';
+import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
 import type { UserIdentity } from '../domain/identity/userIdentity';
@@ -9,9 +11,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-import type { AssistantSettings, DesktopAssistantApi } from '../../shared/desktop-api';
+import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
 
+import { Checkbox, Switch } from './controls';
+import { ENGINE_LABELS, TOOL_CHOICES } from './engines';
 import { plainError, toHex } from './format';
+import { useLiveQuery } from './useLiveQuery';
 
 type Props = {
   username: string;
@@ -126,9 +131,74 @@ const AppearanceSection = () => {
   );
 };
 
+/** A label and its switch on one row; the whole row is the hit area. */
+const SwitchRow = ({ id, label, checked, onChange, testId }: { id: string; label: string; checked: boolean; onChange: (on: boolean) => void; testId?: string }) => (
+  <div className="flex items-center justify-between gap-4">
+    <label htmlFor={id} className="cursor-pointer text-body-m text-fg-primary">
+      {label}
+    </label>
+    <Switch id={id} checked={checked} onCheckedChange={onChange} data-testid={testId} />
+  </div>
+);
+
+const ChatSection = () => {
+  const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
+  const mod = isMac() ? '⌘ Enter' : 'Ctrl Enter';
+  return (
+    <Section title="Chat">
+      <Field label="Send message with" htmlFor="send-key">
+        <Select value={prefs.sendKey} onValueChange={value => void writeSendKey(value as SendKey)}>
+          <SelectTrigger id="send-key" className="w-64 rounded-nested text-body-m" data-testid="send-key-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="enter">Enter</SelectItem>
+            <SelectItem value="mod-enter">{mod}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-body-s text-fg-tertiary">
+          {prefs.sendKey === 'enter' ? 'Shift Enter adds a new line.' : 'Enter adds a new line.'}
+        </p>
+      </Field>
+      <SwitchRow id="notifications" label="Notifications" checked={prefs.notifications} onChange={on => void writeNotifications(on)} testId="notifications-switch" />
+      <SwitchRow id="sound" label="Sound" checked={prefs.sound} onChange={on => void writeSound(on)} testId="sound-switch" />
+    </Section>
+  );
+};
+
+/** The shortcuts of M6 step 4, as the keys read on this computer. */
+const shortcutRows = (): [string, string][] => {
+  const mod = primaryModifierLabel();
+  const alt = isMac() ? '⌥' : 'Alt+';
+  return [
+    [`${mod}K or ${mod}N`, 'New chat'],
+    [`${mod},`, 'Settings'],
+    ['Esc', 'Close the panel, or go back to the chat list'],
+    [`${mod}↑ / ${mod}↓ or ${alt}↑ / ${alt}↓`, 'Previous or next chat'],
+    [`${mod}1 … ${mod}9`, 'Open the first to ninth chat'],
+    ['↑ in an empty message field', 'Edit your last message'],
+    ['Esc in the message field', 'Cancel the reply or edit'],
+  ];
+};
+
+const KeyboardSection = () => (
+  <Section title="Keyboard">
+    <dl className="flex flex-col" data-testid="keyboard-shortcuts">
+      {shortcutRows().map(([keys, action]) => (
+        <div key={keys} className="-mx-2 flex items-baseline gap-4 rounded-small px-2 py-1.5 transition-colors hover:bg-selection-container-hover">
+          <dt className="w-56 shrink-0 text-body-s text-fg-primary">{keys}</dt>
+          <dd className="text-body-s text-fg-secondary">{action}</dd>
+        </div>
+      ))}
+    </dl>
+  </Section>
+);
+
 /**
- * The Assistant's model, proxy URL and API key. The key goes to the main
- * process and never comes back: the screen only shows whether one is stored.
+ * Who answers the Assistant (the proxy, or a coding-agent CLI on this
+ * computer), the tools a CLI may use, and the proxy's model, URL and key.
+ * The key goes to the main process and never comes back: the screen only
+ * shows whether one is stored.
  */
 const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
@@ -137,6 +207,8 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
   const [key, setKey] = useState('');
   const [status, setStatus] = useState<{ text: string; tone: 'plain' | 'error' } | null>(null);
   const [testing, setTesting] = useState(false);
+  const [detected, setDetected] = useState<AssistantEngineStatus[] | null>(null);
+  const [detecting, setDetecting] = useState(false);
 
   const show = (next: AssistantSettings) => {
     setSettings(next);
@@ -174,6 +246,17 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
     }
   };
 
+  const detect = async () => {
+    setDetecting(true);
+    try {
+      setDetected(await api.detect());
+    } catch (cause) {
+      setStatus({ text: `${plainError(cause, 'The search for installed engines failed.')} Try again.`, tone: 'error' });
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   if (!settings) {
     return (
       <Section title="Assistant">
@@ -181,13 +264,80 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
       </Section>
     );
   }
+  const proxy = settings.engine === 'proxy';
   const keyState = settings.hasKey
     ? 'key stored'
     : settings.envKey
       ? 'no key stored; the app uses the proxy key from its environment'
       : 'no key stored';
+  const toggleTool = (tool: AssistantTool, on: boolean) => {
+    const next = on ? [...settings.tools, tool] : settings.tools.filter(entry => entry !== tool);
+    // Shell implies Read and Write, Write implies Read (the policy closes
+    // them): turning Read off also turns off what needs it.
+    const needsRead: AssistantTool[] = ['write', 'bash'];
+    const cleaned = !on && tool === 'read' ? next.filter(entry => !needsRead.includes(entry)) : !on && tool === 'write' ? next.filter(entry => entry !== 'bash') : next;
+    void save({ tools: cleaned });
+  };
+  const detectedFor = (id: AssistantEngineId) => detected?.find(entry => entry.id === id);
   return (
     <Section title="Assistant">
+      <div className="flex flex-col gap-4">
+        <Field label="Engine" htmlFor="assistant-engine">
+          <div className="flex flex-wrap items-center gap-2">
+            <Select value={settings.engine} onValueChange={value => void save({ engine: value as AssistantEngineId })}>
+              <SelectTrigger id="assistant-engine" className="w-64 rounded-nested text-body-m" data-testid="engine-select">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(ENGINE_LABELS) as AssistantEngineId[]).map(id => (
+                  <SelectItem key={id} value={id}>
+                    {ENGINE_LABELS[id]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-fit rounded-medium text-label-m"
+              onClick={() => void detect()}
+              disabled={detecting}
+              data-testid="engine-detect"
+            >
+              {detecting ? 'Looking…' : 'Detect installed'}
+            </Button>
+          </div>
+        </Field>
+        {detected ? (
+          <dl className="flex flex-col rounded-nested bg-surface-nested px-3 py-2" data-testid="engine-status">
+            {detected.map(entry => (
+              <div key={entry.id} className="flex items-baseline gap-4 py-1">
+                <dt className="w-32 shrink-0 text-body-s text-fg-primary">{entry.label === 'Proxy' ? ENGINE_LABELS.proxy : ENGINE_LABELS[entry.id]}</dt>
+                <dd className={entry.installed ? 'min-w-0 truncate text-body-s text-fg-secondary' : 'text-body-s text-fg-tertiary'}>
+                  {entry.installed ? (entry.version ?? 'installed') : 'not installed'}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {proxy ? null : (
+          <div className="flex flex-col gap-2" data-testid="assistant-tools">
+            <p className="text-label-m text-fg-secondary">Tools</p>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              {TOOL_CHOICES.map(choice => (
+                <label key={choice.id} className="flex cursor-pointer items-center gap-2 text-body-m text-fg-primary">
+                  <Checkbox checked={settings.tools.includes(choice.id)} onCheckedChange={value => toggleTool(choice.id, value === true)} aria-label={choice.label} />
+                  {choice.label}
+                </label>
+              ))}
+            </div>
+            <p className="text-body-s text-fg-tertiary">
+              Tools run inside the assistant workspace folder only.{' '}
+              {detectedFor(settings.engine)?.installed === false ? `${ENGINE_LABELS[settings.engine]} is not installed on this computer.` : null}
+            </p>
+          </div>
+        )}
+      </div>
       <form
         className="flex flex-col gap-4"
         onSubmit={event => {
@@ -195,37 +345,47 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
           void save({ model, baseUrl, ...(key ? { key } : {}) });
         }}
       >
-        <Field label="Model" htmlFor="assistant-model">
-          <Input id="assistant-model" value={model} onChange={event => setModel(event.target.value)} aria-label="Model" className={inputClass} />
-        </Field>
-        <Field label="Base URL" htmlFor="assistant-base-url">
-          <Input
-            id="assistant-base-url"
-            value={baseUrl}
-            onChange={event => setBaseUrl(event.target.value)}
-            aria-label="Base URL"
-            className={inputClass}
-          />
-        </Field>
-        <Field label="API key" htmlFor="assistant-key">
-          <Input
-            id="assistant-key"
-            type="password"
-            value={key}
-            onChange={event => setKey(event.target.value)}
-            autoComplete="off"
-            placeholder={settings.hasKey ? 'key stored' : 'sk-…'}
-            aria-label="API key"
-            className={inputClass}
-          />
+        {proxy ? (
+          <>
+            <Field label="Model" htmlFor="assistant-model">
+              <Input id="assistant-model" value={model} onChange={event => setModel(event.target.value)} aria-label="Model" className={inputClass} />
+            </Field>
+            <Field label="Base URL" htmlFor="assistant-base-url">
+              <Input
+                id="assistant-base-url"
+                value={baseUrl}
+                onChange={event => setBaseUrl(event.target.value)}
+                aria-label="Base URL"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="API key" htmlFor="assistant-key">
+              <Input
+                id="assistant-key"
+                type="password"
+                value={key}
+                onChange={event => setKey(event.target.value)}
+                autoComplete="off"
+                placeholder={settings.hasKey ? 'key stored' : 'sk-…'}
+                aria-label="API key"
+                className={inputClass}
+              />
+              <p className="text-body-s text-fg-tertiary" data-testid="assistant-key-state">
+                {keyState}
+              </p>
+            </Field>
+          </>
+        ) : (
           <p className="text-body-s text-fg-tertiary" data-testid="assistant-key-state">
-            {keyState}
+            {ENGINE_LABELS[settings.engine]} answers with its own account on this computer, in an empty folder of this app.
           </p>
-        </Field>
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" className="w-fit rounded-medium text-label-m">
-            Save
-          </Button>
+          {proxy ? (
+            <Button type="submit" className="w-fit rounded-medium text-label-m">
+              Save
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
@@ -236,7 +396,7 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
           >
             {testing ? 'Testing…' : 'Test'}
           </Button>
-          {settings.hasKey ? (
+          {proxy && settings.hasKey ? (
             <Button type="button" variant="ghost" className="w-fit rounded-medium text-label-m font-normal" onClick={() => void save({ key: '' })}>
               Remove key
             </Button>
@@ -293,6 +453,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi 
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
       <IdentitySection username={username} identity={identity} profileId={profileId} />
       <AppearanceSection />
+      <ChatSection />
       {assistantApi ? (
         <AssistantSection api={assistantApi} />
       ) : (
@@ -300,6 +461,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi 
           <p className="text-body-m text-fg-secondary">Available only inside Polkadot Chat Desktop.</p>
         </Section>
       )}
+      <KeyboardSection />
       <DangerSection onReset={onReset} />
     </div>
   </div>

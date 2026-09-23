@@ -2,15 +2,22 @@
  * The built-in Assistant contact. It is local to this app: no account on
  * chain, no Statement Store. Its room lives in Dexie like any other
  * (peer `local:assistant`); a message goes to the main process
- * (`window.desktop.assistant`), which calls the LLM proxy with the key the
- * renderer never sees, and the reply streams back into one message row.
+ * (`window.desktop.assistant`), which runs the engine chosen in Settings
+ * (the LLM proxy with the key the renderer never sees, or a local agent
+ * CLI), and the reply streams back into one message row.
+ *
+ * A CLI engine keeps its own session. The session id is kept in Dexie
+ * (`assistant.session`) with the reply it produced, and is resumed only
+ * while that reply is still the room's last one: after a reply from another
+ * engine the CLI starts fresh and gets the room's history instead.
  */
 
 import { randomId } from '../../app/bytes';
 import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
+import { readSetting, writeSetting } from '../../app/settings';
 import { previewOf } from '../chat/content';
 import { addMessage, listMessages, setMessageStatus } from '../chat/messages';
-import type { AssistantChatMessage, DesktopAssistantApi } from '../../../shared/desktop-api';
+import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
 export const ASSISTANT_PEER: AssistantPeerId = 'local:assistant';
 export const ASSISTANT_USERNAME = 'Assistant';
@@ -38,15 +45,44 @@ export const buildContext = (rows: MessageRow[]): AssistantChatMessage[] => {
   return [{ role: 'system', content: SYSTEM_PROMPT }, ...turns];
 };
 
+/** What the running reply does now: a tool line under the pending bubble. Null: thinking. */
+export type AssistantActivityLine = { messageId: string; title: string } | null;
+
 export type AssistantChat = {
   /** Adds the user's message and starts the reply. Rejects when the main process refuses. */
   send: (text: string) => Promise<void>;
   /** Stops the reply that is streaming; its text so far stays. */
   stop: () => Promise<void>;
+  /** The current tool line (useSyncExternalStore). */
+  activity: () => AssistantActivityLine;
+  onActivity: (listener: () => void) => () => void;
   dispose: () => void;
 };
 
-type Api = Pick<DesktopAssistantApi, 'send' | 'cancel' | 'onDelta' | 'onDone' | 'onError'>;
+type Api = Pick<DesktopAssistantApi, 'send' | 'cancel' | 'onDelta' | 'onDone' | 'onError' | 'onActivity' | 'getSettings'>;
+
+/** The engine session of the room's last reply. */
+type StoredSession = { engine: AssistantEngineId; sessionId: string; replyId: string };
+
+const readSession = async (): Promise<StoredSession | null> => {
+  const raw = await readSetting('assistant.session');
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Partial<StoredSession>;
+    return typeof value.engine === 'string' && typeof value.sessionId === 'string' && typeof value.replyId === 'string'
+      ? (value as StoredSession)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/** "reading notes.md" → "Reading notes.md…" (M6 step 13). */
+export const activityTitle = (title: string): string => {
+  const line = title.replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!line) return 'Working…';
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}${line.endsWith('…') ? '' : '…'}`;
+};
 
 export const createAssistantChat = (api: Api, now: () => number = Date.now): AssistantChat => {
   // Reply text so far, per reply id. Dexie is written from here, one write at
@@ -98,6 +134,22 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       .modify({ status: 'failed' }),
   );
 
+  let activity: AssistantActivityLine = null;
+  const activityListeners = new Set<() => void>();
+  const setActivity = (next: AssistantActivityLine) => {
+    if (activity?.messageId === next?.messageId && activity?.title === next?.title) return;
+    activity = next;
+    for (const listener of activityListeners) listener();
+  };
+  const endActivity = (messageId: string) => {
+    if (activity?.messageId === messageId) setActivity(null);
+  };
+
+  const stopActivity = api.onActivity(event => {
+    if (event.conversationId !== ASSISTANT_PEER) return;
+    if (event.event.type === 'tool_use') setActivity({ messageId: event.messageId, title: activityTitle(event.event.title) });
+  });
+
   const stopDelta = api.onDelta(event => {
     if (event.conversationId !== ASSISTANT_PEER) return;
     track(event.messageId, lastSentAt).text += event.text;
@@ -111,15 +163,25 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
 
   const stopDone = api.onDone(event => {
     if (event.conversationId !== ASSISTANT_PEER) return;
+    endActivity(event.messageId);
     void queue(async () => {
+      const reply = track(event.messageId, lastSentAt);
+      // A CLI's closing text is the answer; what streamed before it may
+      // include narration between tool calls.
+      if (event.text !== undefined) reply.text = event.text;
+      if (!reply.text.trim()) reply.text = '(no answer)';
       await writeReply(event.messageId, 'received');
       replies.delete(event.messageId);
       ended.add(event.messageId);
+      if (event.sessionId) {
+        await writeSetting('assistant.session', JSON.stringify({ engine: event.engine, sessionId: event.sessionId, replyId: event.messageId } satisfies StoredSession));
+      }
     });
   });
 
   const stopError = api.onError(event => {
     if (event.conversationId !== ASSISTANT_PEER) return;
+    endActivity(event.messageId);
     void queue(async () => {
       const reply = replies.get(event.messageId);
       if (reply?.text) await writeReply(event.messageId, 'failed');
@@ -143,6 +205,16 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
     });
   });
 
+  /** The stored session, while its reply is the room's last one and its engine is the current one. */
+  const sessionToResume = async (earlier: MessageRow[]): Promise<string | null> => {
+    const stored = await readSession();
+    if (!stored) return null;
+    const lastReply = [...earlier].reverse().find(row => row.direction === 'incoming');
+    if (lastReply?.messageId !== stored.replyId) return null;
+    const { engine } = await api.getSettings();
+    return engine === stored.engine ? stored.sessionId : null;
+  };
+
   return {
     send: async text => {
       const earlier = await listMessages(ASSISTANT_PEER);
@@ -158,9 +230,14 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       };
       await addMessage(outgoing);
       lastSentAt = outgoing.timestamp;
+      const sessionId = await sessionToResume(earlier);
       let messageId: string;
       try {
-        ({ messageId } = await api.send({ conversationId: ASSISTANT_PEER, messages: buildContext([...earlier, outgoing]) }));
+        ({ messageId } = await api.send({
+          conversationId: ASSISTANT_PEER,
+          messages: buildContext([...earlier, outgoing]),
+          ...(sessionId ? { sessionId } : {}),
+        }));
       } catch (cause) {
         await setMessageStatus(outgoing.messageId, 'failed');
         throw cause;
@@ -174,7 +251,13 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       });
     },
     stop: () => api.cancel(ASSISTANT_PEER),
+    activity: () => activity,
+    onActivity: listener => {
+      activityListeners.add(listener);
+      return () => activityListeners.delete(listener);
+    },
     dispose: () => {
+      stopActivity();
       stopDelta();
       stopDone();
       stopError();
@@ -190,7 +273,7 @@ const TEST_CONVERSATION = 'settings-test';
  * One prompt, not stored: resolves with the whole reply (Settings "Test").
  * Listens before it sends, so no delta is missed.
  */
-export const askOnce = (api: Api, prompt: string): Promise<string> =>
+export const askOnce = (api: Pick<Api, 'send' | 'onDelta' | 'onDone' | 'onError'>, prompt: string): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     let reply = '';
     const stops = [
@@ -200,7 +283,7 @@ export const askOnce = (api: Api, prompt: string): Promise<string> =>
       api.onDone(event => {
         if (event.conversationId !== TEST_CONVERSATION) return;
         stops.forEach(stop => stop());
-        resolve(reply);
+        resolve(event.text ?? reply);
       }),
       api.onError(event => {
         if (event.conversationId !== TEST_CONVERSATION) return;

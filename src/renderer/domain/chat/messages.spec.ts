@@ -2,7 +2,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { type MessageRow, appDatabase, db } from '../../app/database';
 
-import { addMessage, applyEdit, applyReaction, ensureRoom, listMessages, listRooms, markDeliveredBefore, markRoomRead, setMessageStatus } from './messages';
+import {
+  addMessage,
+  applyEdit,
+  applyReaction,
+  countUnread,
+  ensureRoom,
+  listMessages,
+  listRooms,
+  markDeliveredBefore,
+  markRoomRead,
+  setMessageStatus,
+  setRoomMuted,
+} from './messages';
 
 const PEER = '0xaa' as const;
 
@@ -95,5 +107,17 @@ describe('messages repository', () => {
     expect(await db.rooms.count()).toBe(1);
     await addMessage(row('a', { timestamp: 99 }));
     expect((await listRooms())[0]?.lastPreview).toBe('a');
+  });
+
+  // Found in the M6 screenshots: a new message rewrote the room row and unmuted it.
+  it('keeps a room muted when messages arrive, and leaves it out of the unread count', async () => {
+    await addMessage(row('a', { timestamp: 1 }));
+    await setRoomMuted(PEER, true);
+    await addMessage(row('b', { timestamp: 2 }));
+    expect((await db.rooms.get(PEER))?.muted).toBe(true);
+    expect((await db.rooms.get(PEER))?.unreadCount).toBe(2);
+    expect(await countUnread()).toBe(0);
+    await setRoomMuted(PEER, false);
+    expect(await countUnread()).toBe(2);
   });
 });

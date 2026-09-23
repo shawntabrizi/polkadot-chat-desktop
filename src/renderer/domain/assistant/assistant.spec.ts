@@ -2,17 +2,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type MessageRow, appDatabase, db } from '../../app/database';
 import { listMessages } from '../chat/messages';
-import type { AssistantDelta, AssistantDone, AssistantError, AssistantSendRequest } from '../../../shared/desktop-api';
+import type {
+  AssistantActivity,
+  AssistantDelta,
+  AssistantDone,
+  AssistantEngineId,
+  AssistantError,
+  AssistantSendRequest,
+  AssistantSettings,
+} from '../../../shared/desktop-api';
 
 import { ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat } from './assistant';
 
 /** A stand-in for `window.desktop.assistant`: records requests, lets the test emit events. */
-const fakeApi = (options: { refuse?: boolean } = {}) => {
+const fakeApi = (options: { refuse?: boolean; engine?: AssistantEngineId } = {}) => {
   const listeners = {
     delta: [] as ((event: AssistantDelta) => void)[],
     done: [] as ((event: AssistantDone) => void)[],
     error: [] as ((event: AssistantError) => void)[],
+    activity: [] as ((event: AssistantActivity) => void)[],
   };
+  const settings = { engine: options.engine ?? 'proxy' };
   const sent: AssistantSendRequest[] = [];
   const cancelled: string[] = [];
   let next = 0;
@@ -26,7 +36,11 @@ const fakeApi = (options: { refuse?: boolean } = {}) => {
     sent,
     cancelled,
     delta: (messageId: string, text: string) => listeners.delta.forEach(l => l({ conversationId: ASSISTANT_PEER, messageId, text })),
-    done: (messageId: string) => listeners.done.forEach(l => l({ conversationId: ASSISTANT_PEER, messageId })),
+    done: (messageId: string, extra: Partial<AssistantDone> = {}) =>
+      listeners.done.forEach(l => l({ conversationId: ASSISTANT_PEER, messageId, engine: settings.engine, ...extra })),
+    tool: (messageId: string, title: string) =>
+      listeners.activity.forEach(l => l({ conversationId: ASSISTANT_PEER, messageId, event: { type: 'tool_use', name: 'Read', title } })),
+    settings,
     error: (messageId: string, message: string) => listeners.error.forEach(l => l({ conversationId: ASSISTANT_PEER, messageId, message })),
     api: {
       send: async (request: AssistantSendRequest) => {
@@ -40,6 +54,8 @@ const fakeApi = (options: { refuse?: boolean } = {}) => {
       onDelta: subscribe(listeners.delta),
       onDone: subscribe(listeners.done),
       onError: subscribe(listeners.error),
+      onActivity: subscribe(listeners.activity),
+      getSettings: async () => ({ engine: settings.engine }) as AssistantSettings,
     },
   };
 };
@@ -157,6 +173,59 @@ describe('createAssistantChat', () => {
     chat.dispose();
   });
 
+  // A CLI streams narration between tool calls; the room must end with the
+  // answer the CLI closed the turn with, not the narration.
+  it('replaces the streamed text with the final text of a CLI engine', async () => {
+    const fake = fakeApi({ engine: 'claude' });
+    const chat = createAssistantChat(fake.api);
+    await chat.send('hello');
+    fake.delta('reply-1', 'Let me look. ');
+    fake.delta('reply-1', 'The answer.');
+    fake.done('reply-1', { text: 'The answer.', sessionId: 'S-1' });
+    await vi.waitFor(async () => expect((await db.messages.get('reply-1'))?.status).toBe('received'));
+    expect(text(await db.messages.get('reply-1'))).toBe('The answer.');
+    chat.dispose();
+  });
+
+  // Resuming a session that did not see the room's last turns would answer
+  // from a wrong history, so only the session of the last reply resumes.
+  it('resumes the engine session only while its reply is the last one and the engine is the same', async () => {
+    const fake = fakeApi({ engine: 'claude' });
+    const chat = createAssistantChat(fake.api);
+    await chat.send('one');
+    fake.done('reply-1', { text: 'first', sessionId: 'S-1' });
+    await vi.waitFor(async () => expect((await db.settings.get('assistant.session'))?.value).toContain('S-1'));
+
+    await chat.send('two');
+    expect(fake.sent[1]?.sessionId).toBe('S-1');
+    fake.done('reply-2', { text: 'second' }); // an engine that reports no session (the proxy)
+    await vi.waitFor(async () => expect((await db.messages.get('reply-2'))?.status).toBe('received'));
+
+    await chat.send('three');
+    expect(fake.sent[2]?.sessionId).toBeUndefined();
+    fake.done('reply-3', { text: 'third', sessionId: 'S-3' });
+    await vi.waitFor(async () => expect((await db.settings.get('assistant.session'))?.value).toContain('S-3'));
+
+    fake.settings.engine = 'codex';
+    await chat.send('four');
+    expect(fake.sent[3]?.sessionId).toBeUndefined();
+    chat.dispose();
+  });
+
+  it('shows the running tool as one line and clears it when the reply ends', async () => {
+    const fake = fakeApi({ engine: 'claude' });
+    const chat = createAssistantChat(fake.api);
+    const seen: (string | null)[] = [];
+    chat.onActivity(() => seen.push(chat.activity()?.title ?? null));
+    await chat.send('hello');
+    fake.tool('reply-1', 'reading notes.md');
+    expect(chat.activity()).toEqual({ messageId: 'reply-1', title: 'Reading notes.md…' });
+    fake.done('reply-1', { text: 'done' });
+    expect(chat.activity()).toBeNull();
+    expect(seen).toEqual(['Reading notes.md…', null]);
+    chat.dispose();
+  });
+
   it('stops through the main process', async () => {
     const fake = fakeApi();
     const chat = createAssistantChat(fake.api);
@@ -177,7 +246,7 @@ describe('askOnce', () => {
         queueMicrotask(() => {
           listeners.delta?.({ conversationId: request.conversationId, messageId: 'r', text: 'proxy ' });
           listeners.delta?.({ conversationId: request.conversationId, messageId: 'r', text: 'ok' });
-          listeners.done?.({ conversationId: request.conversationId, messageId: 'r' });
+          listeners.done?.({ conversationId: request.conversationId, messageId: 'r', engine: 'proxy' });
         });
         return { messageId: 'r' };
       },

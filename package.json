@@ -20,6 +20,7 @@
     "identity:register": "node scripts/identity-register.mjs",
     "e2e:chat": "node scripts/e2e-chat.mjs",
     "e2e:assistant": "node scripts/e2e-assistant.mjs",
+    "e2e:engines": "node scripts/e2e-engines.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {

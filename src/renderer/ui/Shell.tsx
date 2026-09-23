@@ -1,17 +1,21 @@
 // Two panes on the page surface, as Polkadot Desktop's ChatFullscreen.tsx
 // (.refs/polkadot-desktop, 2026-09-23): the chat list on the left, the open
 // room on the right. Requests, New chat and Settings open in these panes,
-// never in a modal (SKILL.md §10 "Avoid modals").
+// never in a modal (SKILL.md §10 "Avoid modals"). The keyboard shortcuts,
+// the window title, the dock badge and the notifications live here, next
+// to the selection they read and change (M6 steps 4, 5, 7).
 
 import { MessagesSquare, Plus, Settings as SettingsIcon } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { type HexString, bytesToHex } from '../app/bytes';
+import { CONNECTION_LABEL, type ConnectionSnapshot } from '../app/connectionState';
 import { type PeerId, db } from '../app/database';
+import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
-import type { ConnectionStatus } from '../app/statementStore';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
+import { countUnread } from '../domain/chat/messages';
 import type { ChatManager } from '../domain/chat/manager';
 import type { IdentityLookup } from '../domain/identity/lookup';
 import type { SearchResult } from '../domain/identity/search';
@@ -25,11 +29,12 @@ import { cn } from '@/lib/cn';
 import type { DesktopAssistantApi } from '../../shared/desktop-api';
 
 import { PeerAvatar } from './Avatar';
-import { ChatList, type ChatSelection } from './ChatList';
+import { ChatList, type ChatSelection, type ChatTarget, useChatOrder } from './ChatList';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
 import { Room } from './Room';
 import { DraftRoom, NewChatPanel } from './Search';
 import { Settings } from './Settings';
+import { useNotifications } from './notifications';
 import { useLiveQuery } from './useLiveQuery';
 
 export type Selection =
@@ -50,15 +55,14 @@ type Props = {
   runtime: { manager: ChatManager; lookup: IdentityLookup } | null;
   assistant: AssistantChat | null;
   assistantApi: DesktopAssistantApi | null;
-  connection: ConnectionStatus;
+  connection: ConnectionSnapshot;
   onReset: () => Promise<void>;
 };
 
-const CONNECTION_TEXT: Record<ConnectionStatus, string> = {
-  connected: 'Connected',
-  connecting: 'Connecting…',
-  disconnected: 'Disconnected',
-};
+const APP_TITLE = 'Polkadot Chat';
+
+/** Is an overlay (menu, select, tooltip) open? Esc belongs to it then. */
+const overlayOpen = (): boolean => document.querySelector('[data-radix-popper-content-wrapper]') !== null;
 
 const IconButton = ({ label, onClick, active = false, children }: { label: string; onClick: () => void; active?: boolean; children: ReactNode }) => (
   <Tooltip>
@@ -92,12 +96,96 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const [left, setLeft] = useState<LeftView>('chats');
   const [chosen, setSelection] = useState<Selection>({ kind: 'none' });
   const [filter, setFilter] = useState('');
+  const [newChatFocus, setNewChatFocus] = useState(0);
   const pendingIncoming = usePendingIncoming();
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
+  const order = useChatOrder(filter);
+  const desktopApp = window.desktop?.app ?? null;
 
   // A sent request that the peer accepts turns into their room.
   const selection: Selection =
     chosen.kind === 'outgoing' && contacts?.some(contact => contact.accountId === chosen.peer) ? { kind: 'room', peer: chosen.peer } : chosen;
+
+  // ── Title and dock badge: unread of the rooms that are not muted.
+  const unreadTotal = useLiveQuery(countUnread, []) ?? 0;
+  useEffect(() => {
+    document.title = unreadTotal > 0 ? `(${unreadTotal}) ${APP_TITLE}` : APP_TITLE;
+    desktopApp?.setBadge(unreadTotal);
+  }, [unreadTotal, desktopApp]);
+
+  useNotifications(desktopApp, selection.kind === 'room' ? selection.peer : null);
+
+  const openTarget = (target: ChatTarget) => {
+    setLeft('chats');
+    setSelection(target.kind === 'room' ? { kind: 'room', peer: target.peer } : { kind: 'outgoing', peer: target.peer });
+  };
+
+  // A notification click (main focused the window) and the menu's Preferences….
+  useEffect(() => {
+    if (!desktopApp) return;
+    const stopOpen = desktopApp.onNotifyOpen(({ peerId, requestId }) => {
+      if (requestId) {
+        setLeft('requests');
+        setSelection({ kind: 'incoming', requestId });
+      } else {
+        setLeft('chats');
+        setSelection({ kind: 'room', peer: peerId as PeerId });
+      }
+    });
+    const stopMenu = desktopApp.onMenuSettings(() => setSelection({ kind: 'settings' }));
+    return () => {
+      stopOpen();
+      stopMenu();
+    };
+  }, [desktopApp]);
+
+  // ── Keyboard shortcuts (M6 step 4). One listener; it reads the latest state.
+  const onShortcut = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  useEffect(() => {
+    onShortcut.current = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const primary = isPrimaryModifier(event);
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (primary && !event.altKey && !event.shiftKey && (key === 'k' || key === 'n')) {
+        event.preventDefault();
+        setLeft('newChat');
+        setNewChatFocus(count => count + 1);
+        return;
+      }
+      if (primary && !event.altKey && key === ',') {
+        event.preventDefault();
+        setSelection({ kind: 'settings' });
+        return;
+      }
+      if (key === 'Escape' && !primary && !event.altKey) {
+        if (overlayOpen()) return;
+        if (left !== 'chats') setLeft('chats');
+        else if (selection.kind !== 'none') setSelection({ kind: 'none' });
+        return;
+      }
+      if ((key === 'ArrowUp' || key === 'ArrowDown') && (primary || event.altKey) && !event.shiftKey && order.length > 0) {
+        event.preventDefault();
+        const current = order.findIndex(target => (selection.kind === 'room' || selection.kind === 'outgoing') && target.peer === selection.peer);
+        const step = key === 'ArrowUp' ? -1 : 1;
+        const next = current === -1 ? (step === 1 ? 0 : order.length - 1) : Math.min(order.length - 1, Math.max(0, current + step));
+        const target = order[next];
+        if (target) openTarget(target);
+        return;
+      }
+      if (primary && !event.altKey && !event.shiftKey && /^[1-9]$/.test(key)) {
+        const target = order[Number(key) - 1];
+        if (target) {
+          event.preventDefault();
+          openTarget(target);
+        }
+      }
+    };
+  });
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => onShortcut.current(event);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
 
   const listSelection: ChatSelection =
     selection.kind === 'room' || selection.kind === 'outgoing' ? selection : { kind: 'other' };
@@ -111,7 +199,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
           return assistant ? <Room key={ASSISTANT_PEER} peer={ASSISTANT_PEER} assistant={assistant} /> : null;
         }
         return runtime ? (
-          <Room key={selection.peer} peer={selection.peer} manager={runtime.manager} />
+          <Room key={selection.peer} peer={selection.peer} manager={runtime.manager} connection={connection} />
         ) : (
           <EmptyRoom title="Starting chat…" text="Connecting to the network. Your chats open when it is ready." />
         );
@@ -144,6 +232,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               setLeft('chats');
               setSelection({ kind: 'outgoing', peer });
             }}
+            onClose={() => setSelection({ kind: 'none' })}
           />
         );
       case 'settings':
@@ -180,6 +269,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             selfIdentityAccountId={identity.identityAccountId}
             onBack={() => setLeft('chats')}
             onPick={result => void pick(result)}
+            focusSignal={newChatFocus}
           />
         ) : (
           <>
@@ -226,10 +316,10 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               {username}
             </p>
             <p
-              className={cn('text-caption', connection === 'disconnected' ? 'text-fg-error' : 'text-fg-tertiary')}
+              className={cn('text-caption', connection.state === 'offline' ? 'text-fg-error' : 'text-fg-tertiary')}
               data-testid="connection-status"
             >
-              {CONNECTION_TEXT[connection]}
+              {CONNECTION_LABEL[connection.state]}
             </p>
           </div>
           <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>

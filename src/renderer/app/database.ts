@@ -41,7 +41,16 @@ export type UserIdentityRow = {
   pairedAt: number;
 };
 
-export type SettingKey = 'networkProfile' | 'pairing.processedStatementHex';
+export type SettingKey =
+  | 'networkProfile'
+  | 'pairing.processedStatementHex'
+  /** `enter` (default) or `mod-enter`. */
+  | 'chat.sendKey'
+  /** `on` (default) or `off`. */
+  | 'chat.notifications'
+  | 'chat.sound'
+  /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
+  | 'assistant.session';
 
 export type SettingRow = {
   key: SettingKey;
@@ -97,11 +106,16 @@ export type PeerId = HexString | AssistantPeerId;
 export type RoomRow = {
   peerAccountId: PeerId;
   unreadCount: number;
+  /** Muted: no notification, not in the badge. Absent on rows from before M6. */
+  muted?: boolean;
   lastMessageAt: number;
   lastPreview: string;
   createdAt: number;
   updatedAt: number;
 };
+
+/** The unsent text of a room's composer, saved as it is typed. */
+export type DraftRow = { peerId: PeerId; text: string; updatedAt: number };
 
 export type MessageDirection = 'incoming' | 'outgoing' | 'system';
 
@@ -143,6 +157,9 @@ dexie.version(3).stores({
   rooms: 'peerAccountId',
   messages: 'messageId, [peerAccountId+timestamp]',
 });
+dexie.version(4).stores({
+  drafts: 'peerId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -156,6 +173,7 @@ export const db: {
   requests: Table<RequestRow, string>;
   rooms: Table<RoomRow, PeerId>;
   messages: Table<MessageRow, string>;
+  drafts: Table<DraftRow, PeerId>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -165,4 +183,5 @@ export const db: {
   requests: dexie.table('requests'),
   rooms: dexie.table('rooms'),
   messages: dexie.table('messages'),
+  drafts: dexie.table('drafts'),
 };

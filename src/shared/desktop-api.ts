@@ -21,7 +21,19 @@ export const IPC = {
   assistantDelta: 'assistant:delta',
   assistantDone: 'assistant:done',
   assistantError: 'assistant:error',
+  assistantEvent: 'assistant:event',
+  assistantDetect: 'assistant:detect',
+  notifyShow: 'notify:show',
+  notifyOpen: 'notify:open',
+  appSetBadge: 'app:setBadge',
+  menuSettings: 'menu:settings',
 } as const;
+
+/** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
+export type AssistantEngineId = 'proxy' | 'claude' | 'codex' | 'opencode';
+
+/** Tool capabilities of a CLI engine (main/assistant/toolPolicy.ts). The UI offers the first four. */
+export type AssistantTool = 'read' | 'write' | 'bash' | 'web' | 'subagents';
 
 /** The public part of the identity saved on this machine. */
 export type IdentitySummary = { username: string; accountHex: string; profile: NetworkProfileId };
@@ -99,19 +111,40 @@ export type AssistantSettings = {
   hasKey: boolean;
   /** `LLM_PROXY_KEY` is set in the app's environment (used when no key is stored). */
   envKey: boolean;
+  engine: AssistantEngineId;
+  /** Tools a CLI engine may use, inside the assistant workspace only. Empty: tools off. */
+  tools: AssistantTool[];
 };
 
 /** Fields to change. `key: ''` removes the stored key. */
-export type AssistantSettingsUpdate = { model?: string; baseUrl?: string; key?: string };
+export type AssistantSettingsUpdate = { model?: string; baseUrl?: string; key?: string; engine?: AssistantEngineId; tools?: AssistantTool[] };
+
+/** What `detect` found for one engine. */
+export type AssistantEngineStatus = { id: AssistantEngineId; label: string; installed: boolean; version?: string };
 
 export type AssistantChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
-export type AssistantSendRequest = { conversationId: string; messages: AssistantChatMessage[] };
+/**
+ * `sessionId`: the engine's own session from an earlier turn (a CLI engine
+ * resumes it and needs only the last message); ignored by the proxy.
+ */
+export type AssistantSendRequest = { conversationId: string; messages: AssistantChatMessage[]; sessionId?: string };
 
 /** One piece of reply text for the reply `messageId` (the id `send` returned). */
 export type AssistantDelta = { conversationId: string; messageId: string; text: string };
-export type AssistantDone = { conversationId: string; messageId: string };
+/**
+ * `text`: the whole answer as the engine closed it (replaces the streamed
+ * text: a CLI may stream narration before its answer). `sessionId`: keep it
+ * for the next `send` to this engine.
+ */
+export type AssistantDone = { conversationId: string; messageId: string; engine: AssistantEngineId; text?: string; sessionId?: string };
 export type AssistantError = { conversationId: string; messageId: string; message: string };
+/** Progress of a running reply: a tool the engine uses, or "thinking". */
+export type AssistantActivity = {
+  conversationId: string;
+  messageId: string;
+  event: { type: 'tool_use'; name: string; title: string } | { type: 'thinking' };
+};
 
 /**
  * The LLM proxy, reached through the main process, which holds the key.
@@ -127,6 +160,27 @@ export type DesktopAssistantApi = {
   onDelta: (listener: (event: AssistantDelta) => void) => () => void;
   onDone: (listener: (event: AssistantDone) => void) => () => void;
   onError: (listener: (event: AssistantError) => void) => () => void;
+  onActivity: (listener: (event: AssistantActivity) => void) => () => void;
+  /** Looks for every engine on this computer (the proxy is always there). */
+  detect: () => Promise<AssistantEngineStatus[]>;
+};
+
+/**
+ * A native notification. `peerId` is the room to open on click; a request
+ * notification carries `requestId` instead. `sound` plays the system sound.
+ */
+export type NotifyRequest = { title: string; body: string; peerId: string; requestId?: string; sound: boolean };
+export type NotifyOpen = { peerId: string; requestId?: string };
+
+/** The window and the OS around it. */
+export type DesktopAppApi = {
+  /** The dock badge: `0` clears it. */
+  setBadge: (count: number) => void;
+  notify: (request: NotifyRequest) => void;
+  /** A notification was clicked: the window is focused; open this room. */
+  onNotifyOpen: (listener: (event: NotifyOpen) => void) => () => void;
+  /** The app menu's "Preferences…". */
+  onMenuSettings: (listener: () => void) => () => void;
 };
 
 export type DesktopApi = {
@@ -134,6 +188,7 @@ export type DesktopApi = {
   identity: DesktopIdentityApi;
   chain: DesktopChainApi;
   assistant: DesktopAssistantApi;
+  app: DesktopAppApi;
 };
 
 declare global {

@@ -238,4 +238,41 @@ describe('chat manager: messaging', () => {
     await expect(manager.sendMessage('0xdead', { type: 'text', text: 'x' })).rejects.toThrow('no chat session');
     expect((await db.messages.toArray()).map(r => r.status)).toEqual(['failed']);
   });
+
+  // Retry must re-queue the same message id: the peer dedups by it, and the
+  // user's reactions and replies already point at it (M6 step 9).
+  it('sends a failed message again with the same id', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await db.messages.add({
+      messageId: 'failed-1',
+      peerAccountId: peerKey,
+      timestamp: Date.now(),
+      direction: 'outgoing',
+      status: 'failed',
+      content: { type: 'text', text: 'try again' },
+      reactions: [],
+      editedAt: null,
+    });
+
+    await manager.retry(peerKey, 'failed-1');
+    expect((await db.messages.get('failed-1'))?.status).toBe('sent');
+    const arrived = await waitFor(() => transport!.received.find(m => m.messageId === 'failed-1'));
+    expect(arrived.content).toEqual({ tag: 'text', value: 'try again' });
+  });
+
+  it('keeps a retried message failed when it still cannot go out', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    await expect(manager.sendMessage('0xdead', { type: 'text', text: 'x' })).rejects.toThrow('no chat session');
+    const [row] = await db.messages.toArray();
+    await expect(manager.retry('0xdead', row!.messageId)).rejects.toThrow('no chat session');
+    expect((await db.messages.get(row!.messageId))?.status).toBe('failed');
+  });
 });

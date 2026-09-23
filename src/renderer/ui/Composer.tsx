@@ -4,6 +4,8 @@
 import { SendHorizontal, Square, X } from 'lucide-react';
 import { type KeyboardEvent, useEffect, useRef } from 'react';
 
+import type { SendKey } from '../app/chatPrefs';
+import { isPrimaryModifier } from '../app/keyboard';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -19,9 +21,40 @@ type Props = {
   onStop?: () => void;
   placeholder?: string;
   sendLabel?: string;
+  /** Enter sends (Shift+Enter: newline), or ⌘/Ctrl+Enter sends (Enter: newline). */
+  sendKey?: SendKey;
+  /** Up arrow in an empty field: edit your last text message. */
+  onEditLast?: () => void;
+  /** Esc with no reply/edit card (the draft room closes). Else Esc goes on to the app's shortcut. */
+  onEscape?: () => void;
+  /** An empty field may be sent (a chat request's message is optional). */
+  allowEmpty?: boolean;
+  /** `pill`: the send button is the view's one main action, with its label as text. */
+  sendButton?: 'icon' | 'pill';
 };
 
-export const Composer = ({ draft, onDraft, onSend, context, sendDisabled = false, onStop, placeholder = 'Write a message…', sendLabel = 'Send' }: Props) => {
+/** Is another text field the one with focus (then the composer does not take it)? */
+const otherFieldFocused = (field: HTMLTextAreaElement | null): boolean => {
+  const active = document.activeElement;
+  if (!active || active === document.body || active === field) return false;
+  return active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement).isContentEditable;
+};
+
+export const Composer = ({
+  draft,
+  onDraft,
+  onSend,
+  context,
+  sendDisabled = false,
+  onStop,
+  placeholder = 'Write a message…',
+  sendLabel = 'Send',
+  sendKey = 'enter',
+  onEditLast,
+  onEscape,
+  allowEmpty = false,
+  sendButton = 'icon',
+}: Props) => {
   const field = useRef<HTMLTextAreaElement>(null);
 
   // Reply and edit put the cursor in the field.
@@ -29,10 +62,52 @@ export const Composer = ({ draft, onDraft, onSend, context, sendDisabled = false
     if (context) field.current?.focus();
   }, [context]);
 
+  // The field takes focus when the room opens and when the window comes
+  // back, unless another text field has it (M6 step 3).
+  useEffect(() => {
+    field.current?.focus();
+    const onWindowFocus = () => {
+      if (!otherFieldFocused(field.current)) field.current?.focus();
+    };
+    window.addEventListener('focus', onWindowFocus);
+    return () => window.removeEventListener('focus', onWindowFocus);
+  }, []);
+
+  const canSend = (allowEmpty || draft.trim() !== '') && !sendDisabled;
+  const send = () => {
+    if (!canSend) return;
+    onSend();
+    field.current?.focus();
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // An IME composition (Japanese, Chinese, …) uses Enter to pick a word.
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === 'Escape' && context) {
       event.preventDefault();
-      if (draft.trim() && !sendDisabled) onSend();
+      event.stopPropagation();
+      context.onClose();
+      return;
+    }
+    if (event.key === 'Escape' && onEscape) {
+      event.preventDefault();
+      event.stopPropagation();
+      onEscape();
+      return;
+    }
+    const modified = event.altKey || event.metaKey || event.ctrlKey || event.shiftKey;
+    // Plain ↑ only: ⌘↑ / ⌥↑ move between chats (Shell).
+    if (event.key === 'ArrowUp' && !modified && draft === '' && onEditLast) {
+      event.preventDefault();
+      onEditLast();
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    const primary = isPrimaryModifier(event);
+    const sends = sendKey === 'enter' ? !event.shiftKey : primary;
+    if (sends) {
+      event.preventDefault();
+      send();
     }
   };
 
@@ -66,16 +141,15 @@ export const Composer = ({ draft, onDraft, onSend, context, sendDisabled = false
             <Square className="size-4" aria-hidden /> Stop
           </Button>
         ) : null}
-        <Button
-          type="button"
-          size="icon"
-          className="size-10 shrink-0 rounded-full"
-          aria-label={sendLabel}
-          disabled={!draft.trim() || sendDisabled}
-          onClick={onSend}
-        >
-          <SendHorizontal className="size-5" />
-        </Button>
+        {sendButton === 'pill' ? (
+          <Button type="button" className="h-auto w-fit shrink-0 rounded-full px-8 py-2.5 text-label-l" disabled={!canSend} onClick={send}>
+            {sendLabel}
+          </Button>
+        ) : (
+          <Button type="button" size="icon" className="size-10 shrink-0 rounded-full" aria-label={sendLabel} disabled={!canSend} onClick={send}>
+            <SendHorizontal className="size-5" />
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -2,9 +2,10 @@
 // (2026-09-23); strings from docs/reference/mobile-ux.md "Starting a chat".
 
 import { ArrowLeft, UserPlus } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { type HexString, bytesToHex } from '../app/bytes';
+import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { db } from '../app/database';
 import type { NetworkProfile } from '../app/network';
 import type { ChatManager } from '../domain/chat/manager';
@@ -12,10 +13,10 @@ import type { IdentityLookup } from '../domain/identity/lookup';
 import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 
 import { PeerAvatar } from './Avatar';
 import { ChatRow } from './ChatRow';
+import { Composer } from './Composer';
 import { RoomHeader } from './RoomHeader';
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -34,11 +35,18 @@ type PanelProps = {
   selfIdentityAccountId: Uint8Array;
   onBack: () => void;
   onPick: (result: SearchResult) => void;
+  /** Bumped by ⌘K / ⌘N while the panel is open: the field takes focus again. */
+  focusSignal?: number;
 };
 
 /** The left pane while "New chat" is open: find a username on the network. */
-export const NewChatPanel = ({ profile, selfIdentityAccountId, onBack, onPick }: PanelProps) => {
+export const NewChatPanel = ({ profile, selfIdentityAccountId, onBack, onPick, focusSignal = 0 }: PanelProps) => {
   const [query, setQuery] = useState('');
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    field.current?.focus();
+    field.current?.select();
+  }, [focusSignal]);
   const [search, setSearch] = useState<SearchState>({ state: 'idle' });
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
   const requests = useLiveQuery(() => db.requests.toArray(), []);
@@ -83,6 +91,7 @@ export const NewChatPanel = ({ profile, selfIdentityAccountId, onBack, onPick }:
         <h1 className="text-heading-m text-fg-primary">New chat</h1>
       </div>
       <Input
+        ref={field}
         autoFocus
         value={query}
         onChange={event => setQuery(event.target.value)}
@@ -127,13 +136,16 @@ type DraftProps = {
   manager: ChatManager | null;
   /** The request is out; the caller opens the pending room. */
   onSent: (peer: HexString) => void;
+  /** Esc in the field: leave the draft. */
+  onClose: () => void;
 };
 
 /** The right pane for someone new: one message goes with the request. */
-export const DraftRoom = ({ result, lookup, manager, onSent }: DraftProps) => {
+export const DraftRoom = ({ result, lookup, manager, onSent, onClose }: DraftProps) => {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
   const name = result.username;
 
   const send = async () => {
@@ -161,27 +173,26 @@ export const DraftRoom = ({ result, lookup, manager, onSent }: DraftProps) => {
         <p className="text-heading-m text-fg-primary">Invite {name} to chat</p>
         <p className="text-body-m text-fg-secondary">You can only send one message in this request.</p>
       </div>
-      <div className="flex shrink-0 flex-col gap-2 px-4 pt-2 pb-4">
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={text}
-            onChange={event => setText(event.target.value)}
-            rows={1}
-            placeholder="Say hello... (optional)"
-            aria-label="Message"
-            disabled={busy}
-            className="max-h-40 min-h-10 resize-none rounded-nested py-2 text-body-m md:text-body-m"
-          />
-          <Button className="h-auto w-fit shrink-0 rounded-full px-8 py-2.5 text-label-l" disabled={busy || !manager} onClick={() => void send()}>
-            {busy ? 'Sending…' : 'Send Request'}
-          </Button>
-        </div>
-        {error ? (
-          <p role="alert" className="text-body-s text-fg-error">
-            {error}
-          </p>
-        ) : null}
-      </div>
+      {error ? (
+        <p role="alert" className="px-4 text-body-s text-fg-error">
+          {error}
+        </p>
+      ) : null}
+      {/* The room's composer, as Desktop's DraftInvitationRoom reuses MessageInput:
+          the send-key setting applies, Esc closes the draft. */}
+      <Composer
+        draft={text}
+        onDraft={setText}
+        onSend={() => void send()}
+        context={null}
+        placeholder="Say hello... (optional)"
+        sendLabel={busy ? 'Sending…' : 'Send Request'}
+        sendButton="pill"
+        allowEmpty
+        sendDisabled={busy || !manager}
+        sendKey={prefs.sendKey}
+        onEscape={onClose}
+      />
     </>
   );
 };
