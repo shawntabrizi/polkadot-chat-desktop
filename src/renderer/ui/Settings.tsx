@@ -1,7 +1,7 @@
 import { Copy, Eye, EyeOff } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
-import { DEFAULT_CHAT_PREFS, type SendKey, readChatPrefs, writeNotifications, writeSendKey, writeSound } from '../app/chatPrefs';
+import { DEFAULT_CHAT_PREFS, type SendKey, readChatPrefs, writeNotifications, writeRevealReplies, writeSendKey, writeSound } from '../app/chatPrefs';
 import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
@@ -162,6 +162,7 @@ const ChatSection = () => {
       </Field>
       <SwitchRow id="notifications" label="Notifications" checked={prefs.notifications} onChange={on => void writeNotifications(on)} testId="notifications-switch" />
       <SwitchRow id="sound" label="Sound" checked={prefs.sound} onChange={on => void writeSound(on)} testId="sound-switch" />
+      <SwitchRow id="reveal" label="Reveal bot replies" checked={prefs.revealReplies} onChange={on => void writeRevealReplies(on)} testId="reveal-switch" />
     </Section>
   );
 };

@@ -49,6 +49,8 @@ export type SettingKey =
   /** `on` (default) or `off`. */
   | 'chat.notifications'
   | 'chat.sound'
+  /** `on` (default) or `off`: typing reveal of bot and Assistant replies (M7). */
+  | 'chat.reveal'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session';
 
@@ -140,6 +142,13 @@ export type MessageRow = {
   editedAt: number | null;
 };
 
+/**
+ * An RFC-0003 deletion whose target has not arrived (yet). Applied when the
+ * target arrives; bounded per peer, oldest evicted (eviction is safe: a
+ * deletion whose target never comes has no effect).
+ */
+export type PendingDeletionRow = { peerAccountId: PeerId; messageId: string; createdAt: number };
+
 export const DB_NAME = 'polkadot-chat-web';
 
 const dexie = new Dexie(DB_NAME);
@@ -160,6 +169,9 @@ dexie.version(3).stores({
 dexie.version(4).stores({
   drafts: 'peerId',
 });
+dexie.version(5).stores({
+  pendingDeletions: '[peerAccountId+messageId], [peerAccountId+createdAt]',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -174,6 +186,7 @@ export const db: {
   rooms: Table<RoomRow, PeerId>;
   messages: Table<MessageRow, string>;
   drafts: Table<DraftRow, PeerId>;
+  pendingDeletions: Table<PendingDeletionRow, [PeerId, string]>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -184,4 +197,5 @@ export const db: {
   rooms: dexie.table('rooms'),
   messages: dexie.table('messages'),
   drafts: dexie.table('drafts'),
+  pendingDeletions: dexie.table('pendingDeletions'),
 };

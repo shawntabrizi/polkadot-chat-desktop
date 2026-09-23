@@ -16,7 +16,7 @@ import { randomId } from '../../app/bytes';
 import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
 import { readSetting, writeSetting } from '../../app/settings';
 import { previewOf } from '../chat/content';
-import { addMessage, listMessages, setMessageStatus } from '../chat/messages';
+import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '../chat/messages';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
 export const ASSISTANT_PEER: AssistantPeerId = 'local:assistant';
@@ -53,6 +53,12 @@ export type AssistantChat = {
   send: (text: string) => Promise<void>;
   /** Stops the reply that is streaming; its text so far stays. */
   stop: () => Promise<void>;
+  /**
+   * Deletes a finished message of the room on this computer (nothing goes on
+   * any wire): the same tombstone as RFC-0003. The engine session is dropped,
+   * so the next turn starts fresh from the room, which leaves tombstones out.
+   */
+  deleteMessage: (messageId: string) => Promise<void>;
   /** The current tool line (useSyncExternalStore). */
   activity: () => AssistantActivityLine;
   onActivity: (listener: () => void) => () => void;
@@ -104,6 +110,8 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
     const reply = replies.get(messageId);
     if (!reply) return;
     const content = { type: 'text' as const, text: reply.text };
+    // A reply deleted in the room stays deleted, whatever still arrives for it.
+    if ((await db.messages.get(messageId))?.content.type === 'deleted') return;
     const updated = await db.messages.update(messageId, { content, status });
     if (updated === 0) {
       await addMessage({
@@ -251,6 +259,14 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       });
     },
     stop: () => api.cancel(ASSISTANT_PEER),
+    deleteMessage: async messageId => {
+      const row = await db.messages.get(messageId);
+      if (!row || row.peerAccountId !== ASSISTANT_PEER || row.direction === 'system') return;
+      if (row.status === 'streaming') throw new Error('Stop the reply first, then delete it.');
+      await tombstoneMessage(messageId);
+      // The CLI session still holds the deleted text; do not resume it.
+      await writeSetting('assistant.session', '');
+    },
     activity: () => activity,
     onActivity: listener => {
       activityListeners.add(listener);

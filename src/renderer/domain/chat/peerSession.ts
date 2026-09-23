@@ -12,7 +12,6 @@
  * derives topics and encryption.
  */
 
-import { ChatMessage as ChatMessageCodec } from '@novasamatech/host-chat/codec/message';
 import {
   type ExpiryAllocator,
   type PeerRoster,
@@ -25,7 +24,7 @@ import {
 import type { DeviceKeys } from '../device/keys';
 import type { UserIdentity } from '../identity/userIdentity';
 
-import type { ChatContent, ChatMessageWire } from './identityEvents';
+import { type ChatContent, ChatMessageCodec, type ChatMessageWire } from './identityEvents';
 
 export type IncomingChatMessage = { messageId: string; timestamp: number; content: ChatContent };
 

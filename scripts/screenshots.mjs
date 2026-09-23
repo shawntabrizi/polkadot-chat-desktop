@@ -13,6 +13,14 @@
 // again afterwards); settings.png shows the Chat and Assistant sections after
 // "Detect installed"; keyboard.png the Keyboard section.
 //
+// M7: room-deleted.png is the same room with a tombstone and a live frame.
+// The app deletes one of its own messages through the message menu ("Delete
+// for everyone", then the 6 s Undo time). The live frame is a real message
+// from the room peer: with PCD_SCREENSHOT_ROOM_WITH its `e2e-chat.mjs` run
+// gets `--live-frame` and sends a pca-shaped `⏳ working · …` text after its
+// ping is answered. The echo bot sends no live frames, so without
+// PCD_SCREENSHOT_ROOM_WITH the live frame is reported missing.
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -243,7 +251,7 @@ app.whenReady().then(() => {
   const roomPeer = roomWith ? JSON.parse(readFileSync(join(root, '.agent-runs', `identity-${roomWith}`, 'identity.json'), 'utf8')).username : BOT;
   const roomLog = roomWith ? openSync(join(outDir, 'room-peer.log'), 'w') : null;
   const roomPeerRun = roomWith
-    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
+    ? spawn('node', ['scripts/e2e-chat.mjs', source.username, '--identity', roomWith, '--live-frame'], { cwd: root, stdio: ['ignore', roomLog, roomLog] })
     : null;
 
   for (const theme of THEMES) {
@@ -320,6 +328,33 @@ app.whenReady().then(() => {
         // Mute the room (once: the profile is shared by both themes).
         await app.click('[data-testid=mute-toggle][aria-pressed=false]');
         await app.waitFor(app.exists('[data-testid=mute-toggle][aria-pressed=true]'), 10_000);
+      });
+
+      await shot('room-deleted', async () => {
+        if (!(await app.evaluate(app.exists('textarea[aria-label=Message]')))) throw new Error('the room is not open');
+        const tombstone = `document.querySelector('[data-testid=message-outgoing] [data-testid=message-deleted]') != null`;
+        if (!(await app.evaluate(tombstone))) {
+          // Once: the profile is shared by both themes.
+          const text = 'This one was for another chat';
+          await app.type('textarea[aria-label=Message]', text);
+          await app.click('[aria-label=Send]');
+          const last = `[...document.querySelectorAll('[data-testid=message-outgoing]')].pop()`;
+          await app.waitFor(`${last}?.textContent.includes(${JSON.stringify(text)}) && ${last}.querySelector('[aria-label=Delivered],[aria-label=Sent]') != null`, 30_000);
+          // Right click opens the message menu.
+          await app.evaluate(`${last}.querySelector('[data-testid=bubble]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); true`);
+          if (!(await app.waitFor(app.exists('[data-testid=delete-message]'), 10_000))) throw new Error('no Delete for everyone in the message menu');
+          await app.click('[data-testid=delete-message]');
+          if (!(await app.waitFor(`${last}?.textContent.includes('Deleting…')`, 5_000))) throw new Error('the bubble did not show Deleting…');
+          if (!(await app.waitFor(`[...document.querySelectorAll('[data-sonner-toast]')].some(t => t.textContent.includes('This asks their device to delete it.'))`, 5_000))) {
+            throw new Error('no Undo toast');
+          }
+          log('deleting, the toast shows');
+          if (!(await app.waitFor(tombstone, 20_000))) throw new Error('no tombstone after the Undo time');
+          log('tombstone shown');
+        }
+        if (!(await app.waitFor(app.exists('[data-testid=live-frame]'), roomWith ? 120_000 : 1_000))) {
+          throw new Error(roomWith ? `no live frame from ${roomPeer} (see .agent-runs/screens/room-peer.log)` : 'no live frame: the echo bot sends none; set PCD_SCREENSHOT_ROOM_WITH');
+        }
       });
 
       await shot('assistant', async () => {

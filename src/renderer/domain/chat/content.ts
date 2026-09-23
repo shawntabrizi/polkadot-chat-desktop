@@ -26,7 +26,9 @@ export type MessageContent =
   | { type: 'contactAdded' }
   | { type: 'leftChat' }
   | { type: 'callDeclined' }
-  | { type: 'unsupported'; tag: string };
+  | { type: 'unsupported'; tag: string }
+  /** RFC-0003 tombstone: the text, attachments and edit history are gone; id and time stay. */
+  | { type: 'deleted' };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -34,12 +36,15 @@ export type OutgoingContent =
   | { type: 'reply'; messageId: string; text: string }
   | { type: 'reaction'; messageId: string; emoji: string; add: boolean }
   | { type: 'edit'; messageId: string; text: string }
-  | { type: 'callDecline'; offerMessageId: string };
+  | { type: 'callDecline'; offerMessageId: string }
+  /** RFC-0003 delete for everyone: asks the peer to tombstone our message `targetMessageId`. */
+  | { type: 'deleted'; targetMessageId: string };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
   | { kind: 'reaction'; messageId: string; emoji: string; add: boolean }
   | { kind: 'edit'; messageId: string; text: string }
+  | { kind: 'deleted'; targetMessageId: string }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -57,6 +62,8 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'edit', value: { messageId: content.messageId, newContent: { text: content.text, attachments: undefined } } };
     case 'callDecline':
       return { tag: 'dataChannelClosed', value: { offerMessageId: content.offerMessageId } };
+    case 'deleted':
+      return { tag: 'deleted', value: { targetMessageId: content.targetMessageId } };
   }
 };
 
@@ -94,6 +101,8 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       return { kind: 'reaction', messageId: content.value.messageId, emoji: content.value.emoji, add: false };
     case 'edit':
       return { kind: 'edit', messageId: content.value.messageId, text: content.value.newContent.text ?? '' };
+    case 'deleted':
+      return { kind: 'deleted', targetMessageId: content.value.targetMessageId };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };
     case 'contactAdded':
@@ -144,5 +153,17 @@ export const previewOf = (content: MessageContent): string => {
       return 'Call declined';
     case 'unsupported':
       return `Unsupported message (${content.tag})`;
+    case 'deleted':
+      return 'Message deleted';
   }
 };
+
+/**
+ * A `pca` bot's live progress placeholder (bot-core `live-reply.mjs`): a text
+ * message `⏳ working · 12s · step 2` plus action lines, edited in place until
+ * the turn ends. It is status, not an answer, so it renders as a thinking row.
+ */
+export const isLiveFrame = (content: MessageContent): boolean => content.type === 'text' && content.text.startsWith('⏳ ');
+
+/** The frame without its hourglass, for the thinking row. */
+export const liveFrameText = (text: string): string => text.replace(/^⏳ /, '');

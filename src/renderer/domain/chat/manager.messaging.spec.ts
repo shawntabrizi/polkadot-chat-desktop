@@ -275,4 +275,91 @@ describe('chat manager: messaging', () => {
     await expect(manager.retry('0xdead', row!.messageId)).rejects.toThrow('no chat session');
     expect((await db.messages.get(row!.messageId))?.status).toBe('failed');
   });
+
+  // RFC-0003 over the real sessions and codec: kind 20 goes out and comes in.
+  it('delete for everyone: tombstones our row at once and sends deleted(messageId) to the peer', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'oops, wrong chat' });
+    const mine = (await listMessages(peerKey)).find(r => r.direction === 'outgoing')!;
+
+    await manager.deleteForEveryone(peerKey, mine.messageId);
+    expect((await db.messages.get(mine.messageId))?.content).toEqual({ type: 'deleted' });
+    const deletion = await waitFor(() => transport!.received.find(m => m.content.tag === 'deleted'));
+    expect(deletion.content).toEqual({ tag: 'deleted', value: { targetMessageId: mine.messageId } });
+    // The deletion is its own message with a fresh id, never a row of its own.
+    expect(deletion.messageId).not.toBe(mine.messageId);
+    expect((await listMessages(peerKey)).filter(r => r.direction === 'outgoing')).toHaveLength(1);
+  });
+
+  it('delete for everyone of a message that never went out removes it and sends nothing', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await db.messages.add({
+      messageId: 'never-sent',
+      peerAccountId: peerKey,
+      timestamp: Date.now(),
+      direction: 'outgoing',
+      status: 'failed',
+      content: { type: 'text', text: 'draft that failed' },
+      reactions: [],
+      editedAt: null,
+    });
+
+    await manager.deleteForEveryone(peerKey, 'never-sent');
+    expect(await db.messages.get('never-sent')).toBeUndefined();
+    // A later message still goes out, and no deletion went before it.
+    await manager.sendMessage(peerKey, { type: 'text', text: 'after' });
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'text' && m.content.value === 'after'));
+    expect(transport.received.some(m => m.content.tag === 'deleted')).toBe(false);
+  });
+
+  it('refuses to delete the peer’s message for everyone', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey, requestId } = await establish(store, web, bot, manager, transport);
+    await expect(manager.deleteForEveryone(peerKey, requestId)).rejects.toThrow('Only your own message');
+    expect((await db.messages.get(requestId))?.content).toEqual({ type: 'text', text: 'hi from the bot' });
+  });
+
+  it('applies the peer’s deletion: known target, target after its deletion, and never our own message', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'mine stays' });
+    const mine = (await listMessages(peerKey)).find(r => r.direction === 'outgoing')!;
+
+    await transport.send({ tag: 'text', value: 'regret' }, 100); // peer-1
+    await transport.send({ tag: 'deleted', value: { targetMessageId: 'peer-1' } }, 101); // peer-2
+    await transport.send({ tag: 'deleted', value: { targetMessageId: 'peer-4' } }, 102); // peer-3, before its target
+    await transport.send({ tag: 'text', value: 'never shown' }, 103); // peer-4
+    await transport.send({ tag: 'deleted', value: { targetMessageId: mine.messageId } }, 104); // peer-5, not theirs
+    await transport.send({ tag: 'text', value: 'done' }, 105); // peer-6
+
+    await waitFor(async () => (await db.messages.get('peer-6')) !== undefined);
+    expect((await db.messages.get('peer-1'))?.content).toEqual({ type: 'deleted' });
+    expect((await db.messages.get('peer-4'))?.content).toEqual({ type: 'deleted' });
+    expect((await db.messages.get(mine.messageId))?.content).toEqual({ type: 'text', text: 'mine stays' });
+    // Deletions are never rows.
+    expect(await db.messages.get('peer-2')).toBeUndefined();
+    expect(await db.messages.get('peer-3')).toBeUndefined();
+    expect(await db.messages.get('peer-5')).toBeUndefined();
+    const texts = (await listMessages(peerKey)).flatMap(r => (r.content.type === 'text' ? [r.content.text] : []));
+    expect(texts).not.toContain('regret');
+    expect(texts).not.toContain('never shown');
+  });
 });

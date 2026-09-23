@@ -14,7 +14,6 @@
  * retransmitted until they land, unlike a one-shot statement.
  */
 
-import { ChatMessage as ChatMessageCodec } from '@novasamatech/host-chat/codec/message';
 import { x25519 } from '@noble/curves/ed25519.js';
 import {
   type ExpiryAllocator,
@@ -27,7 +26,7 @@ import {
 
 import { randomId } from '../../app/bytes';
 
-import { type ChatContent, type ChatMessageWire, type IdentityChannelEvent, toIdentityChannelEvent } from './identityEvents';
+import { type ChatContent, ChatMessageCodec, type ChatMessageWire, type IdentityChannelEvent, toIdentityChannelEvent } from './identityEvents';
 
 export type IdentityChannel = {
   /** Publish an identity-level content variant. Resolves once the session queued it. */

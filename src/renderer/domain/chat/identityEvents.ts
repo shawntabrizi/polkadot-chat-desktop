@@ -8,13 +8,73 @@
  * surfaced as `message` for the caller to treat like session content.
  */
 
-import type { ChatMessage as ChatMessageCodec } from '@novasamatech/host-chat/codec/message';
-import type { CodecType } from 'scale-ts';
+import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
+import { type Codec, type CodecType, Struct, createCodec, str, u64, u8 } from 'scale-ts';
 
+import { hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
 
-export type ChatMessageWire = CodecType<typeof ChatMessageCodec>;
-export type ChatContent = ChatMessageWire['versioned']['value'];
+type SdkChatMessageWire = CodecType<typeof SdkChatMessage>;
+
+/**
+ * RFC-0003 `deleted(DeletedContent)`; the SDK (0.10.2) has no such variant.
+ * `targetMessageId` is the retracted message (the envelope has its own `messageId`).
+ */
+export type DeletedWire = { tag: 'deleted'; value: { targetMessageId: string } };
+export type ChatContent = SdkChatMessageWire['versioned']['value'] | DeletedWire;
+export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
+
+/**
+ * RFC-0003 names kind 20 for `deleted`, but 20 is already `deviceChatAccepted`
+ * (mds.md, the SDK codec, the pca bots). Its Unresolved Question 6 says to
+ * take the next free index on a clash: 21, as the pca side does
+ * (docs/decisions.md). The SDK codec does not know 21, so this codec reads
+ * and writes it and hands every other kind to the SDK.
+ */
+export const DELETED_KIND = 21;
+const V1 = 0;
+
+const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
+const DeletedMessage = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, target: str });
+
+const toBytes = (value: Uint8Array | ArrayBuffer | string): Uint8Array =>
+  value instanceof Uint8Array ? value : typeof value === 'string' ? hexToBytes(value) : new Uint8Array(value);
+
+const decodeDeleted = (bytes: Uint8Array): ChatMessageWire | null => {
+  try {
+    const header = Header.dec(bytes);
+    if (header.version !== V1 || header.kind !== DELETED_KIND) return null;
+    const decoded = DeletedMessage.dec(bytes);
+    // Bytes after the target string: not a well-formed `deleted`; the SDK
+    // decode that follows rejects it, and the entry counts as unsupported.
+    if (DeletedMessage.enc(decoded).length !== bytes.length) return null;
+    return {
+      messageId: decoded.messageId,
+      timestamp: decoded.timestamp,
+      versioned: { tag: 'v1', value: { tag: 'deleted', value: { targetMessageId: decoded.target } } },
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`.
+ * Every session in this app encodes and decodes through it.
+ */
+export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
+  message => {
+    const content = message.versioned.value;
+    if (content.tag === 'deleted') {
+      return DeletedMessage.enc({ messageId: message.messageId, timestamp: message.timestamp, version: V1, kind: DELETED_KIND, target: content.value.targetMessageId });
+    }
+    return SdkChatMessage.enc({ ...message, versioned: { tag: 'v1', value: content } });
+  },
+  value => {
+    const bytes = toBytes(value);
+    return decodeDeleted(bytes) ?? SdkChatMessage.dec(bytes);
+  },
+);
 
 export type IdentityChannelEvent =
   | { tag: 'accepted'; requestId: string; device: PeerDevice; acceptedAt: number }

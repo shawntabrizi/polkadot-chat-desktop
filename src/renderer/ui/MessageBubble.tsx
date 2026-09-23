@@ -2,11 +2,11 @@
 // ReactionPills.tsx and QuickReactionRow.tsx (2026-09-23), rebuilt on the design
 // system tokens and shadcn DropdownMenu; no tr-ui.
 
-import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Reply } from 'lucide-react';
+import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
-import { previewOf } from '../domain/chat/content';
+import { liveFrameText, previewOf } from '../domain/chat/content';
 import { renderMarkdown } from '../domain/markdown/markdown';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,6 +18,7 @@ import {
 import { cn } from '@/lib/cn';
 
 import { formatClock } from './format';
+import { useTypingReveal } from './reveal';
 
 /** The eight quick reactions every Polkadot app offers (mobile-ux.md). */
 export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏'];
@@ -93,6 +94,8 @@ export type BubbleActions = {
   edit?: () => void;
   /** A failed own message: send it again with the same id. */
   retry?: () => void;
+  /** "Delete for everyone" (a contact room) or "Delete" (the Assistant, local only). */
+  remove?: { label: string; run: () => void };
 };
 
 type Props = {
@@ -104,6 +107,12 @@ type Props = {
   last: boolean;
   /** An assistant reply that has no text yet. */
   thinking?: boolean;
+  /** A `pca` bot's live progress frame (`isLiveFrame`): a thinking row, no time, no ticks. */
+  live?: boolean;
+  /** Delete was pressed and its Undo time runs. */
+  deleting?: boolean;
+  /** Typing reveal of an answer that just arrived (Settings → Chat). */
+  reveal?: boolean;
   /** Null for a read-only bubble (a request's welcome message). */
   actions: BubbleActions | null;
   /** A quiet line under the bubble: what a running assistant reply is doing. */
@@ -113,11 +122,15 @@ type Props = {
 const textOf = (row: MessageRow): string | null =>
   row.content.type === 'text' || row.content.type === 'reply' ? row.content.text : row.content.type === 'richText' ? row.content.text : null;
 
-export const MessageBubble = ({ row, quote, first, last, thinking = false, actions, note = null }: Props) => {
+export const MessageBubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const own = row.direction === 'outgoing';
   const text = textOf(row);
-  const reactions = countReactions(row.reactions);
+  const deleted = row.content.type === 'deleted';
+  const painted = useTypingReveal({ text: text ?? '', live, streaming: row.status === 'streaming' }, reveal && !own);
+  // Reactions on a deleted message are not shown (RFC-0003).
+  const reactions = deleted || live ? [] : countReactions(row.reactions);
+  const quiet = cn('text-body-m italic', own ? 'text-fg-tertiary-inverted' : 'text-fg-tertiary');
 
   // Tighter corners on the sender's side inside a run; a 4px tail on the last.
   const corners = own
@@ -126,10 +139,25 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, actio
 
   const body = (() => {
     if (thinking) return <span className="animate-pulse text-body-m text-fg-tertiary">Thinking…</span>;
+    if (live && text !== null) {
+      return (
+        <p className="animate-pulse text-body-m whitespace-pre-wrap text-fg-tertiary" data-testid="live-frame">
+          {liveFrameText(text)}
+        </p>
+      );
+    }
+    if (deleted) {
+      return (
+        <p className={quiet} data-testid="message-deleted">
+          Message deleted
+        </p>
+      );
+    }
+    if (deleting) return <p className={quiet}>Deleting…</p>;
     if (row.content.type === 'text' && !own) {
       // Incoming text (contacts, bots and the Assistant write markdown) renders as
       // markdown, sanitized by renderMarkdown; own messages stay plain.
-      return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(row.content.text) }} />;
+      return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(painted) }} />;
     }
     if (row.content.type === 'richText') {
       return (
@@ -190,6 +218,11 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, actio
               <Pencil /> Edit
             </DropdownMenuItem>
           ) : null}
+          {actions.remove ? (
+            <DropdownMenuItem onSelect={actions.remove.run} data-testid="delete-message">
+              <Trash2 /> {actions.remove.label}
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -208,6 +241,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, actio
             corners,
             own ? 'bg-surface-container-inverted text-fg-primary-inverted' : 'bg-surface-nested text-fg-primary',
           )}
+          data-testid="bubble"
           onContextMenu={
             actions
               ? event => {
@@ -229,11 +263,13 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, actio
             </div>
           ) : null}
           <div className="min-w-0 break-words">{body}</div>
-          <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
-            {row.editedAt ? <span>(edited)</span> : null}
-            <span>{formatClock(row.timestamp)}</span>
-            {own ? <StatusIcon status={row.status} /> : null}
-          </div>
+          {live ? null : (
+            <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
+              {row.editedAt && !deleted ? <span>(edited)</span> : null}
+              <span>{formatClock(row.timestamp)}</span>
+              {own && !deleted ? <StatusIcon status={row.status} /> : null}
+            </div>
+          )}
         </div>
         {own && row.status === 'failed' ? (
           <p className="text-caption text-fg-error" data-testid="not-sent">

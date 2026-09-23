@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { type MessageRow, appDatabase, db } from '../../app/database';
 
 import {
+  PENDING_DELETIONS_PER_PEER,
   addMessage,
+  applyDeletion,
   applyEdit,
   applyReaction,
   countUnread,
@@ -12,8 +14,10 @@ import {
   listRooms,
   markDeliveredBefore,
   markRoomRead,
+  removeMessage,
   setMessageStatus,
   setRoomMuted,
+  tombstoneMessage,
 } from './messages';
 
 const PEER = '0xaa' as const;
@@ -119,5 +123,106 @@ describe('messages repository', () => {
     expect(await countUnread()).toBe(0);
     await setRoomMuted(PEER, false);
     expect(await countUnread()).toBe(2);
+  });
+});
+
+// RFC-0003 "Recipient flow". Each rule is one test; the RFC's wording is in
+// the test name.
+describe('RFC-0003 deletions (recipient)', () => {
+  it('known target: the peer’s message becomes a tombstone that keeps id, time and order, and loses text, reactions and edit mark', async () => {
+    await addMessage(row('a', { timestamp: 1, reactions: [{ emoji: '👍', by: 'me' }], editedAt: 5 }));
+    await addMessage(row('b', { timestamp: 2 }));
+    expect(await applyDeletion(PEER, 'a')).toBe('tombstoned');
+    const deleted = await db.messages.get('a');
+    expect(deleted).toMatchObject({ messageId: 'a', timestamp: 1, direction: 'incoming', content: { type: 'deleted' }, reactions: [], editedAt: null });
+    expect(JSON.stringify(deleted)).not.toContain('"text"');
+    expect((await listMessages(PEER)).map(m => m.messageId)).toEqual(['a', 'b']);
+  });
+
+  it('deletion is terminal: a later edit does not bring the text back, and a later reaction is not kept', async () => {
+    await addMessage(row('a'));
+    await applyDeletion(PEER, 'a');
+    await applyEdit('a', 'resurrected', 9);
+    await applyReaction('a', '🔥', 'peer', true);
+    expect(await db.messages.get('a')).toMatchObject({ content: { type: 'deleted' }, reactions: [], editedAt: null });
+  });
+
+  it('authorization: a deletion of our own message, or of another peer’s message, is ignored', async () => {
+    await addMessage(row('mine', { direction: 'outgoing', status: 'delivered' }));
+    await addMessage(row('theirs-other-peer', { peerAccountId: '0xbb' }));
+    expect(await applyDeletion(PEER, 'mine')).toBe('ignored');
+    expect(await applyDeletion(PEER, 'theirs-other-peer')).toBe('ignored');
+    expect((await db.messages.get('mine'))?.content).toEqual({ type: 'text', text: 'mine' });
+    expect((await db.messages.get('theirs-other-peer'))?.content).toEqual({ type: 'text', text: 'theirs-other-peer' });
+    // An ignored deletion leaves nothing pending.
+    expect(await db.pendingDeletions.count()).toBe(0);
+  });
+
+  it('unknown target: a deletion that arrives before its message means the message is never shown, and does not count as unread', async () => {
+    expect(await applyDeletion(PEER, 'late')).toBe('pending');
+    expect(await addMessage(row('late', { timestamp: 3 }))).toBe(true);
+    expect((await db.messages.get('late'))?.content).toEqual({ type: 'deleted' });
+    expect((await listRooms())[0]).toMatchObject({ unreadCount: 0, lastPreview: 'Message deleted' });
+    // Applied once: the pending entry is gone.
+    expect(await db.pendingDeletions.count()).toBe(0);
+  });
+
+  it('a pending deletion is per peer: the same id from another peer is shown', async () => {
+    await applyDeletion(PEER, 'x');
+    await addMessage(row('x', { peerAccountId: '0xbb' }));
+    expect((await db.messages.get('x'))?.content).toEqual({ type: 'text', text: 'x' });
+  });
+
+  it('idempotence: a duplicate deletion (before or after the target) is a no-op', async () => {
+    expect(await applyDeletion(PEER, 'a', 1)).toBe('pending');
+    expect(await applyDeletion(PEER, 'a', 2)).toBe('pending');
+    expect(await db.pendingDeletions.toArray()).toEqual([{ peerAccountId: PEER, messageId: 'a', createdAt: 1 }]);
+    await addMessage(row('a'));
+    const once = await db.messages.get('a');
+    expect(await applyDeletion(PEER, 'a')).toBe('tombstoned');
+    expect(await db.messages.get('a')).toEqual(once);
+    // The statement resent: the target again, now a known tombstone.
+    expect(await addMessage(row('a'))).toBe(false);
+    expect((await db.messages.get('a'))?.content).toEqual({ type: 'deleted' });
+  });
+
+  it('the pending set is bounded per peer; the oldest entry is evicted', async () => {
+    for (let i = 0; i < PENDING_DELETIONS_PER_PEER; i++) await applyDeletion(PEER, `m${i}`, 1000 + i);
+    await applyDeletion('0xbb', 'other', 1);
+    await applyDeletion(PEER, 'newest', 5000);
+    expect(await db.pendingDeletions.where('[peerAccountId+createdAt]').between([PEER, -Infinity], [PEER, Infinity]).count()).toBe(PENDING_DELETIONS_PER_PEER);
+    expect(await db.pendingDeletions.get([PEER, 'm0'])).toBeUndefined();
+    expect(await db.pendingDeletions.get([PEER, 'm1'])).toBeDefined();
+    expect(await db.pendingDeletions.get([PEER, 'newest'])).toBeDefined();
+    // Another peer's entries do not count against this peer's bound.
+    expect(await db.pendingDeletions.get(['0xbb', 'other'])).toBeDefined();
+  });
+
+  it('a tombstone of the newest message becomes the chat list preview', async () => {
+    await addMessage(row('a', { timestamp: 1 }));
+    await addMessage(row('b', { timestamp: 2 }));
+    await applyDeletion(PEER, 'a');
+    expect((await listRooms())[0]?.lastPreview).toBe('b');
+    await applyDeletion(PEER, 'b');
+    expect((await listRooms())[0]?.lastPreview).toBe('Message deleted');
+  });
+});
+
+describe('RFC-0003 deletions (sender, local side)', () => {
+  it('tombstoneMessage tombstones our own row, once', async () => {
+    await addMessage(row('mine', { direction: 'outgoing', status: 'delivered' }));
+    expect(await tombstoneMessage('mine')).toBe(true);
+    expect(await tombstoneMessage('mine')).toBe(true);
+    expect(await db.messages.get('mine')).toMatchObject({ content: { type: 'deleted' }, status: 'delivered' });
+    expect(await tombstoneMessage('missing')).toBe(false);
+  });
+
+  it('removeMessage drops a never-sent row and the preview falls back to the row before it', async () => {
+    await addMessage(row('a', { timestamp: 1 }));
+    await addMessage(row('unsent', { timestamp: 2, direction: 'outgoing', status: 'failed' }));
+    expect((await listRooms())[0]?.lastPreview).toBe('unsent');
+    await removeMessage('unsent');
+    expect(await db.messages.get('unsent')).toBeUndefined();
+    expect((await listRooms())[0]).toMatchObject({ lastPreview: 'a', lastMessageAt: 1 });
   });
 });

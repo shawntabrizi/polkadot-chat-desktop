@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 // Headless chat round trip with a live peer, through this repo's domain code:
-//   npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>]
+//   npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete]
 // Reuses .agent-runs/identity-<name>/identity.json (M1's script writes it) or
 // registers <name> + 4 random letters with M1's createIdentity. Dexie runs on
 // fake-indexeddb (memory only), seeded with the identity the way the app seeds
 // it. Sends a chat request, waits for the accept, sends `ping <nonce>`, waits
 // for a reply. Exit 0 E2E_OK, 3 PEER_KEY_UNSUPPORTED, 4 E2E_TIMEOUT <stage>,
 // 1 any other failure. Prints no secret.
+// --delete (M7, RFC-0003): after the reply, sends `delete me <nonce>`, lets
+// the echo land, deletes it for everyone (DELETE_SENT <messageId>), then sends
+// `ping <nonce>` again and waits for the answer. A bot with the pca RFC-0003
+// half logs BOT_RECEIVED_DELETED; that log is the bot's, not checked here.
+// --live-frame (M7 screenshots): after the reply, sends one text shaped like a
+// pca live progress frame (`⏳ working · …`), so the peer shows a thinking row.
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -41,8 +47,10 @@ const flagValues = new Set(['--profile', '--identity'].map((f) => args.indexOf(f
 const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.has(i));
 const profile = flag('profile') ?? 'devnet';
 const identityName = flag('identity') ?? 'pcde2e';
+const deleteRun = args.includes('--delete');
+const liveFrameRun = args.includes('--live-frame');
 if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>]');
+  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame]');
   process.exit(2);
 }
 if (profile !== 'devnet' && profile !== 'paseo') {
@@ -231,4 +239,58 @@ const reply = await waitFor(async () => (await incoming()).find((row) => !before
 if (!reply) finish(4, 'E2E_TIMEOUT reply');
 console.log(`REPLY ${textOf(reply).slice(0, 80)}`);
 console.log(`REPLY_HAS_NONCE ${textOf(reply).includes(nonce) ? 'yes' : 'no'}`);
+
+if (deleteRun) {
+  /** Sends one text and waits for the next incoming row after it. */
+  const sendAndWait = async (text, stage) => {
+    const seen = new Set((await incoming()).map((row) => row.messageId));
+    try {
+      await manager.sendMessage(peerAccountHex, { type: 'text', text });
+    } catch (error) {
+      finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === text);
+    const answer = await waitFor(async () => (await incoming()).find((row) => !seen.has(row.messageId)));
+    if (!answer) finish(4, `E2E_TIMEOUT ${stage}`);
+    return { own, answer };
+  };
+
+  const doomedText = `delete me ${randomBytes(3).toString('hex')}`;
+  const doomed = await sendAndWait(doomedText, 'echo of the message to delete');
+  console.log(`DOOMED_SENT ${doomedText}`);
+  console.log(`DOOMED_ECHO ${textOf(doomed.answer).slice(0, 80)}`);
+  try {
+    await manager.deleteForEveryone(peerAccountHex, doomed.own.messageId);
+  } catch (error) {
+    finish(1, `DELETE_FAIL ${error instanceof Error ? error.message : String(error)}`);
+  }
+  console.log(`DELETE_SENT ${doomed.own.messageId}`);
+  const local = await db.messages.get(doomed.own.messageId);
+  console.log(`LOCAL_TOMBSTONE ${local?.content.type === 'deleted' ? 'yes' : 'no'}`);
+  if (local?.content.type !== 'deleted') finish(1, 'DELETE_FAIL the local row is not a tombstone');
+
+  const after = `ping ${randomBytes(3).toString('hex')}`;
+  const { answer } = await sendAndWait(after, 'reply after the deletion');
+  console.log(`PING_SENT ${after}`);
+  console.log(`REPLY ${textOf(answer).slice(0, 80)}`);
+  console.log(`REPLY_HAS_NONCE ${textOf(answer).includes(after.slice(5)) ? 'yes' : 'no'}`);
+  // The bot must not answer from the deleted message.
+  const quoted = textOf(answer).includes(doomedText);
+  console.log(`REPLY_QUOTES_DELETED ${quoted ? 'yes' : 'no'}`);
+  if (quoted) finish(1, 'DELETE_FAIL the reply after the deletion quotes the deleted text');
+}
+
+if (liveFrameRun) {
+  // The text bot-core's createProgressTracker renders mid-turn.
+  const frame = '⏳ working · 12s · step 2\n▸ Reading notes.md\n▸ Searching the People chain';
+  try {
+    await manager.sendMessage(peerAccountHex, { type: 'text', text: frame });
+  } catch (error) {
+    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const sent = await waitFor(async () =>
+    (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && textOf(row) === frame && row.status === 'delivered'),
+  );
+  console.log(`LIVE_FRAME_SENT ${sent ? 'delivered' : 'not acked'}`);
+}
 finish(0, 'E2E_OK');

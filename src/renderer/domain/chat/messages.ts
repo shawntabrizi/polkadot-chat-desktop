@@ -1,7 +1,8 @@
 /**
  * Rooms and messages. A room is created with its first message and mirrors
  * the last message for the chat list; every write that adds a visible row
- * bumps it. Reactions and edits mutate the target row in place.
+ * bumps it. Reactions, edits and RFC-0003 deletions mutate the target row in
+ * place.
  */
 
 import type { HexString } from '../../app/bytes';
@@ -33,16 +34,28 @@ const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta
   });
 };
 
+/** How many deletions without a target are kept per peer (RFC-0003 allows a bound). */
+export const PENDING_DELETIONS_PER_PEER = 500;
+
+/** RFC-0003 tombstone: content, reactions and edit history go; id, time, side and status stay. */
+const tombstone = (row: MessageRow): MessageRow => ({ ...row, content: { type: 'deleted' }, reactions: [], editedAt: null });
+
 /**
  * Insert a row. An existing id is left as is (a replayed statement, or the
  * accept row written by both the accept path and the identity channel) and
  * `false` is returned. Incoming rows count as unread unless `read`.
+ * An incoming row the peer already deleted (RFC-0003 unknown target) is
+ * stored as a tombstone and never shown.
  */
 export const addMessage = (row: MessageRow, options: { read?: boolean } = {}): Promise<boolean> =>
-  appDatabase.transaction('rw', db.messages, db.rooms, async () => {
+  appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
     if (await db.messages.get(row.messageId)) return false;
-    await db.messages.add(row);
-    await touchRoom(row.peerAccountId, row, row.direction === 'incoming' && !options.read ? 1 : 0);
+    const pendingKey: [PeerId, string] = [row.peerAccountId, row.messageId];
+    const deleted = row.direction === 'incoming' && (await db.pendingDeletions.get(pendingKey)) !== undefined;
+    if (deleted) await db.pendingDeletions.delete(pendingKey);
+    const stored = deleted ? tombstone(row) : row;
+    await db.messages.add(stored);
+    await touchRoom(row.peerAccountId, stored, row.direction === 'incoming' && !options.read && !deleted ? 1 : 0);
     return true;
   });
 
@@ -71,11 +84,13 @@ export const applyReaction = (messageId: string, emoji: string, by: 'me' | 'peer
     .where('messageId')
     .equals(messageId)
     .modify(row => {
+      // Reactions on a deleted message are not shown (RFC-0003), so none are kept.
+      if (row.content.type === 'deleted') return;
       const without = row.reactions.filter(r => !(r.emoji === emoji && r.by === by));
       row.reactions = add ? [...without, { emoji, by }] : without;
     });
 
-/** An edit replaces the text of a text or reply row; other rows cannot be edited. */
+/** An edit replaces the text of a text or reply row; other rows (a tombstone too) cannot be edited. */
 export const applyEdit = (messageId: string, text: string, editedAt: number): Promise<number> =>
   db.messages
     .where('messageId')
@@ -86,6 +101,78 @@ export const applyEdit = (messageId: string, text: string, editedAt: number): Pr
       row.content = content;
       row.editedAt = editedAt;
     });
+
+/** The chat list preview follows a changed row when it is the room's newest. */
+const refreshPreview = async (row: MessageRow): Promise<void> => {
+  const room = await db.rooms.get(row.peerAccountId);
+  if (room && row.timestamp >= room.lastMessageAt) await db.rooms.update(row.peerAccountId, { lastPreview: previewOf(row.content) });
+};
+
+/**
+ * Tombstone a row in place, whoever sent it. Callers check that they may:
+ * `applyDeletion` for a peer's deletion, the sender flow for our own. A row
+ * already tombstoned is left alone (idempotent). `false` when there is no row.
+ */
+export const tombstoneMessage = (messageId: string): Promise<boolean> =>
+  appDatabase.transaction('rw', db.messages, db.rooms, async () => {
+    const row = await db.messages.get(messageId);
+    if (!row) return false;
+    if (row.content.type === 'deleted') return true;
+    const deleted = tombstone(row);
+    await db.messages.put(deleted);
+    await refreshPreview(deleted);
+    return true;
+  });
+
+export type DeletionResult = 'tombstoned' | 'pending' | 'ignored';
+
+/**
+ * RFC-0003 recipient flow for `deleted(messageId)` from `peer`:
+ * - a message received from that peer becomes a tombstone;
+ * - a message we sent, or one from another peer, is not touched;
+ * - an unknown id is kept in the peer's pending set and applied on arrival
+ *   (`addMessage`); the set keeps the newest `PENDING_DELETIONS_PER_PEER`.
+ * Re-processing is a no-op.
+ */
+export const applyDeletion = (peer: PeerId, messageId: string, now: number = Date.now()): Promise<DeletionResult> =>
+  appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
+    const row = await db.messages.get(messageId);
+    if (row) {
+      if (row.peerAccountId !== peer || row.direction !== 'incoming') return 'ignored';
+      if (row.content.type === 'deleted') return 'tombstoned';
+      await tombstoneMessage(messageId);
+      return 'tombstoned';
+    }
+    const key: [PeerId, string] = [peer, messageId];
+    if (!(await db.pendingDeletions.get(key))) {
+      await db.pendingDeletions.put({ peerAccountId: peer, messageId, createdAt: now });
+      const range = db.pendingDeletions.where('[peerAccountId+createdAt]').between([peer, -Infinity], [peer, Infinity]);
+      const excess = (await range.count()) - PENDING_DELETIONS_PER_PEER;
+      if (excess > 0) {
+        const oldest = await range.limit(excess).toArray();
+        await db.pendingDeletions.bulkDelete(oldest.map((entry): [PeerId, string] => [entry.peerAccountId, entry.messageId]));
+      }
+    }
+    return 'pending';
+  });
+
+/**
+ * Remove a row that never left this device (RFC-0003 sender case 1: nothing
+ * to retract on the wire). The room preview falls back to the newest row left.
+ */
+export const removeMessage = (messageId: string): Promise<void> =>
+  appDatabase.transaction('rw', db.messages, db.rooms, async () => {
+    const row = await db.messages.get(messageId);
+    if (!row) return;
+    await db.messages.delete(messageId);
+    const room = await db.rooms.get(row.peerAccountId);
+    if (!room) return;
+    const newest = (await listMessages(row.peerAccountId)).at(-1);
+    await db.rooms.update(row.peerAccountId, {
+      lastPreview: newest ? previewOf(newest.content) : '',
+      lastMessageAt: newest ? newest.timestamp : 0,
+    });
+  });
 
 export const markRoomRead = (peerAccountId: PeerId): Promise<number> =>
   db.rooms.update(peerAccountId, { unreadCount: 0 });

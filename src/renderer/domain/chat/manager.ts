@@ -28,7 +28,18 @@ import { addRequest, getRequest, listRequests, setRequestStatus } from '../reque
 import { type MessageContent, type OutgoingContent, fromWire, toWire } from './content';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { IdentityChannelEvent } from './identityEvents';
-import { addMessage, applyEdit, applyReaction, ensureRoom, getMessage, markRoomRead, setMessageStatus } from './messages';
+import {
+  addMessage,
+  applyDeletion,
+  applyEdit,
+  applyReaction,
+  ensureRoom,
+  getMessage,
+  markRoomRead,
+  removeMessage,
+  setMessageStatus,
+  tombstoneMessage,
+} from './messages';
 import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
 
@@ -49,6 +60,13 @@ export type ChatManager = {
   sendMessage: (peer: HexString, content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string }) => Promise<void>;
   react: (peer: HexString, messageId: string, emoji: string, add: boolean) => Promise<void>;
   edit: (peer: HexString, messageId: string, text: string) => Promise<void>;
+  /**
+   * RFC-0003 delete for everyone, own text or reply only. A `failed` message
+   * never reached a statement: it is removed here and nothing is sent.
+   * Otherwise it is tombstoned here at once and `deleted` goes out, which
+   * asks the peer's devices to tombstone it too.
+   */
+  deleteForEveryone: (peer: HexString, messageId: string) => Promise<void>;
   /** Sends a `failed` message again with the same id and timestamp; `failed` again if it still cannot go out. */
   retry: (peer: HexString, messageId: string) => Promise<void>;
   markRead: (peer: HexString) => Promise<void>;
@@ -107,6 +125,10 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         return;
       case 'edit':
         await applyEdit(effect.messageId, effect.text, message.timestamp);
+        return;
+      case 'deleted':
+        // Never a bubble, never a notification: only the tombstone it makes.
+        await applyDeletion(peer, effect.targetMessageId);
         return;
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
@@ -373,6 +395,24 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       const now = Date.now();
       await applyEdit(messageId, text, now);
       await submit(peer, { type: 'edit', messageId, text }, { messageId: randomId(), timestamp: now });
+    },
+
+    deleteForEveryone: async (peer, messageId) => {
+      const row = await getMessage(messageId);
+      if (!row || row.peerAccountId !== peer || row.direction !== 'outgoing') throw new Error('Only your own message can be deleted.');
+      if (row.content.type === 'deleted') return;
+      if (row.content.type !== 'text' && row.content.type !== 'reply') throw new Error('Only a text message can be deleted.');
+      if (row.status === 'failed') {
+        await removeMessage(messageId);
+        return;
+      }
+      // No session: fail before the tombstone, so the user can try again.
+      if (!sessions.has(peer)) throw new Error('no chat session with this contact');
+      // The SDK exposes no way to take one message out of the outstanding
+      // batch (RFC-0003 case 2), so a sent message is always retracted
+      // cooperatively (docs/decisions.md).
+      await tombstoneMessage(messageId);
+      await submit(peer, { type: 'deleted', targetMessageId: messageId }, { messageId: randomId(), timestamp: Date.now() });
     },
 
     retry: async (peer, messageId) => {

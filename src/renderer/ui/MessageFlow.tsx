@@ -5,6 +5,7 @@ import { ArrowDown, MessagesSquare } from 'lucide-react';
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { MessageRow, RequestRow } from '../app/database';
+import { isLiveFrame } from '../domain/chat/content';
 import { Badge } from '@/components/ui/badge';
 
 import { type BubbleActions, DateSeparator, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
@@ -28,6 +29,10 @@ type Props = {
   onSeen?: () => void;
   /** A line under one bubble (the running assistant reply's tool). */
   noteFor?: (row: MessageRow) => string | null;
+  /** Messages whose Delete waits out its Undo time: they show "Deleting…". */
+  deleting?: ReadonlySet<string>;
+  /** Typing reveal of answers that arrive while the room is open (Settings → Chat). */
+  reveal?: boolean;
 };
 
 type DayGroup = { day: string; rows: MessageRow[] };
@@ -55,7 +60,20 @@ const NewMessagesSeparator = () => (
 /** How close to the bottom still counts as "at the bottom" (new rows are followed). */
 const FOLLOW_SLACK_PX = 80;
 
-export const MessageFlow = ({ rows, peerName, requests, assistant, actionsFor, empty, firstUnreadId = null, unread = 0, onSeen, noteFor }: Props) => {
+export const MessageFlow = ({
+  rows,
+  peerName,
+  requests,
+  assistant,
+  actionsFor,
+  empty,
+  firstUnreadId = null,
+  unread = 0,
+  onSeen,
+  noteFor,
+  deleting,
+  reveal = false,
+}: Props) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const separatorRef = useRef<HTMLDivElement>(null);
@@ -179,6 +197,9 @@ export const MessageFlow = ({ rows, peerName, requests, assistant, actionsFor, e
                         first={separator !== null || previous?.direction !== row.direction}
                         last={next?.direction !== row.direction || next?.messageId === firstUnreadId}
                         thinking={assistant && row.direction === 'incoming' && messagePreview(row) === ''}
+                        live={!assistant && row.direction === 'incoming' && isLiveFrame(row.content)}
+                        deleting={deleting?.has(row.messageId) ?? false}
+                        reveal={reveal}
                         actions={actionsFor(row)}
                         note={noteFor?.(row) ?? null}
                       />

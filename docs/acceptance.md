@@ -897,3 +897,140 @@ A first run found that ⌥↑ in a contact room started an edit instead of movin
 - **Failed send → "Not sent · Retry"** was not seen live (no send failed); `manager.retry` is covered by two specs.
 - **Stop on a CLI engine** was not pressed live; SIGTERM then SIGKILL after 3 s is covered by a spec against a real child process that ignores SIGTERM.
 - `git status --short` is checked after the commit.
+
+## M7
+
+Run on 2026-09-23 (macOS, Apple Silicon). The bot `pcdpeer.47` was restarted on the pca RFC-0003 branch at 18:12:42 UTC (by the reviewer; I did not start or stop it). `deleted` is content kind 21 (docs/decisions.md).
+
+### `npm run check`
+
+```
+ Test Files  39 passed (39)
+      Tests  265 passed (265)
+   Start at  14:17:39
+   Duration  3.72s (transform 1.49s, setup 693ms, import 7.87s, tests 8.04s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (102 files)
+```
+
+(`tsc` and `eslint` print nothing when clean; exit code 0.)
+
+### `npm run smoke`
+
+```
+✓ built in 175ms
+SMOKE_OK
+```
+
+### `npm run e2e:chat -- pcdpeer.47 --delete`
+
+Final run (18:18 UTC, the committed code):
+
+```
+
+> polkadot-chat-desktop@0.1.0 e2e:chat
+> node scripts/e2e-chat.mjs pcdpeer.47 --delete
+
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7048375 (runtime ready in 1.9s)
+PEER 0x44195d1bc476ac9c1673ed9b266a929898e98a02d60f141712c5ae8fd819281d key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Echo: 
+PING_SENT ping a2006a
+REPLY Echo: ping a2006a
+REPLY_HAS_NONCE yes
+DOOMED_SENT delete me 7eec81
+DOOMED_ECHO Echo: delete me 7eec81
+DELETE_SENT 1ad63d86-1920-426a-bb9c-974898d8abcb
+LOCAL_TOMBSTONE yes
+PING_SENT ping 6ca1e3
+REPLY Echo: ping 6ca1e3
+REPLY_HAS_NONCE yes
+REPLY_QUOTES_DELETED no
+E2E_OK
+```
+
+The bot log (`/tmp/pcdpeer.log`, read only) for this run and for the first run at 18:14 UTC (same output, `DELETE_SENT 1e00aace-8b6a-4a83-86a3-8c63fa660f4b`):
+
+```
+{"time":"2026-09-23T18:14:59.881Z","event":"BOT_PROTOCOL_EXTENSION_ENABLED","peer":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","kind":"deleted"}
+{"time":"2026-09-23T18:14:59.881Z","event":"BOT_RECEIVED_DELETED","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messageId":"1e00aace-8b6a-4a83-86a3-8c63fa660f4b","applied":true}
+{"time":"2026-09-23T18:18:03.661Z","event":"BOT_RECEIVED_DELETED","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messageId":"1ad63d86-1920-426a-bb9c-974898d8abcb","applied":true}
+```
+
+Each `DELETE_SENT` id is the id in a `BOT_RECEIVED_DELETED` line with `"applied":true`. The answer to the ping after the deletion does not quote the deleted text.
+
+### `npm run screenshots`
+
+```
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots
+
+0.5s built
+5.8s saved berlin-day/signup.png
+11.8s saved berlin-night/signup.png
+12.5s seeded pcdecejakd.11
+12.5s assistant engine claude
+28.4s accepted the request of pcdtestjaia.98
+31.4s saved berlin-day/room.png
+31.6s deleting, the toast shows
+37.7s tombstone shown
+38.5s saved berlin-day/room-deleted.png
+43.4s saved berlin-day/assistant.png
+46.1s saved berlin-day/chats.png
+48.5s saved berlin-day/requests.png
+51.2s saved berlin-day/settings.png
+52.0s saved berlin-day/keyboard.png
+55.8s saved berlin-night/room.png
+56.6s saved berlin-night/room-deleted.png
+57.5s saved berlin-night/assistant.png
+60.2s saved berlin-night/chats.png
+62.6s saved berlin-night/requests.png
+64.5s saved berlin-night/settings.png
+65.3s saved berlin-night/keyboard.png
+66.0s seeded profile removed: true
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/room-deleted.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-day/keyboard.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/room-deleted.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+  .agent-runs/screens/berlin-night/keyboard.png
+SCREENSHOTS_OK
+```
+
+The room peer is the test identity `pcdtestjaia.98` (`PCD_SCREENSHOT_ROOM_WITH`). Its `e2e-chat.mjs` run got `--live-frame` and sent a real `⏳ working · 12s · step 2` text over the wire after its ping was answered. The echo bot sends no live frames.
+
+What the PNGs show (I read all of the new and changed ones):
+
+- `berlin-day/room-deleted.png`, `berlin-night/room-deleted.png`: the incoming live frame as a dimmed row "working · 12s · step 2 / ▸ Reading notes.md / ▸ Searching the People chain", with no hourglass, no time and no ticks. There is an own bubble "Message deleted" in italic tertiary with its time only (no ticks). In Berlin Day, the chat list preview is "You: Message deleted". The Night room has a second "hello" after the tombstone (the room step sends one in each theme).
+- The script's log lines "deleting, the toast shows" and "tombstone shown" come from waits in the DOM: the bubble said "Deleting…", a Sonner toast said "This asks their device to delete it.", and after the 6 s Undo time the bubble became the tombstone. The PNG is taken after the toast closed.
+- `berlin-day/settings.png`: the Chat section has "Reveal bot replies" (on) under Notifications and Sound.
+- `berlin-day/room.png`: the same room before the deletion; the chat list preview there shows the raw frame text "⏳working · 12s · step 2 ▸ Readin…" (docs/questions.md).
+
+### Not run / not seen
+
+- **RFC-0003 case 2 (pre-delivery removal)** is not implemented: the SDK cannot take one message out of the outstanding batch (docs/decisions.md). Case 1 (a `failed` row is removed and nothing is sent) is covered by a spec, not by a live run.
+- **The typing reveal was not seen live.** No peer on devnet edits a live frame into an answer (the echo bot has no live progress), and a PNG cannot show motion. `revealedLength` and `answerArrived` have specs; the hook itself ran only in the build, with no reveal triggered in the screenshots.
+- **The pulse of the live frame** and **Undo** were not seen in a PNG. Undo is not exercised by the script; its path is the same timer pattern as the identity reset's Undo.
+- **The Assistant's "Delete"** was not pressed in the app. `deleteMessage` has two specs (context and session dropped; no delete while streaming, no overwrite by a late event).
+- **The incoming tombstone in the app UI** was not seen live: the pca bot receives deletions but does not send them. The recipient rules have specs over the real SDK sessions and codec (`manager.messaging.spec.ts`) and over Dexie (`messages.spec.ts`).
+- `git status --short` is checked after the commit.

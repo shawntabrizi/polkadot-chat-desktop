@@ -1,11 +1,13 @@
 import { Bell, BellOff } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { toast } from 'sonner';
 
 import type { HexString } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { BANNER_DELAY_MS, type ConnectionSnapshot, showsBanner } from '../app/connectionState';
 import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/database';
 import { ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
+import { isLiveFrame } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { ChatManager } from '../domain/chat/manager';
 import { listMessages, markRoomRead, setRoomMuted } from '../domain/chat/messages';
@@ -37,6 +39,9 @@ type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'e
 
 /** How long typing pauses before the draft is saved (M6 step 2). */
 const DRAFT_SAVE_MS = 300;
+
+/** Delete acts at once and can be undone this long; then it is sent (M7 step 3). */
+const DELETE_UNDO_MS = 6000;
 
 const noActivity = { subscribe: () => () => undefined, snapshot: () => null };
 
@@ -89,6 +94,7 @@ export const Room = (props: Props) => {
   const [mode, setMode] = useState<Mode>({ mode: 'new' });
   const [error, setError] = useState<string | null>(null);
   const [assistantSettings, setAssistantSettings] = useState<AssistantSettings | null>(null);
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
@@ -202,19 +208,67 @@ export const Room = (props: Props) => {
     }
   };
 
-  const isEditable = (row: MessageRow) => row.direction === 'outgoing' && (row.content.type === 'text' || row.content.type === 'reply');
+  const markDeleting = (messageId: string, on: boolean) =>
+    setDeleting(current => {
+      const next = new Set(current);
+      if (on) next.add(messageId);
+      else next.delete(messageId);
+      return next;
+    });
+
+  // Act, then undo (design system §10): no confirm. The bubble says
+  // "Deleting…" while Undo is offered; the deletion is sent when it ends.
+  // It is committed even if the room is closed meanwhile.
+  const requestDelete = (row: MessageRow) => {
+    setError(null);
+    markDeleting(row.messageId, true);
+    let undone = false;
+    const commit = setTimeout(() => {
+      if (undone) return;
+      const work = assistant
+        ? assistant.deleteMessage(row.messageId)
+        : manager
+          ? manager.deleteForEveryone(peer as HexString, row.messageId)
+          : Promise.resolve();
+      work
+        .catch((cause: unknown) => setError(`${plainError(cause, 'The message was not deleted.')} Try again.`))
+        .finally(() => markDeleting(row.messageId, false));
+    }, DELETE_UNDO_MS);
+    toast('Message deleted', {
+      // RFC-0003: delete for everyone is a request to the peer's device, never a guarantee.
+      ...(assistant ? {} : { description: 'This asks their device to delete it.' }),
+      duration: DELETE_UNDO_MS,
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          undone = true;
+          clearTimeout(commit);
+          markDeleting(row.messageId, false);
+        },
+      },
+    });
+  };
+
+  const isEditable = (row: MessageRow) =>
+    row.direction === 'outgoing' && (row.content.type === 'text' || row.content.type === 'reply') && !deleting.has(row.messageId);
   const startEdit = (row: MessageRow) => {
     setMode({ mode: 'edit', target: row });
     setDraft(messagePreview(row));
   };
 
   const actionsFor = (row: MessageRow): BubbleActions | null => {
-    if (!manager) return {}; // The Assistant: Copy text only.
+    // A tombstone, a message on its way out, and a bot's live frame take no actions.
+    if (row.content.type === 'deleted' || deleting.has(row.messageId) || (manager && isLiveFrame(row.content))) return null;
+    if (!manager) {
+      // The Assistant: Copy text, and Delete (local only) once a reply is finished.
+      return row.content.type === 'text' && row.status !== 'streaming' ? { remove: { label: 'Delete', run: () => requestDelete(row) } } : {};
+    }
     return {
       react: emoji => void toggleReaction(row, emoji),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isEditable(row) ? () => startEdit(row) : undefined,
       retry: row.direction === 'outgoing' && row.status === 'failed' ? () => void retry(row) : undefined,
+      remove: isEditable(row) ? { label: 'Delete for everyone', run: () => requestDelete(row) } : undefined,
     };
   };
 
@@ -268,6 +322,8 @@ export const Room = (props: Props) => {
         unread={unread}
         onSeen={markSeen}
         noteFor={row => (activity && row.messageId === activity.messageId && row.status === 'streaming' ? activity.title : null)}
+        deleting={deleting}
+        reveal={prefs.revealReplies}
       />
       {error ? (
         <p role="alert" className="px-4 text-body-s text-fg-error">

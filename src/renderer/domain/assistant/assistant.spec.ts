@@ -226,6 +226,43 @@ describe('createAssistantChat', () => {
     chat.dispose();
   });
 
+  // M7 step 4: local only, and the deleted text must not reach the engine
+  // again, neither as room context nor through a resumed CLI session.
+  it('deletes a message locally, leaves it out of the next context, and starts a fresh engine session', async () => {
+    const fake = fakeApi({ engine: 'claude' });
+    const chat = createAssistantChat(fake.api);
+    await chat.send('my secret is 1234');
+    fake.done('reply-1', { text: 'noted: 1234', sessionId: 'S-1' });
+    await vi.waitFor(async () => expect((await db.settings.get('assistant.session'))?.value).toContain('S-1'));
+    const question = (await listMessages(ASSISTANT_PEER)).find(r => r.direction === 'outgoing')!;
+
+    await chat.deleteMessage(question.messageId);
+    await chat.deleteMessage('reply-1');
+    expect((await db.messages.get(question.messageId))?.content).toEqual({ type: 'deleted' });
+    expect((await db.messages.get('reply-1'))?.content).toEqual({ type: 'deleted' });
+
+    await chat.send('next');
+    expect(fake.sent[1]?.sessionId).toBeUndefined();
+    expect(JSON.stringify(fake.sent[1]?.messages)).not.toContain('1234');
+    chat.dispose();
+  });
+
+  it('does not delete a reply that is still streaming, and a late event does not undo a deletion', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('hello');
+    fake.delta('reply-1', 'partial');
+    await vi.waitFor(async () => expect(text(await db.messages.get('reply-1'))).toBe('partial'));
+    await expect(chat.deleteMessage('reply-1')).rejects.toThrow('Stop the reply first');
+    fake.done('reply-1');
+    await vi.waitFor(async () => expect((await db.messages.get('reply-1'))?.status).toBe('received'));
+    await chat.deleteMessage('reply-1');
+    fake.done('reply-1', { text: 'late' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect((await db.messages.get('reply-1'))?.content).toEqual({ type: 'deleted' });
+    chat.dispose();
+  });
+
   it('stops through the main process', async () => {
     const fake = fakeApi();
     const chat = createAssistantChat(fake.api);

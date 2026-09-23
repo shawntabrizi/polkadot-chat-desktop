@@ -43,3 +43,11 @@ Write the question, what you did meanwhile, and the date.
 - **Help → README URL.** The repo has no git remote. The menu opens `https://github.com/shawntabrizi/polkadot-chat-desktop#readme`, which I could not verify. What is the right URL?
 - **stripToolMarkup misses `<tool_result>` blocks.** Before the tools line was added to the system prompt, Claude (tools off) answered with an invented `<tool_result>…</invoke>` block and a made-up file content; bot-core's `stripToolMarkup` removed only the `</invoke>` and appended its note, so the invented content stayed. The tools line stops this in practice here. The same gap is in `.refs/bot-core` (pca bots). Widen the pattern to `<tool_result>` in both?
 - **Native notification banners were not seen** (docs/acceptance.md "Not run"). Please check once in the packaged app that a banner shows and that clicking it opens the room.
+
+## M7 (2026-09-23)
+
+- **RFC-0003 still says kind 20.** The implementation uses 21 (20 is `deviceChatAccepted`), as the coordinator set and as pca does. Should the RFC text in chat-spec change to 21, and should the mobile teams be told before they implement it? Meanwhile: 21 on both sides, with a pinned shared vector.
+- **The pca answer is a new message, not an edit.** bot-core's `live-reply.mjs` edits the placeholder into a short "✓ Answered in …" receipt and sends the answer as a new message. Step 6 reveals only an edit that replaces a live frame, so the answer itself appears at once and only the receipt is revealed. Should a new bot message that follows a live frame also be revealed? Meanwhile: as step 6 says.
+- **The first pca placeholder is not a live frame.** Its default text is "🤔 One moment — thinking…" (`BOT_THINKING_TEXT`), and it becomes `⏳ …` only at the first progress frame. So the first seconds show a normal bubble. Should pca start with `⏳ `, or should the app also match the thinking text? Meanwhile: only `⏳ ` matches.
+- **The chat list shows the raw frame** ("⏳working · 12s · step 2 ▸ Readin…", seen in room.png). Should the list say "Working…" for a live frame? Meanwhile: unchanged (M7 does not ask).
+- **Quit inside the Undo time.** If the app quits within 6 s of "Delete for everyone", nothing is sent and the message stays after the restart. Acceptable, or should the pending deletion be persisted?
