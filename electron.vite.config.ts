@@ -1,3 +1,4 @@
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
@@ -18,7 +19,18 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(import.meta.dirname, 'src/renderer'),
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
+    // Same aliases as tsconfig `paths`. `cn` is the bare specifier the shadcn
+    // CLI writes into components/ui; it must resolve to the theme's cn.ts, not
+    // to an npm package of that name (.refs/polkadot-design-system SKILL.md §1).
+    resolve: {
+      alias: {
+        '@': resolve(import.meta.dirname, 'src/renderer'),
+        cn: resolve(import.meta.dirname, 'src/renderer/lib/cn.ts'),
+        // Stock Sonner imports next-themes; lib/next-themes.ts answers from theme.ts.
+        'next-themes': resolve(import.meta.dirname, 'src/renderer/lib/next-themes.ts'),
+      },
+    },
     build: {
       rolldownOptions: {
         input: resolve(import.meta.dirname, 'src/renderer/index.html'),

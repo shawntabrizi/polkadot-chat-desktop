@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Polkadot Chat Web</title>
+    <!-- Anti-flash: set the stored theme before the first paint (theme/README.md). -->
+    <script>
+      try {
+        var t = localStorage.getItem('pds-theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@500;600&family=Martian+Mono:wght@400;500&display=swap"
+    />
+    <title>Polkadot Chat</title>
   </head>
   <body>
     <div id="root"></div>

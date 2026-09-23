@@ -31,6 +31,6 @@ export const QrCode = ({ value, size }: Props) => {
   }, [value, size]);
 
   // Hold the box before the first encode lands so the layout does not jump.
-  if (!dataUrl) return <div style={{ width: size, height: size }} />;
+  if (!dataUrl) return <canvas width={size} height={size} aria-hidden />;
   return <img src={dataUrl} width={size} height={size} alt="Pairing QR code" />;
 };

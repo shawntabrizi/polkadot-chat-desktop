@@ -537,3 +537,177 @@ Empty after the commit (checked before the report).
 
 - The native macOS keychain prompt path: the stored key uses the dev Electron binary's existing keychain entry, so no prompt appeared. The packaged app was not started with a stored key.
 - `docs/milestones/M4.check.sh` is the reviewer's script; its steps (clean tree, M4 commit, files, renderer grep, check, e2e, M4 section) were each run above or at commit time.
+
+## M5
+
+Run 2026-09-23 on this machine (macOS, Apple Silicon), Node v24.13.1. `LLM_PROXY_KEY` came from the shell environment and is not printed anywhere below.
+
+### `npm run check` (now ends with `check:tokens`)
+
+```
+
+> polkadot-chat-desktop@0.1.0 check
+> tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens
+
+
+ RUN  v4.1.11 /Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop
+
+
+ Test Files  30 passed (30)
+      Tests  189 passed (189)
+   Start at  12:51:25
+   Duration  1.10s (transform 1.15s, setup 535ms, import 7.65s, tests 3.28s, environment 2ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (89 files)
+exit 0
+```
+
+tsc and eslint print nothing when clean. Negative test of the token lint: a probe `.tsx` with one violation of each rule gave 10 hits (`grep -c` of the probe path in the lint output); the probe was deleted and the lint is clean again.
+
+### `npm run smoke` (last 12 lines)
+
+```
+
+✓ built in 6ms
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 2989 modules transformed.
+rendering chunks...
+out/renderer/index.html                     0.93 kB
+out/renderer/assets/index-Cz6qKNlv.css     98.17 kB
+out/renderer/assets/index-BDZ4Ia2p.js   2,436.29 kB
+
+✓ built in 167ms
+SMOKE_OK
+```
+
+### `npm run screenshots`
+
+Final run, with the seeded test identity `pcdecejakd.11` and the room peer `pcdtestjaia` (the bot was down, see below):
+
+```
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdtestjaia npm run screenshots
+0.6s built
+5.7s saved berlin-day/signup.png
+11.0s saved berlin-night/signup.png
+11.8s seeded pcdecejakd.11
+27.7s accepted the request of pcdtestjaia.98
+45.5s saved berlin-day/room.png
+55.9s saved berlin-day/assistant.png
+57.8s saved berlin-day/chats.png
+58.6s saved berlin-day/requests.png
+59.7s saved berlin-day/settings.png
+63.2s saved berlin-night/room.png
+64.1s saved berlin-night/assistant.png
+65.9s saved berlin-night/chats.png
+66.8s saved berlin-night/requests.png
+67.6s saved berlin-night/settings.png
+68.3s seeded profile removed: true
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-night/room.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+SCREENSHOTS_OK
+exit 0
+```
+
+First run (bot `pcdpeer.47` as the room peer, `PCD_SCREENSHOT_ROOM_WITH` unset). The Berlin Day room worked end to end; then the bot crashed (`TypeError … outbound-lanes.mjs:179` in `/tmp/pcdpeer.log`, 16:43 UTC), so the Berlin Night room had no echo:
+
+```
+0.6s built
+6.0s saved berlin-day/signup.png
+11.7s saved berlin-night/signup.png
+12.5s seeded pcdecejakd.11
+16.6s request sent to pcdpeer.47
+33.6s saved berlin-day/room.png
+47.3s saved berlin-day/assistant.png
+49.2s saved berlin-day/chats.png
+50.0s saved berlin-day/requests.png
+51.3s saved berlin-day/settings.png
+144.0s missed berlin-night/room.png: pcdpeer.47 did not echo
+144.8s saved berlin-night/assistant.png
+146.7s saved berlin-night/chats.png
+148.0s saved berlin-night/requests.png
+149.1s saved berlin-night/settings.png
+149.8s seeded profile removed: true
+
+PNGs:
+  .agent-runs/screens/berlin-day/signup.png
+  .agent-runs/screens/berlin-night/signup.png
+  .agent-runs/screens/berlin-day/room.png
+  .agent-runs/screens/berlin-day/assistant.png
+  .agent-runs/screens/berlin-day/chats.png
+  .agent-runs/screens/berlin-day/requests.png
+  .agent-runs/screens/berlin-day/settings.png
+  .agent-runs/screens/berlin-night/assistant.png
+  .agent-runs/screens/berlin-night/chats.png
+  .agent-runs/screens/berlin-night/requests.png
+  .agent-runs/screens/berlin-night/settings.png
+
+Not captured:
+  berlin-night/room.png (pcdpeer.47 did not echo)
+SCREENSHOTS_PARTIAL
+```
+
+That Berlin Day bot room is kept as `.agent-runs/screens/berlin-day/room-bot-pcdpeer47.png`. Runs 2 and 3 of the fallback (between them I fixed what the PNGs showed) also ended `SCREENSHOTS_OK`.
+
+### PNGs (1280×800, git-ignored)
+
+- `.agent-runs/screens/berlin-day/signup.png`
+- `.agent-runs/screens/berlin-day/chats.png`
+- `.agent-runs/screens/berlin-day/room.png`
+- `.agent-runs/screens/berlin-day/assistant.png`
+- `.agent-runs/screens/berlin-day/requests.png`
+- `.agent-runs/screens/berlin-day/settings.png`
+- `.agent-runs/screens/berlin-night/signup.png`
+- `.agent-runs/screens/berlin-night/chats.png`
+- `.agent-runs/screens/berlin-night/room.png`
+- `.agent-runs/screens/berlin-night/assistant.png`
+- `.agent-runs/screens/berlin-night/requests.png`
+- `.agent-runs/screens/berlin-night/settings.png`
+- `.agent-runs/screens/berlin-day/room-bot-pcdpeer47.png` (first run, live bot)
+
+### What the PNGs showed, and the fixes
+
+I read every PNG in both themes after each run.
+
+- Run 1, Berlin Day room: the tail corner was checked on a crop (4 px on the last bubble of a run). The time on own bubbles (`text-fg-tertiary-inverted`) was hard to read → the time uses `text-fg-secondary-inverted`; the ticks keep the step-5 colour.
+- Run 1, chat list: the Assistant preview showed raw markdown ("- Polkadot connects…") → previews strip markdown marks.
+- Run 1, requests: a request without a message left the room empty under "Today" → the line "<name> sent message request".
+- Run 1, settings: the requests panel was still open on the left → the script goes back to the list first.
+- Run 1, Berlin Night: a dark band under the room header (the navigation-overlay gradient is black on Night, darker than the container) → the fade is removed.
+- Run 3: the requests list showed one sender three times and an accepted contact still as a request → one row per person, contacts hidden; the pill count follows.
+- Run 4 (final): no overflow, no clipped text, the edges line up (pane content at 16 px, surfaces at 8 px), hover states are not captured (the pointer is parked). Known and accepted: the `opal` avatar tone is dark on Berlin Night (avatar colours are theme-invariant by design); the Danger section of Settings is below the fold.
+
+### Reset identity with Undo (step 8)
+
+Scratch script `.agent-runs/m5/reset.mjs` (git-ignored): a throwaway profile seeded with `pcdbenchfina.25`, the built app over CDP, Settings → Reset identity, Undo, then a second reset without Undo.
+
+```
+chat screen: true
+sign-up after reset: true | toast: true | identity.json=false .bak=true
+chat screen after Undo: true | identity.json=true .bak=false
+11 s later, still in chats: true | identity.json=true .bak=false
+second reset, no Undo: identity.json=false .bak=true
+11 s later: identity.json=false .bak=false | sign-up shown: true
+IndexedDB after commit: "contacts=0 device=0 messages=0 requests=0 rooms=0 secrets=0 settings=0 userIdentity=0"
+```
+
+### Not run
+
+- Themes Lisbon, Malta and Tokyo were not screenshotted (step 11 asks for Berlin Day and Night). They are selectable in Settings.
+- `git status --short` is checked after the commit (it cannot be in the committed file).

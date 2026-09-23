@@ -1,0 +1,87 @@
+/* Ported from .refs/polkadot-desktop/src/shared/markdown/markdown.css on 2026-09-23;
+   changes: every colour, radius and type step is a design-system token (named
+   type styles, no stock steps); rules for markup this app's renderer does not
+   emit (highlight.js, KaTeX, spoilers, /commands, task lists, the code Copy
+   head, the scroll mask) are dropped; no inverted tone (own messages render
+   as plain text). The HTML is a sanitized string, so JSX classes cannot reach
+   it: each rule styles what domain/markdown/markdown.ts emits. */
+
+.md {
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  @apply mt-0;
+}
+.md > :last-child {
+  @apply mb-0;
+}
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md pre,
+.md table {
+  @apply my-1.5;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  @apply mt-3 mb-1;
+}
+.md h1 {
+  @apply text-heading-l;
+}
+.md h2 {
+  @apply text-heading-m;
+}
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  @apply text-heading-s;
+}
+.md ul {
+  @apply list-disc ps-5;
+}
+.md ol {
+  @apply list-decimal ps-5;
+}
+.md li {
+  @apply my-0.5;
+}
+.md strong {
+  @apply font-semibold;
+}
+.md code {
+  @apply rounded-xs bg-surface-container px-1 py-px font-mono text-code;
+}
+.md pre {
+  @apply overflow-x-auto rounded-small bg-surface-container px-2.5 py-2;
+}
+.md pre code {
+  @apply bg-transparent p-0;
+}
+/* A table scrolls sideways in its own box; the bubble never grows. */
+.md table {
+  @apply block max-w-full overflow-x-auto border-collapse;
+}
+.md th,
+.md td {
+  @apply border-b px-2 py-1 text-start align-top;
+}
+.md th {
+  @apply font-medium whitespace-nowrap;
+}
+.md blockquote {
+  @apply ms-0 border-s-2 border-stroke-tertiary ps-2 text-fg-secondary;
+}
+.md hr {
+  @apply my-2 border-0 border-t;
+}
+/* Tailwind's preflight removes link styling. */
+.md a {
+  @apply text-fg-link underline transition-colors hover:text-fg-link-hover;
+}

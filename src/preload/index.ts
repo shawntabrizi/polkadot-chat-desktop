@@ -21,6 +21,7 @@ const api: DesktopApi = {
     create: request => ipcRenderer.invoke(IPC.identityCreate, request),
     secretsForRenderer: () => ipcRenderer.invoke(IPC.identitySecretsForRenderer),
     reset: () => ipcRenderer.invoke(IPC.identityReset),
+    resetUndo: () => ipcRenderer.invoke(IPC.identityResetUndo),
     onProgress: listener => {
       const handler = (_event: IpcRendererEvent, line: string) => listener(line);
       ipcRenderer.on(IPC.identityProgress, handler);

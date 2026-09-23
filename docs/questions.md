@@ -28,3 +28,10 @@ Write the question, what you did meanwhile, and the date.
 
 - **Markdown in contact rooms.** Only Assistant replies render as markdown. Bots (`pca`) also write markdown. Should incoming messages from contacts render as markdown too? It is a small change in `Room.tsx`, with the same sanitizer.
 - **Streaming granularity.** With `auto/deepseek-v4.1-flash` the proxy sends the answer in few, large content deltas (2 for "proxy ok", after about 8 s of reasoning deltas that are not shown). The app shows "Thinking…" during the reasoning. Should the reasoning be shown (for example, dimmed), or is "Thinking…" enough?
+
+## M5 (2026-09-23)
+
+- **pcdpeer.47 crashed during the screenshots.** At 16:43 UTC, right after it echoed the Berlin Day "hello" and got a 👍 reaction, the bot died with `TypeError: Cannot read properties of null (reading 'extensions')` at `polkadot-chat-agents/lib/outbound-lanes.mjs:179` (`/tmp/pcdpeer.log`). I did not restart it. The final room.png files show a chat with the test identity `pcdtestjaia.98` instead (`PCD_SCREENSHOT_ROOM_WITH`); the live bot room in Berlin Day is kept at `.agent-runs/screens/berlin-day/room-bot-pcdpeer47.png`. The crash looks like a bot-side bug in the outbound lane code; please restart the bot and check that file.
+- **Settings shows Lisbon, Malta and Tokyo** (step 8 asks for the five themes). references/shadcn.md says to review in Lisbon, since `text-primary`-style mistakes only show there; the screenshots cover Berlin Day and Night only, as step 11 asks. Do you want Lisbon screenshots too?
+- **Reset quit inside the grace period.** If the app quits within 10 s of "Reset identity", the next start restores the identity (the renderer may not have wiped its database). If it quits between 8 s (database wiped) and 10 s, the identity comes back with no chats. Acceptable, or should the renderer confirm the wipe to main (a third IPC call, which M5 did not allow)?
+- **Contrast of the step-5 tick colour.** `text-fg-tertiary-inverted` on the inverted bubble is faint in both themes. I kept it for the ticks as step 5 says and used `text-fg-secondary-inverted` for the time. Use secondary for the ticks as well?

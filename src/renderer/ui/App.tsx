@@ -1,24 +1,24 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 
-import { type PeerId, appDatabase } from '../app/database';
+import { appDatabase } from '../app/database';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionStatus, getPeopleConnection } from '../app/statementStore';
-import { ASSISTANT_PEER, type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
+import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
 import { type IdentityLookup, createIdentityLookup } from '../domain/identity/lookup';
-import { resetIdentity } from '../domain/identity/reset';
 import { ensureSelfIdentitySeeded } from '../domain/identity/selfIdentity';
 import { type UserIdentity, readUserIdentity } from '../domain/identity/userIdentity';
+import { Toaster } from '@/components/ui/sonner';
+import { TooltipProvider } from '@/components/ui/tooltip';
+
 import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
 
-import { Chats } from './Chats';
-import { Requests } from './Requests';
-import { Room } from './Room';
-import { Search } from './Search';
-import { Settings } from './Settings';
+import { Shell } from './Shell';
 import { SignUp } from './SignUp';
+import { plainError } from './format';
 
 type Boot = {
   username: string;
@@ -26,6 +26,9 @@ type Boot = {
   identity: UserIdentity | null;
   profileId: NetworkProfileId;
 };
+
+/** How long "Reset identity" stays undoable here; the main process keeps its backup a little longer. */
+const RESET_UNDO_MS = 8_000;
 
 /**
  * The identity saved by the main process is the account (Pair.tsx stays in
@@ -40,27 +43,19 @@ const start = async (identityApi: DesktopIdentityApi): Promise<Boot | null> => {
   return { username: summary.username, deviceKeys, identity, profileId: summary.profile };
 };
 
-type Tab = 'chats' | 'requests' | 'search' | 'settings';
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'chats', label: 'Chats' },
-  { id: 'requests', label: 'Requests' },
-  { id: 'search', label: 'Search' },
-  { id: 'settings', label: 'Settings' },
-];
-
 type Runtime = { manager: ChatManager; lookup: IdentityLookup };
+
+const Centered = ({ children }: { children: ReactNode }) => (
+  <main className="flex min-h-screen items-center justify-center p-4 text-center">{children}</main>
+);
 
 export const App = () => {
   const [boot, setBoot] = useState<Boot | null>(null);
   const [needsSignUp, setNeedsSignUp] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  // Bumped to run the start-up again (after sign-up or logout).
+  // Bumped to run the start-up again (after sign-up or an undone reset).
   const [startCount, setStartCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
-  const [tab, setTab] = useState<Tab>('chats');
-  const [openPeer, setOpenPeer] = useState<PeerId | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
 
   useEffect(() => {
@@ -78,7 +73,7 @@ export const App = () => {
       })
       .catch((cause: unknown) => {
         console.error('[app] boot failed', cause);
-        if (active) setError(cause instanceof Error ? cause.message : 'Could not open the saved account.');
+        if (active) setError(`${plainError(cause, 'The saved account did not open.')} Restart the app to try again.`);
       });
     return () => {
       active = false;
@@ -103,8 +98,8 @@ export const App = () => {
     };
   }, []);
 
-  // The chat manager lives as long as the identity: it starts once the pairing
-  // is known and is disposed on logout or a profile change.
+  // The chat manager lives as long as the identity: it starts once the
+  // identity is known and is disposed on reset or a profile change.
   const identity = boot?.identity ?? null;
   const deviceKeys = boot?.deviceKeys ?? null;
   const profileId = boot?.profileId ?? null;
@@ -134,7 +129,7 @@ export const App = () => {
       })
       .catch((cause: unknown) => {
         console.error('[app] chat manager failed to start', cause);
-        if (active) setError('Chat could not start. Reload the page.');
+        if (active) setError('Chat did not start. Restart the app to try again.');
       });
     return () => {
       active = false;
@@ -146,79 +141,93 @@ export const App = () => {
 
   const signedUp = (result: CreateIdentityResponse) => {
     // Confirmed = in a best block; finality is shown, not awaited (PLAN.md "Best block first").
-    setNotice(
-      !result.confirmed
-        ? `Signed up as ${result.username}. The network has not confirmed it yet; others may not find you for a few minutes.`
-        : result.finalized
-          ? `Signed up as ${result.username}. Confirmed.`
-          : `Signed up as ${result.username}. Confirmed, finalizing.`,
-    );
+    if (!result.confirmed) {
+      toast(`Signed up as ${result.username}`, {
+        description: 'The network has not confirmed it yet; others may not find you for a few minutes.',
+      });
+    } else {
+      toast(`Signed up as ${result.username}`, { description: result.finalized ? 'Confirmed.' : 'Confirmed, finalizing.' });
+    }
     setNeedsSignUp(false);
     setStartCount(count => count + 1);
   };
 
+  /**
+   * Act first, then offer Undo (SKILL.md §10): the main process moves the
+   * identity aside, the app shows sign-up, and only when the Undo window ends
+   * is the database wiped and the app reloaded.
+   */
+  const resetWithUndo = async () => {
+    const identityApi = window.desktop?.identity;
+    if (!identityApi) throw new Error('This app runs only inside Polkadot Chat Desktop.');
+    await identityApi.reset();
+    setBoot(null);
+    setNeedsSignUp(true);
+    let undone = false;
+    const commit = setTimeout(() => {
+      if (undone) return;
+      void appDatabase.delete().then(() => window.location.reload());
+    }, RESET_UNDO_MS);
+    toast('Identity reset', {
+      description: 'Your username, keys and chats are gone from this computer.',
+      duration: RESET_UNDO_MS,
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          undone = true;
+          clearTimeout(commit);
+          identityApi.resetUndo().then(
+            restored => {
+              if (restored) {
+                setNeedsSignUp(false);
+                setStartCount(count => count + 1);
+              } else {
+                toast('The identity could not be restored', { description: 'The undo time was over. Sign up again to chat.' });
+              }
+            },
+            (cause: unknown) => toast('The identity could not be restored', { description: plainError(cause, 'Sign up again to chat.') }),
+          );
+        },
+      },
+    });
+  };
+
+  const content = (() => {
+    if (error) {
+      return (
+        <Centered>
+          <p role="alert" className="max-w-md text-body-m text-fg-error">
+            {error}
+          </p>
+        </Centered>
+      );
+    }
+    if (needsSignUp && window.desktop) return <SignUp identityApi={window.desktop.identity} onSignedUp={signedUp} />;
+    if (!boot?.identity) {
+      return (
+        <Centered>
+          <p className="text-body-m text-fg-tertiary">Loading…</p>
+        </Centered>
+      );
+    }
+    return (
+      <Shell
+        username={boot.username}
+        identity={boot.identity}
+        profileId={boot.profileId}
+        runtime={runtime}
+        assistant={assistant}
+        assistantApi={window.desktop?.assistant ?? null}
+        connection={connection}
+        onReset={resetWithUndo}
+      />
+    );
+  })();
+
   return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', padding: 24, maxWidth: 720 }}>
-      <h1>Polkadot Chat Web</h1>
-      {error ? <p role="alert">{error}</p> : null}
-      {!boot && !needsSignUp && !error ? <p>Loading...</p> : null}
-      {needsSignUp && window.desktop ? <SignUp identityApi={window.desktop.identity} onSignedUp={signedUp} /> : null}
-      {notice ? <p data-testid="notice">{notice}</p> : null}
-      {boot ? <p data-testid="username">{boot.username}</p> : null}
-      {boot?.identity ? (
-        <>
-          <nav style={{ display: 'flex', gap: 8, margin: '12px 0', alignItems: 'center' }}>
-            {TABS.map(entry => (
-              <button
-                key={entry.id}
-                type="button"
-                onClick={() => {
-                  setTab(entry.id);
-                  setOpenPeer(null);
-                }}
-                aria-current={tab === entry.id ? 'page' : undefined}
-                style={{ fontWeight: tab === entry.id ? 'bold' : 'normal' }}
-              >
-                {entry.label}
-              </button>
-            ))}
-            <small data-testid="connection-status" style={{ marginLeft: 'auto' }}>
-              {connection === 'connected' ? 'Connected' : connection === 'connecting' ? 'Connecting…' : 'Disconnected'}
-            </small>
-          </nav>
-          {!runtime && !error ? <p>Starting chat...</p> : null}
-          {tab === 'chats' && assistant && openPeer === ASSISTANT_PEER ? (
-            <Room peer={ASSISTANT_PEER} assistant={assistant} onBack={() => setOpenPeer(null)} />
-          ) : null}
-          {tab === 'chats' && runtime && openPeer && openPeer !== ASSISTANT_PEER ? (
-            <Room peer={openPeer} manager={runtime.manager} onBack={() => setOpenPeer(null)} />
-          ) : null}
-          {tab === 'chats' && !openPeer ? <Chats onOpen={setOpenPeer} /> : null}
-          {tab === 'requests' && runtime ? <Requests manager={runtime.manager} /> : null}
-          {tab === 'search' && runtime ? (
-            <Search
-              profile={NETWORK_PROFILES[boot.profileId]}
-              selfIdentityAccountId={boot.identity.identityAccountId}
-              lookup={runtime.lookup}
-              manager={runtime.manager}
-            />
-          ) : null}
-          {tab === 'settings' ? (
-            <Settings
-              username={boot.username}
-              identity={boot.identity}
-              deviceKeys={boot.deviceKeys}
-              profileId={boot.profileId}
-              assistantApi={window.desktop?.assistant ?? null}
-              onReset={async () => {
-                const desktop = window.desktop;
-                if (!desktop) throw new Error('This app runs only inside Polkadot Chat Desktop.');
-                await resetIdentity({ identityApi: desktop.identity, database: appDatabase, reload: () => window.location.reload() });
-              }}
-            />
-          ) : null}
-        </>
-      ) : null}
-    </main>
+    <TooltipProvider>
+      {content}
+      <Toaster position="bottom-right" />
+    </TooltipProvider>
   );
 };

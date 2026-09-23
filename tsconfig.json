@@ -15,7 +15,14 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    // `@/` is the renderer (shadcn's aliases in components.json). `cn` is the bare
+    // specifier the shadcn CLI writes into components; it must be the theme's cn.ts.
+    "paths": {
+      "@/*": ["./src/renderer/*"],
+      "cn": ["./src/renderer/lib/cn.ts"],
+      "next-themes": ["./src/renderer/lib/next-themes.ts"]
+    }
   },
   "include": ["src", "electron.vite.config.ts", "vitest.config.ts", "vitest.setup.ts"]
 }

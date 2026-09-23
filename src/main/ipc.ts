@@ -26,7 +26,7 @@ import { streamChat } from './assistant/client';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
-import { deleteIdentity, loadIdentity, saveIdentity } from './identity/store';
+import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
 import { readMetadata, writeMetadata } from './metadataCache';
 
 // The mobile app's rule: lowercase letters only, 6 to 29 of them.
@@ -34,6 +34,13 @@ const USERNAME = /^[a-z]{6,29}$/;
 const DIGITS = /^\d{2}$/;
 
 let creating = false;
+
+/**
+ * How long a reset stays undoable. Longer than the renderer's 8 s Undo toast,
+ * so an Undo clicked at the last moment still finds the backup.
+ */
+const RESET_GRACE_MS = 10_000;
+let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Limits on what the renderer may send to the proxy: a system prompt plus
 // the last turns of one room, each a chat message of normal size.
@@ -120,10 +127,27 @@ export const registerIpc = (): void => {
     }
   });
 
+  // A backup left by a reset whose grace period did not end (the app quit or
+  // crashed first) is restored: the renderer may not have wiped its database
+  // yet, and restoring loses nothing. With a new identity in place it is dropped.
+  if (!restoreIdentity()) dropIdentityBackup();
+
   ipcMain.handle(IPC.identityReset, (): void => {
     // A reset during a sign-up would race the save of the new mnemonic.
     if (creating) throw new Error('A sign-up is running. Wait for it to end.');
-    deleteIdentity();
+    stashIdentity();
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => {
+      resetTimer = null;
+      dropIdentityBackup();
+    }, RESET_GRACE_MS);
+  });
+
+  ipcMain.handle(IPC.identityResetUndo, (): boolean => {
+    if (!resetTimer) return false;
+    clearTimeout(resetTimer);
+    resetTimer = null;
+    return restoreIdentity();
   });
 
   // Runtime metadata is public; the cache module checks the code hash and the size.

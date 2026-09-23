@@ -98,7 +98,7 @@ export const Pair = ({ deviceKeys, profileId, processedStatementHex, onProfileCh
           ))}
         </select>
       </label>
-      <div style={{ margin: '16px 0' }}>
+      <div className="my-4">
         <QrCode value={qrPayload} size={320} />
       </div>
       <p data-testid="pairing-status">{statusLine(state)}</p>
@@ -109,7 +109,7 @@ export const Pair = ({ deviceKeys, profileId, processedStatementHex, onProfileCh
       ) : null}
       <details>
         <summary>Pairing link</summary>
-        <code style={{ wordBreak: 'break-all' }}>{qrPayload}</code>
+        <code className="break-all">{qrPayload}</code>
       </details>
     </section>
   );

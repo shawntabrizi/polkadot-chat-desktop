@@ -11,6 +11,7 @@ export const IPC = {
   identitySecretsForRenderer: 'identity:secretsForRenderer',
   identityProgress: 'identity:progress',
   identityReset: 'identity:reset',
+  identityResetUndo: 'identity:resetUndo',
   chainMetadataGet: 'chain:metadataGet',
   chainMetadataSet: 'chain:metadataSet',
   assistantGetSettings: 'assistant:getSettings',
@@ -67,11 +68,15 @@ export type DesktopIdentityApi = {
   create: (request: CreateIdentityRequest) => Promise<CreateIdentityResponse>;
   secretsForRenderer: () => Promise<RendererSecrets>;
   /**
-   * Deletes `identity.json` from this computer. The username stays claimed on
-   * chain, but without a backup (v1) it can never be used again. The caller
-   * then wipes the renderer database and reloads.
+   * Removes `identity.json` from this computer, undoable for 10 s with
+   * `resetUndo` (the main process keeps a `.bak` until then). After that the
+   * username stays claimed on chain, but without a backup (v1) it can never be
+   * used again. The caller wipes the renderer database once its own grace
+   * period ends, then reloads.
    */
   reset: () => Promise<void>;
+  /** Puts back the identity a `reset` removed. `false` when the grace period is over. */
+  resetUndo: () => Promise<boolean>;
   /** Progress lines of a running `create`. Returns the unsubscribe function. */
   onProgress: (listener: (line: string) => void) => () => void;
 };

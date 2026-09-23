@@ -1,0 +1,18 @@
+@import "tailwindcss";
+@import "./theme/index.css";
+@import "./ui/markdown.css";
+
+/* The theme-aware logo pair (ui/Logo.tsx): `_dark` art on light themes,
+   `_light` art on Berlin Night, via the theme's own `dark` variant. */
+.logo-on-light {
+  display: block;
+  @variant dark {
+    display: none;
+  }
+}
+.logo-on-dark {
+  display: none;
+  @variant dark {
+    display: block;
+  }
+}

@@ -1,74 +1,188 @@
+// Flow and strings from docs/reference/mobile-ux.md "Starting a chat"; banner
+// layout from .refs/polkadot-desktop/src/features/chat/ui/partials/RequestBanner.tsx
+// and ChatFullscreen.tsx's requests list and pending room (2026-09-23).
+
+import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 
-import { hexToBytes } from '../app/bytes';
-import type { RequestRow } from '../app/database';
+import type { HexString } from '../app/bytes';
+import { type MessageRow, type RequestRow, db } from '../app/database';
 import type { ChatManager } from '../domain/chat/manager';
 import { listRequests } from '../domain/requests/repository';
+import { Button } from '@/components/ui/button';
 
-import { formatTime, shortAccount, toSs58 } from './format';
+import { PeerAvatar } from './Avatar';
+import { ChatRow } from './ChatRow';
+import { DateSeparator, MessageBubble } from './MessageBubble';
+import { RoomHeader } from './RoomHeader';
+import { formatDay, formatListTime, plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
-type Props = { manager: ChatManager };
-
-const peerLabel = (request: RequestRow): string =>
-  `${request.peerUsername} (${shortAccount(toSs58(hexToBytes(request.peerAccountId)))})`;
-
-export const Requests = ({ manager }: Props) => {
+/**
+ * Incoming requests that wait for an answer, newest first: one per person
+ * (a sender's earlier requests replay from the network as separate rows),
+ * and none from someone who is already a contact.
+ */
+export const usePendingIncoming = (): RequestRow[] => {
   const requests = useLiveQuery(listRequests, []);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const contacts = useLiveQuery(() => db.contacts.toArray(), []);
+  const known = new Set((contacts ?? []).map(contact => contact.accountId));
+  const newest = new Map<string, RequestRow>();
+  for (const request of requests ?? []) {
+    if (request.direction !== 'incoming' || request.status !== 'pending' || known.has(request.peerAccountId)) continue;
+    const seen = newest.get(request.peerAccountId);
+    if (!seen || request.timestamp > seen.timestamp) newest.set(request.peerAccountId, request);
+  }
+  return [...newest.values()].sort((a, b) => b.timestamp - a.timestamp);
+};
 
-  const act = async (requestId: string, action: 'accept' | 'decline') => {
+type PanelProps = {
+  selectedRequestId: string | null;
+  onBack: () => void;
+  onOpen: (requestId: string) => void;
+};
+
+/** The left pane while "New requests" is open: replaces the chat list. */
+export const RequestsPanel = ({ selectedRequestId, onBack, onOpen }: PanelProps) => {
+  const requests = usePendingIncoming();
+  return (
+    <>
+      <div className="flex h-12 shrink-0 items-center gap-1">
+        <Button variant="ghost" size="icon" className="rounded-full font-normal" aria-label="Back to chats" onClick={onBack}>
+          <ArrowLeft className="size-5" />
+        </Button>
+        <h1 className="text-heading-m text-fg-primary">Message requests</h1>
+      </div>
+      <p className="mb-2 rounded-nested bg-surface-nested px-3 py-2 text-body-s text-fg-secondary">
+        Message requests from people who aren't in your contact list appear here.
+      </p>
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+        {requests.length === 0 ? <p className="px-2 py-6 text-center text-body-s text-fg-secondary">No requests right now.</p> : null}
+        {requests.map(request => (
+          <ChatRow
+            key={request.requestId}
+            testId="incoming-request"
+            avatar={<PeerAvatar name={request.peerUsername} />}
+            name={request.peerUsername}
+            time={formatListTime(request.timestamp)}
+            preview={request.welcomeMessage ?? 'Message request'}
+            unread={0}
+            selected={selectedRequestId === request.requestId}
+            onClick={() => onOpen(request.requestId)}
+          />
+        ))}
+      </div>
+    </>
+  );
+};
+
+/** A request's welcome message, shown as the bubble it will become. */
+const welcomeRow = (request: RequestRow): MessageRow => ({
+  messageId: `request:${request.requestId}`,
+  peerAccountId: request.peerAccountId,
+  timestamp: request.timestamp,
+  direction: request.direction === 'incoming' ? 'incoming' : 'outgoing',
+  status: request.direction === 'incoming' ? 'received' : 'sent',
+  content: { type: 'text', text: request.welcomeMessage ?? '' },
+  reactions: [],
+  editedAt: null,
+});
+
+const RequestBody = ({ request, note }: { request: RequestRow; note: string | null }) => (
+  <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-2" data-testid="messages">
+    <DateSeparator text={formatDay(request.timestamp)} />
+    {note ? <p className="py-2 text-center text-label-s text-fg-secondary">{note}</p> : null}
+    {request.welcomeMessage ? <MessageBubble row={welcomeRow(request)} quote={null} first last actions={null} /> : null}
+  </div>
+);
+
+type IncomingProps = {
+  requestId: string;
+  manager: ChatManager | null;
+  /** Called with the new contact once the request is accepted. */
+  onAccepted: (peer: HexString) => void;
+  onDeclined: (name: string) => void;
+};
+
+/** The recipient's view: the banner replaces the composer. */
+export const IncomingRequestRoom = ({ requestId, manager, onAccepted, onDeclined }: IncomingProps) => {
+  const request = useLiveQuery(() => db.requests.get(requestId), [requestId]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!request) return null;
+  const name = request.peerUsername;
+
+  const act = async (action: 'accept' | 'decline') => {
+    if (!manager) return;
     setError(null);
-    setBusy(requestId);
+    setBusy(true);
     try {
-      if (action === 'accept') await manager.acceptRequest(requestId);
-      else await manager.declineRequest(requestId);
+      if (action === 'accept') {
+        await manager.acceptRequest(request.requestId);
+        onAccepted(request.peerAccountId);
+      } else {
+        await manager.declineRequest(request.requestId);
+        onDeclined(name);
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : `Could not ${action} the request.`);
+      const fallback = action === 'accept' ? 'The request was not accepted.' : 'The request was not declined.';
+      setError(`${plainError(cause, fallback)} Check your connection and try again.`);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
-  const incoming = requests?.filter(request => request.direction === 'incoming') ?? [];
-  const outgoing = requests?.filter(request => request.direction === 'outgoing') ?? [];
-
   return (
-    <section>
-      <h2>Requests</h2>
-      {error ? <p role="alert">{error}</p> : null}
-      <h3>Incoming</h3>
-      {incoming.length === 0 ? <p>No incoming requests.</p> : null}
-      <ul>
-        {incoming.map(request => (
-          <li key={request.requestId} style={{ margin: '8px 0' }} data-testid="incoming-request">
-            <strong>{peerLabel(request)}</strong> — {formatTime(request.timestamp)}
-            {request.welcomeMessage ? <blockquote>{request.welcomeMessage}</blockquote> : null}
-            {request.status === 'pending' ? (
-              <>
-                <button type="button" disabled={busy !== null} onClick={() => void act(request.requestId, 'accept')}>
-                  Accept
-                </button>{' '}
-                <button type="button" disabled={busy !== null} onClick={() => void act(request.requestId, 'decline')}>
-                  Decline
-                </button>
-              </>
-            ) : (
-              <em>{request.status}</em>
-            )}
-          </li>
-        ))}
-      </ul>
-      <h3>Outgoing</h3>
-      {outgoing.length === 0 ? <p>No outgoing requests.</p> : null}
-      <ul>
-        {outgoing.map(request => (
-          <li key={request.requestId} style={{ margin: '8px 0' }} data-testid="outgoing-request">
-            <strong>{peerLabel(request)}</strong> — {formatTime(request.timestamp)} — <em>{request.status}</em>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <>
+      <RoomHeader avatar={<PeerAvatar name={name} />} name={name} />
+      <RequestBody request={request} note={request.welcomeMessage ? null : `${name} sent message request`} />
+      <div className="flex shrink-0 flex-col gap-2 px-4 pt-2 pb-4" data-testid="request-banner">
+        <div className="flex items-center gap-4 rounded-nested bg-surface-nested px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-heading-s text-fg-primary">Accept chat request from {name}</p>
+            <p className="text-body-m text-fg-secondary">
+              Add {name} to your contacts to accept the chat request. They won't know you've seen their message until you accept.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="secondary" className="rounded-medium text-label-m" disabled={busy || !manager} onClick={() => void act('decline')}>
+              Decline
+            </Button>
+            <Button className="rounded-medium text-label-m" disabled={busy || !manager} onClick={() => void act('accept')}>
+              Accept
+            </Button>
+          </div>
+        </div>
+        {error ? (
+          <p role="alert" className="text-body-s text-fg-error">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </>
+  );
+};
+
+/** The sender's view: the welcome message, and a line instead of the composer. */
+export const OutgoingRequestRoom = ({ peer }: { peer: HexString }) => {
+  const request = useLiveQuery(
+    async () =>
+      (await db.requests.where('peerAccountId').equals(peer).toArray())
+        .filter(row => row.direction === 'outgoing')
+        .sort((a, b) => b.timestamp - a.timestamp)[0],
+    [peer],
+  );
+  if (!request) return null;
+  const name = request.peerUsername;
+  return (
+    <>
+      <RoomHeader avatar={<PeerAvatar name={name} />} name={name} />
+      <RequestBody request={request} note="You sent message request" />
+      <p className="shrink-0 px-4 pt-2 pb-5 text-center text-body-m text-fg-secondary" data-testid="request-waiting">
+        {request.status === 'declined'
+          ? `${name} declined your request.`
+          : `Wait for ${name} to accept your request message before sending the next message.`}
+      </p>
+    </>
   );
 };

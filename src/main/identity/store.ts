@@ -75,10 +75,27 @@ export const loadIdentity = (): StoredIdentity | null => {
   return { username: file.username, accountHex: file.accountHex, profile: file.profile, mnemonic };
 };
 
+const backupPath = (): string => `${identityPath()}.bak`;
+
 /**
- * Removes the identity from this computer. There is no backup in v1, so the
- * mnemonic, and with it the claimed username, is gone for good.
+ * "Reset identity" acts at once but can be undone for a short grace period
+ * (SKILL.md "Destructive actions must be undoable"): the file moves aside to
+ * `identity.json.bak` instead of being deleted. `restoreIdentity` undoes it,
+ * `dropIdentityBackup` ends it. There is no other backup in v1, so once the
+ * backup is dropped the mnemonic, and with it the claimed username, is gone.
  */
-export const deleteIdentity = (): void => {
-  rmSync(identityPath(), { force: true });
+export const stashIdentity = (): void => {
+  if (!existsSync(identityPath())) throw new Error('This computer has no identity to reset.');
+  renameSync(identityPath(), backupPath());
+};
+
+/** `false` when there is nothing to restore or a new identity took the place. */
+export const restoreIdentity = (): boolean => {
+  if (!existsSync(backupPath()) || existsSync(identityPath())) return false;
+  renameSync(backupPath(), identityPath());
+  return true;
+};
+
+export const dropIdentityBackup = (): void => {
+  rmSync(backupPath(), { force: true });
 };

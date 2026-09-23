@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "check": "tsc --noEmit -p tsconfig.json && vitest run && eslint .",
+    "check": "tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens",
+    "check:tokens": "node scripts/check-tokens.mjs",
     "test": "vitest run",
     "lint": "eslint .",
     "smoke": "npm run build && electron out/main/index.js --smoke",
@@ -18,7 +19,8 @@
     "prepare": "papi generate",
     "identity:register": "node scripts/identity-register.mjs",
     "e2e:chat": "node scripts/e2e-chat.mjs",
-    "e2e:assistant": "node scripts/e2e-assistant.mjs"
+    "e2e:assistant": "node scripts/e2e-assistant.mjs",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
@@ -33,19 +35,26 @@
     "@polkadot-labs/hdkd-helpers": "0.0.30",
     "@scure/bip39": "2.4.0",
     "@scure/sr25519": "2.2.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
     "dexie": "4.4.5",
     "dompurify": "3.4.14",
+    "lucide-react": "1.47.0",
     "markdown-it": "15.0.1",
     "neverthrow": "8.2.0",
     "polkadot-api": "3.1.0",
     "qrcode": "1.5.4",
+    "radix-ui": "1.6.7",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "rxjs": "7.8.2",
-    "scale-ts": "1.6.1"
+    "scale-ts": "1.6.1",
+    "sonner": "2.0.8",
+    "tailwind-merge": "3.7.0"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@tailwindcss/vite": "4.3.3",
     "@types/markdown-it": "14.2.0",
     "@types/node": "26.6.2",
     "@types/qrcode": "1.5.6",
@@ -59,6 +68,7 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "fake-indexeddb": "6.2.5",
     "globals": "17.12.0",
+    "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.69.0",
