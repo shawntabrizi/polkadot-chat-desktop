@@ -8,22 +8,25 @@ Explanation, Drawbacks, Testing/Security/Privacy, Compatibility, Unresolved
 Questions), so it can be sent upstream as is when it stabilises. Nothing here
 is submitted upstream until the owner decides.
 
-## Compatibility rule for every extension
+## Development-mode rule (owner decision, 2026-09-23)
 
-The phone apps render an unknown content kind as an "Unsupported message
-content. Please update the app." bubble. So:
+All clients on this protocol are in development. Extension kinds are sent
+freely: no capability evidence, no advertisement, no gating. A client that does
+not know a kind shows the base spec's unsupported message, and that is accepted
+while we iterate. Two things remain:
 
-1. **Receiving an extension is always safe** and always implemented.
-2. **Sending an extension kind to a peer is allowed only after that peer has
-   sent one to us** on the same pairwise session (capability by evidence), or
-   the operator has enabled it explicitly for testing. Until then a client
-   falls back to what the base spec offers (for deletion: nothing; for typing:
-   nothing; for buttons: the plain text fallback carried in the message).
-3. **Every extension message carries a plain-text fallback** where one makes
-   sense (buttons: the menu as text), so an old client that shows the bubble
-   still shows something useful once upstream assigns the kind.
-4. **Provisional kind numbers** are in the range 240–249 and are listed in
-   `kinds.md`; RFC-0003 takes 21 (20 is DeviceChatAccepted).
+1. **Rate limits are part of the design**, not a compatibility measure:
+   `typing` at most once per 4 s per peer, `seen` at most once per 2 s per peer.
+2. **Nothing here reaches the master branch of an existing project**
+   (`polkadot-chat-agents`, `chat-spec`, the phone apps). Work lives on
+   `desktop/*` branches until the owner merges. This repo is new and keeps its
+   own main.
+
+The earlier "receive always, send only after evidence" rule and the
+identifier-key capability bitmap are recorded in `docs/roadmap.md` as options
+for the upstream submission, when legacy clients will exist.
+
+Provisional kind numbers are in the range 240–249 (`kinds.md`); RFC-0003 takes 21.
 
 ## Documents
 
