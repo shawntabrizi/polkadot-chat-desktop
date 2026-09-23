@@ -7,6 +7,16 @@ import { loadWindowBounds, rememberWindowBounds } from './windowState';
 
 const SMOKE_TIMEOUT_MS = 30_000;
 
+// package.json's productName ("Polkadot Chat") names the packaged app, and so
+// its profile and its keychain entry. Electron would also give it to a dev run;
+// a dev run keeps the old name so the two stay apart and the dev identity stays
+// where it is. Must run before `ready` (the keychain entry takes the name then).
+const DEV_APP_NAME = 'polkadot-chat-desktop';
+if (!app.isPackaged) {
+  app.setName(DEV_APP_NAME);
+  app.setPath('userData', join(app.getPath('appData'), DEV_APP_NAME));
+}
+
 // Tests run the app against a throwaway profile (identity, IndexedDB, window
 // state) so they never touch the owner's. Must be set before `ready`.
 const userDataOverride = process.env.PCD_USER_DATA_DIR;

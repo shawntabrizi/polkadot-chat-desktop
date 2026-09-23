@@ -3,10 +3,10 @@
 # hidden and prints SMOKE_OK.
 #
 # It runs against a throwaway profile (PCD_USER_DATA_DIR, a new temp folder
-# unless set): the packaged app shares its name, and so its profile and its
-# keychain entry, with `npm run dev`. A smoke run must not open the owner's
-# identity, and an unsigned binary reading that keychain entry would stop on
-# a macOS permission prompt.
+# unless set). The packaged app has its own profile ("Polkadot Chat"), apart
+# from `npm run dev`; a smoke run must still not open the owner's identity,
+# and an unsigned binary reading a keychain entry would stop on a macOS
+# permission prompt.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 app="dist/mac-arm64/Polkadot Chat.app"

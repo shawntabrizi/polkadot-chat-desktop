@@ -23,6 +23,12 @@ then fails with "Electron uninstall"). It does nothing when the binary is there.
 - `npm run smoke:packaged` — run the packaged app with `--smoke` against a throwaway profile.
 - `npm run identity:register -- <name> [--profile devnet|paseo]` — create and register an identity without Electron (test use; stores it unencrypted under `.agent-runs/`).
 
+Profiles: the packaged app keeps its profile in
+`~/Library/Application Support/Polkadot Chat` (keychain entry "Polkadot Chat
+Safe Storage"). `npm run dev` and `npm run smoke` keep theirs in
+`~/Library/Application Support/polkadot-chat-desktop` (keychain entry
+"polkadot-chat-desktop Safe Storage"). The two never share an identity.
+
 `PCD_USER_DATA_DIR=<folder>` runs the app with another profile (identity,
 IndexedDB, window state, metadata cache), for tests.
 
