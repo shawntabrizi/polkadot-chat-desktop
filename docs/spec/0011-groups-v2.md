@@ -506,3 +506,14 @@ a bot; the Diagnostics counter shows 1 submission per group message.
 9. **Avatar transfer** (HOP file or Bulletin) is not defined.
 10. **Invite secrets in the state** are visible to every member; a per-admin
     invite key would hide them at the cost of one more key per admin.
+
+### Reviewer rulings after the pca build (2026-09-24, pca 0fa12a2)
+
+1. `groupControl` variant 5 `historyRequest = { groupId, since: enum { messageId(String) = 0, timestamp(u64) = 1 }, limit: u8 (1..=100) }` is adopted; the provider answers with `history` pages ≤ 4 KB, newest first.
+2. A history request reaches back before the asker's `joinedAt` unless the state's `historyShare` is 0, in which case the provider clamps to `joinedAt`.
+3. The 24 h carry never crosses an epoch: a statement in epoch e+1 carries only messages sent in e+1, so a rotation with `historyShare` 0 means what it says.
+4. `K(A, B)` is the raw X25519 agreement of the two identity chat keys (the value that keys `SessionId` on this network); every use passes it through `khash` (`WrapKey`), so no separate HKDF step. The base spec's Appendix A text about P-256 with HKDF is outdated for this use.
+5. Changing a role-0 member's permissions needs the `manage admins` flag (0x0040) in v2. The owner leaves the state only by the heir rule; nobody removes the owner.
+6. Join policy 1 with a bot admin: the bot forwards the request to the owner over DM with Approve / Reject buttons (spec 0006) and admits on Approve. M16b.
+7. Removal by a bot admin on request: an admin sends the bot the DM command `/remove <username>`; the bot checks the sender's role in the state, then rekeys. No new wire variant. M16b.
+8. A bot announces `botInfo` once when it joins a v2 group, riding inside its first messages statement (no standalone statement).
