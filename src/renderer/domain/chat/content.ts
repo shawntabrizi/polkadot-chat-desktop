@@ -15,6 +15,7 @@ import { openableUrl } from '../../../shared/openUrl';
 import { decodeTxIntent } from '../../../shared/txIntent';
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 
+import { isBlurhash } from './blurhash';
 import {
   ATTACHMENT_KIND,
   type AttachmentItemWire,
@@ -33,11 +34,23 @@ import {
 export type TypingKind = 'composing' | 'working' | 'stopped';
 const TYPING_KINDS: readonly TypingKind[] = ['composing', 'working', 'stopped'];
 
-/** A base-spec HOP attachment of a `richText` (phone apps): metadata only, never fetched here. */
+/**
+ * A base-spec `P2PMixnet` (HOP) attachment of a `richText` (the phone apps).
+ * `hop` says where and how to fetch it; a row stored before HOP receive has
+ * none. On the message row `hop.ticket` is empty: the claim ticket is sealed
+ * in the `keys` table (attachmentKeyStore.ts), as M15c's attachment keys are.
+ */
 export type Attachment = {
   kind: 'general' | 'image' | 'video';
   mimeType: string;
   fileSize: number;
+  width?: number;
+  height?: number;
+  /** A video's length, seconds (`VideoFileMeta.duration`). */
+  durationSecs?: number;
+  /** The sender's placeholder (`thumbnail`: a blurhash in UTF-8), when it is one. */
+  blurhash?: string | null;
+  hop?: { identifier: HexString; node: string; ticket: Uint8Array };
 };
 
 /** Spec 0012 `Media`, as this client stores it. */
@@ -66,6 +79,8 @@ export type AttachmentItem = {
   chunks: Uint8Array[];
   store: { genesis: HexString; mirror: string | null };
   expiresAt: number;
+  /** A view of a HOP attachment (`hopItemOf`): fetched by its message's ticket and node, never stored as this type. */
+  via?: 'hop';
 };
 
 /**
@@ -469,14 +484,43 @@ export const keyboardOf = (rows: readonly ButtonWire[][]): ChatButton[][] =>
     .slice(0, MAX_BUTTON_ROWS)
     .map(row => row.slice(0, MAX_BUTTONS_PER_ROW).map(button => ({ label: clip(button.label, MAX_BUTTON_LABEL), action: actionOf(button.action) })));
 
-const attachmentOf = (file: { tag: string; value: { meta: { tag: string; value: unknown } } }): Attachment | null => {
+type P2PMixnetWire = {
+  identifier: Uint8Array;
+  claimTicket: Uint8Array;
+  nodeEndpoint: { tag: string; value: { url: string } };
+  meta: { tag: string; value: unknown };
+};
+type GeneralMetaWire = { mimeType: string; fileSize: number };
+
+/** The phones send a 4×3 blurhash as the thumbnail (host-chat `MediaThumbnail`); anything else is dropped. */
+const blurhashOf = (thumbnail: Uint8Array | undefined): string | null => {
+  if (!thumbnail || thumbnail.length < 6 || thumbnail.length > 128) return null;
+  const text = new TextDecoder().decode(thumbnail);
+  return isBlurhash(text) ? text : null;
+};
+
+const attachmentOf = (file: { tag: string; value: unknown }): Attachment | null => {
   if (file.tag !== 'p2pMixnet') return null;
-  const meta = file.value.meta;
-  const general = (meta.tag === 'general' ? meta.value : (meta.value as { general?: unknown }).general) as
-    | { mimeType: string; fileSize: number }
-    | undefined;
-  if (!general || meta.tag !== 'general' && meta.tag !== 'image' && meta.tag !== 'video') return null;
-  return { kind: meta.tag, mimeType: general.mimeType, fileSize: general.fileSize };
+  const value = file.value as P2PMixnetWire;
+  const meta = value.meta;
+  if (meta.tag !== 'general' && meta.tag !== 'image' && meta.tag !== 'video') return null;
+  const general = (meta.tag === 'general' ? meta.value : (meta.value as { general?: unknown }).general) as GeneralMetaWire | undefined;
+  if (!general) return null;
+  const attachment: Attachment = { kind: meta.tag, mimeType: general.mimeType, fileSize: general.fileSize };
+  if (meta.tag === 'image') {
+    const image = meta.value as { width: number; height: number; thumbnail?: Uint8Array };
+    Object.assign(attachment, { width: image.width, height: image.height, blurhash: blurhashOf(image.thumbnail) });
+  }
+  if (meta.tag === 'video') {
+    const video = meta.value as { duration: number; thumbnail?: Uint8Array };
+    Object.assign(attachment, { durationSecs: video.duration, blurhash: blurhashOf(video.thumbnail) });
+  }
+  // A 32-byte id and ticket and a wss URL, or the attachment shows without a download.
+  const node = value.nodeEndpoint?.tag === 'wssUrl' ? value.nodeEndpoint.value.url : null;
+  if (value.identifier?.length === 32 && value.claimTicket?.length === 32 && node) {
+    attachment.hop = { identifier: bytesToHex(value.identifier), node, ticket: new Uint8Array(value.claimTicket) };
+  }
+  return attachment;
 };
 
 export const fromWire = (content: ChatContent): IncomingEffect => {

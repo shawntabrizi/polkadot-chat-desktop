@@ -113,7 +113,8 @@ const outgoingIds = async (): Promise<Set<string>> => new Set((await db.messages
  * finished downloading more than `days` days ago (0: all of them). The row stays as
  * `freed`: the bubble offers Download again and nothing downloads on its own.
  * The sender's own copies stay: they are the only source of a resend
- * (spec 0012 "Re-upload on request").
+ * (spec 0012 "Re-upload on request"). A HOP copy stays too: its ack removed
+ * it from the sender's node, so it could not download again.
  */
 export const freeLocalCopies = async (days: number, now: number = Date.now()): Promise<{ files: number; bytes: number }> => {
   const cutoff = now - days * DAY_MS;
@@ -121,7 +122,7 @@ export const freeLocalCopies = async (days: number, now: number = Date.now()): P
   let files = 0;
   let bytes = 0;
   await db.attachments
-    .filter(row => row.bytes !== null && row.status === 'ready' && !own.has(row.messageId) && row.updatedAt <= cutoff)
+    .filter(row => row.bytes !== null && row.status === 'ready' && !own.has(row.messageId) && !row.hop && row.updatedAt <= cutoff)
     .modify(row => {
       files += 1;
       bytes += row.bytes?.length ?? 0;

@@ -100,6 +100,11 @@ const api: DesktopApi = {
     fetch: (genesis, hash, mirror, only, gatewayFirst) => ipcRenderer.invoke(IPC.bulletinFetch, genesis, hash, mirror, only, gatewayFirst),
     allowance: () => ipcRenderer.invoke(IPC.bulletinAllowance),
   },
+  hop: {
+    fetch: (requestId, node, identifier, ticket) => ipcRenderer.invoke(IPC.hopFetch, requestId, node, identifier, ticket),
+    ack: (node, ticket, entries) => ipcRenderer.invoke(IPC.hopAck, node, ticket, entries),
+    onProgress: listen(IPC.hopProgress),
+  },
   files: {
     open: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileOpen, bytes, name, mime),
     save: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileSave, bytes, name, mime),

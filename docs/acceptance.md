@@ -4102,3 +4102,59 @@ Empty before the commit except the M19 files listed in the commit.
 
 - `gh release create`: not run, by instruction.
 - The picker's restore form was not typed into in e2e (the IPC was called directly); a restore on Paseo was not run.
+
+## HOP receive (2026-09-24)
+
+### npm run check
+
+```
+ Test Files  101 passed (101)
+      Tests  890 passed (890)
+check:tokens: clean (198 files)
+```
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:hop (devnet, desktop pcdbenchzzlx, throwaway bot)
+
+```
+BOT_CREATE pcdhopjjpas (scratch PCA_BOTS_DIR, brain echo, allow pcdbenchzzlx.23) at=0.0s
+BOT_REGISTERED pcdhopjjpas.20 0x08718baf17b6a3367d8eaacbb102204a184e51e7eea077c5e47a2ab1a5886b02 files=products-devnet at=42.3s
+[pca create] → Provisioning Bulletin Products Devnet file allowance…
+[pca create] ⚠ The public Polkadot Products Devnet faucet may have accepted this allowance grant. Do not retry it yet.
+BOT_STORAGE storage:   not authorized; //Eve grants it on devnet at=43.9s
+BOT_STORAGE //Eve: granted in best block #977243 at=51.8s
+BOT_STORAGE storage: active (granted in best block #977243) at=51.8s
+FILE_SEEDED hop-e2e.png bytes=2326496 sha256=fda9b1c093d668d95f3ce6f7a21bf529356ee2731635e32873606b1dfe865b2e
+[bot] {"event":"BOT_HOP_UPLOAD_CONFIGURED","account":"0xec4c952f44b0ac10b725b60d67cae898efb052b1010a8e6456a23c025593f16d","host":"bullet.sik.rocks","maxBytes":52428800}
+[bot] {"event":"BOT_STARTING","endpoint":"wss://people-paseo.rotko.net","account":"0x08718baf17b6a3367d8eaacbb102204a184e51e7eea077c5e47a2ab1a5886b02","username":"pcdhopjjpas.20","brain":"echo
+READY desktop=pcdbenchzzlx.23 at=54.7s
+BOT_CONTACT pcdhopjjpas.20 at=65.3s
+ASKED /file get hop-e2e.png at=65.3s
+[bot] {"event":"HOP_UPLOADED","host":"bullet.sik.rocks","id":"0x3c517c72e23ff90e","bytes":2326496,"chunks":2}
+[bot] {"event":"BOT_SENT_FILE","to":"e6c783b9ddb9785600bcfc065d12fef7b053844a8131ba36eda2160cf67a4a7e","mime":"image/png","bytes":2326496}
+[bot] {"event":"BOT_FILE_DELIVERED","peer":"e6c783b9ddb97856","path":"hop-e2e.png","bytes":2326496}
+HOP_MESSAGE id=7133D641-D117-48E6-9048-F4BF09225DF6 kind=general mime=image/png size=2326496 node=bullet.sik.rocks ticket_on_row=0B text="hop-e2e.png" at=71.3s
+ACKED acked=3 notFound=0 failed=0 entries=3
+HOP_RECEIVE_OK sha256=fda9b1c093d668d95f3ce6f7a21bf529356ee2731635e32873606b1dfe865b2e bytes=2326496 entries=3 cipher=chacha20-poly1305 layout=plain at=112.5s
+HOP_ACK_OK a second claim of the root answers NotFound at=113.3s
+HOP_OK bot=pcdhopjjpas.20 desktop=pcdbenchzzlx.23 sha256=fda9b1c093d668d9…
+```
+
+Earlier runs failed and were fixed: pca's faucet left the bot unauthorized (1012; the e2e now grants 8 MiB by //Eve), and the 2 MB chunk claim timed out at 30 s (now 120 s). Details in docs/decisions.md.
+
+### npm run screenshots -- --only room-hop-image
+
+```
+.agent-runs/screens/berlin-day/room-hop-image.png
+.agent-runs/screens/berlin-night/room-hop-image.png
+SCREENSHOTS_OK in 11.4 s
+```
+
+### Not run
+
+- A photo from a real Polkadot phone app: needs the owner's phone. The phones' dialect is covered by unit vectors built from the app code.

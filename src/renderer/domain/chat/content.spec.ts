@@ -602,7 +602,7 @@ describe('isLiveFrame', () => {
 });
 
 describe('fromWire', () => {
-  it('maps text, richText with attachment placeholders, and replies to message rows', () => {
+  it('maps text, richText attachments, and replies to message rows', () => {
     expect(fromWire(viaWire({ tag: 'text', value: 'hello' }))).toEqual({ kind: 'message', content: { type: 'text', text: 'hello' } });
     expect(
       fromWire(
@@ -624,10 +624,75 @@ describe('fromWire', () => {
           },
         }),
       ),
-    ).toEqual({ kind: 'message', content: { type: 'richText', text: 'photo', attachments: [{ kind: 'image', mimeType: 'image/png', fileSize: 10 }] } });
+    ).toEqual({
+      kind: 'message',
+      // A 1-byte id and ticket cannot be claimed: the attachment shows without a download (no `hop`).
+      content: { type: 'richText', text: 'photo', attachments: [{ kind: 'image', mimeType: 'image/png', fileSize: 10, width: 1, height: 1, blurhash: null }] },
+    });
     expect(fromWire(viaWire({ tag: 'reply', value: { messageId: 'a', ownContent: { text: 'yes', attachments: undefined } } }))).toEqual({
       kind: 'message',
       content: { type: 'reply', messageId: 'a', text: 'yes' },
+    });
+  });
+
+  it('keeps what a HOP download needs from a phone app attachment: id, ticket, node, and the blurhash placeholder', () => {
+    const identifier = new Uint8Array(32).fill(7);
+    const claimTicket = new Uint8Array(32).fill(9);
+    const blurhash = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj';
+    const effect = fromWire(
+      viaWire({
+        tag: 'richText',
+        value: {
+          text: undefined,
+          attachments: [
+            {
+              tag: 'p2pMixnet',
+              value: {
+                identifier,
+                claimTicket,
+                nodeEndpoint: { tag: 'wssUrl', value: { url: 'wss://paseo-hop-next-0.polkadot.io' } },
+                meta: { tag: 'image', value: { general: { mimeType: 'image/jpeg', fileSize: 812_345 }, width: 3024, height: 4032, thumbnail: new TextEncoder().encode(blurhash) } },
+              },
+            },
+            {
+              tag: 'p2pMixnet',
+              value: {
+                identifier,
+                claimTicket,
+                nodeEndpoint: { tag: 'wssUrl', value: { url: 'wss://paseo-hop-next-0.polkadot.io' } },
+                // Not a blurhash: dropped rather than painted as garbage.
+                meta: { tag: 'video', value: { general: { mimeType: 'video/mp4', fileSize: 5_000_000 }, duration: 12, thumbnail: new Uint8Array([0xff, 0xfe, 0x00, 0x01, 0x02, 0x03]) } },
+              },
+            },
+          ],
+        },
+      }),
+    );
+    expect(effect).toEqual({
+      kind: 'message',
+      content: {
+        type: 'richText',
+        text: null,
+        attachments: [
+          {
+            kind: 'image',
+            mimeType: 'image/jpeg',
+            fileSize: 812_345,
+            width: 3024,
+            height: 4032,
+            blurhash,
+            hop: { identifier: `0x${'07'.repeat(32)}`, node: 'wss://paseo-hop-next-0.polkadot.io', ticket: claimTicket },
+          },
+          {
+            kind: 'video',
+            mimeType: 'video/mp4',
+            fileSize: 5_000_000,
+            durationSecs: 12,
+            blurhash: null,
+            hop: { identifier: `0x${'07'.repeat(32)}`, node: 'wss://paseo-hop-next-0.polkadot.io', ticket: claimTicket },
+          },
+        ],
+      },
     });
   });
 

@@ -26,6 +26,8 @@ import {
   type ChainTransfer,
   type CreateIdentityRequest,
   type CreateIdentityResponse,
+  type HopAckResult,
+  type HopFetchResult,
   IPC,
   type IdentitySummary,
   type NotifyRequest,
@@ -45,6 +47,7 @@ import { assistantConfig, publicSettings, updateSettings } from './assistant/set
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
 import { type AssetHubChain, type TxService, createTxService, openAssetHub } from './chain/assetHub';
 import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin, quotaOf, storeResultOf } from './chain/bulletin';
+import { hopAck, hopFetch } from './chain/hop';
 import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
@@ -532,6 +535,25 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     // Spec 0012: a client on another network refuses rather than fetch the wrong chain.
     if (genesis.toLowerCase() !== service.genesis.toLowerCase()) throw new Error('This attachment is on another network.');
     return service.fetchChunk(Uint8Array.from(Buffer.from(hash.slice(2), 'hex')), mirror, only as 'bitswap' | 'mirror' | 'gateway' | undefined, gatewayFirst === true);
+  });
+  // Base spec HOP receive: a phone app's attachment, from the node its message names. Never sends.
+  ipcMain.handle(IPC.hopFetch, async (event, requestId: unknown, node: unknown, identifier: unknown, ticket: unknown): Promise<HopFetchResult> => {
+    if (typeof requestId !== 'string' || !UPLOAD_ID.test(requestId)) throw new Error('Invalid request.');
+    if (typeof node !== 'string' || node.length > 256) throw new Error('Invalid node.');
+    if (typeof identifier !== 'string' || !CONTENT_HASH.test(identifier)) throw new Error('Invalid file id.');
+    if (!(ticket instanceof Uint8Array) || ticket.length !== 32) throw new Error('Invalid ticket.');
+    const result = await hopFetch(node, Uint8Array.from(Buffer.from(identifier.slice(2), 'hex')), ticket, (done, total) => {
+      if (!event.sender.isDestroyed()) event.sender.send(IPC.hopProgress, { requestId, done, total });
+    });
+    // One line per download, no key material: which dialect the sender spoke.
+    console.info(result.ok ? `[hop] received ${result.bytes.length} bytes in ${result.entries.length} entries (${result.cipher}, ${result.layout} root)` : `[hop] not received: ${result.reason}`);
+    return result;
+  });
+  ipcMain.handle(IPC.hopAck, async (_event, node: unknown, ticket: unknown, entries: unknown): Promise<HopAckResult> => {
+    if (typeof node !== 'string' || node.length > 256) throw new Error('Invalid node.');
+    if (!(ticket instanceof Uint8Array) || ticket.length !== 32) throw new Error('Invalid ticket.');
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > 1 + 1024 || entries.some(entry => typeof entry !== 'string' || !CONTENT_HASH.test(entry))) throw new Error('Invalid entries.');
+    return hopAck(node, ticket, entries as string[]);
   });
   ipcMain.handle(IPC.fileOpen, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<void> => openFile(bytes, name, mime));
   ipcMain.handle(IPC.fileSave, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<boolean> => saveFile(getWindow(), bytes, name, mime));

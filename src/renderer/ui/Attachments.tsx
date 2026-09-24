@@ -28,8 +28,9 @@ import {
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { AttachmentRow, MessageRow } from '../app/database';
+import { HOP_MAX_FILE_BYTES } from '../../shared/desktop-api';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { autoDownloads, formatSize, getAttachmentRow, isImageType, resendName } from '../domain/chat/attachments';
+import { autoDownloads, formatSize, getAttachmentRow, hopItemOf, isImageType, resendName } from '../domain/chat/attachments';
 import { isVideoType } from '../domain/chat/attachmentVideo';
 import { getMessage } from '../domain/chat/messages';
 import { decodeBlurhash } from '../domain/chat/blurhash';
@@ -209,11 +210,12 @@ const Placeholder = ({ item }: { item: AttachmentItem }) => {
   return <canvas ref={canvas} width={width} height={height} className="block h-auto w-full" data-testid="attachment-blurhash" aria-hidden />;
 };
 
-const StateChip = ({ children, tone = 'info' }: { children: ReactNode; tone?: 'info' | 'error' }) => (
+const StateChip = ({ children, tone = 'info', className }: { children: ReactNode; tone?: 'info' | 'error'; className?: string }) => (
   <span
     className={cn(
       'inline-flex items-center gap-1 rounded-full bg-surface-container px-2 py-0.5 text-caption shadow-1',
       tone === 'error' ? 'text-fg-error' : 'text-fg-primary',
+      className,
     )}
   >
     {children}
@@ -234,7 +236,11 @@ const AskResend = ({ local, onAsk }: { local: AttachmentRow; onAsk: () => void }
     </button>
   );
 
+/** HOP receive: what a file over the cap says instead of Download. */
+const TOO_LARGE = `Too large to download here (the limit is ${HOP_MAX_FILE_BYTES / (1024 * 1024)} MB)`;
+
 const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: boolean, onFetch: () => void, onAsk: () => void) => {
+  if (!local && item.via === 'hop' && item.size > HOP_MAX_FILE_BYTES) return <StateChip tone="error">{TOO_LARGE}</StateChip>;
   if (!local || local.status === 'freed') {
     return own ? null : (
       <button type="button" className="cursor-pointer" onClick={onFetch} data-testid="attachment-download">
@@ -263,7 +269,7 @@ const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: 
       if (!own && local.resendAskedAt !== undefined) return <AskResend local={local} onAsk={onAsk} />;
       return (
         <span className="inline-flex flex-wrap gap-1">
-          <button type="button" className="cursor-pointer" onClick={onFetch} data-testid="attachment-retry">
+          <button type="button" className="cursor-pointer" onClick={onFetch} title={local.error ?? undefined} data-testid="attachment-retry">
             <StateChip tone="error">
               Download failed · <RotateCw className="size-3.5" aria-hidden /> Retry
             </StateChip>
@@ -280,6 +286,18 @@ const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: 
       );
     case 'damaged':
       return <StateChip tone="error">Attachment is damaged</StateChip>;
+    case 'unavailable':
+      return (
+        <span className="inline-flex flex-wrap gap-1" data-testid="attachment-unavailable">
+          {/* Two lines in a 240 px photo: a pill's round ends would crowd them. */}
+          <StateChip tone="error" className="rounded-small">
+            No longer available from the sender's node
+          </StateChip>
+          {own ? null : <AskResend local={local} onAsk={onAsk} />}
+        </span>
+      );
+    case 'tooLarge':
+      return <StateChip tone="error">{TOO_LARGE}</StateChip>;
     case 'ready':
       return null;
   }
@@ -641,6 +659,34 @@ export const ResendOffer = ({ messageId, peer }: { messageId: string; peer: stri
           {state.text}
         </p>
       ) : null}
+    </div>
+  );
+};
+
+/**
+ * HOP receive: a phone app's `richText` attachments in the same bubbles as a
+ * Bulletin attachment (image, video, file row), then the text. An
+ * attachment without a node and ticket (a row from before HOP receive, or a
+ * variant this app does not know) keeps the old line.
+ */
+export const HopAttachmentBody = ({ row, own }: { row: MessageRow; own: boolean }) => {
+  if (row.content.type !== 'richText') return null;
+  const { attachments, text } = row.content;
+  return (
+    <div className="flex flex-col gap-2" data-testid="attachment" data-via="hop">
+      {attachments.map((attachment, index) => {
+        if (!attachment.hop) {
+          return (
+            <p key={index} className={cn('text-body-s', own ? 'text-fg-secondary-inverted' : 'text-fg-secondary')}>
+              This message can only be viewed in the mobile app
+            </p>
+          );
+        }
+        const item = hopItemOf(attachment);
+        const View = item.media.kind === 'image' ? ImageItem : item.media.kind === 'video' && isVideoType(item.mime) ? VideoItem : FileItem;
+        return <View key={index} messageId={row.messageId} index={index} item={item} own={own} />;
+      })}
+      {text ? <p className="text-body-m whitespace-pre-wrap">{text}</p> : null}
     </div>
   );
 };

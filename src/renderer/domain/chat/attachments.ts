@@ -9,15 +9,15 @@
  * the tests and the Node e2e run it as is.
  */
 
-import type { AttachmentRow, AttachmentStatus } from '../../app/database';
+import type { AttachmentRow, AttachmentStatus, PeerId } from '../../app/database';
 import { appDatabase, db, isGroupPeer, isLocalPeer } from '../../app/database';
 import { type HexString, bytesToHex } from '../../app/bytes';
 
-import type { BulletinProgress, BulletinStoreResult, DesktopBulletinApi } from '../../../shared/desktop-api';
+import { type BulletinProgress, type BulletinStoreResult, type DesktopBulletinApi, type DesktopHopApi, HOP_MAX_FILE_BYTES, type HopFetchResult, type HopProgress } from '../../../shared/desktop-api';
 
-import { itemWithKey } from './attachmentKeyStore';
+import { hopTicket, itemWithKey } from './attachmentKeyStore';
 import { SENDER_CHUNK_SIZE, decryptChunk, encryptAttachment, freshKeyAndNonce, isAttachmentError } from './attachmentCrypto';
-import { type AttachmentItem, type AttachmentMedia, attachmentItemWire } from './content';
+import { type Attachment, type AttachmentItem, type AttachmentMedia, attachmentItemWire } from './content';
 import { ATTACHMENT_BOUNDS, attachmentContentLength } from './identityEvents';
 import type { ChatManager } from './manager';
 import { recordUploads } from './storageQuota';
@@ -193,6 +193,8 @@ export type AttachmentDeps = {
   store: { genesis: HexString; mirror: string | null } | null;
   /** M15c: sends the "Please resend" text of Ask to resend. */
   chat?: Pick<ChatManager, 'sendMessage'> | null;
+  /** Base spec HOP receive (a phone app's `richText` attachment); null where there is no main process. */
+  hop?: Pick<DesktopHopApi, 'fetch' | 'ack' | 'onProgress'> | null;
   now?: () => number;
 };
 
@@ -262,7 +264,7 @@ export const resendRequestText = (messageId: string, item: Pick<AttachmentItem, 
 /** The message id an Ask to resend names, or null. */
 export const parseResendRequest = (text: string): string | null => RESEND_LINK.exec(text)?.[1] ?? null;
 
-export const createAttachmentService = ({ bulletin, store, chat = null, now = Date.now }: AttachmentDeps): AttachmentService => {
+export const createAttachmentService = ({ bulletin, store, chat = null, hop = null, now = Date.now }: AttachmentDeps): AttachmentService => {
   const uploads = new Map<string, { messageId: string; itemOf: number[]; done: number[] }>();
   const stopProgress =
     bulletin?.onProgress(({ uploadId, chunk }: BulletinProgress) => {
@@ -272,6 +274,12 @@ export const createAttachmentService = ({ bulletin, store, chat = null, now = Da
       if (index === undefined) return;
       target.done[index] = (target.done[index] ?? 0) + 1;
       void patchRow(target.messageId, index, { done: target.done[index] });
+    }) ?? (() => undefined);
+  const hopRequests = new Map<string, { messageId: string; index: number }>();
+  const stopHopProgress =
+    hop?.onProgress(({ requestId, done, total }: HopProgress) => {
+      const target = hopRequests.get(requestId);
+      if (target) void patchRow(target.messageId, target.index, { done, total });
     }) ?? (() => undefined);
   const inFlight = new Map<string, Promise<AttachmentStatus>>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -359,6 +367,7 @@ export const createAttachmentService = ({ bulletin, store, chat = null, now = Da
   const askResend: AttachmentService['askResend'] = async (messageId, index) => {
     if (!chat) throw new Error('Chat is not running.');
     const row = await db.messages.get(messageId);
+    if (row?.content.type === 'richText') return askHopResend(row.messageId, row.peerAccountId, row.direction, row.content.attachments, index);
     const item = row?.content.type === 'attachment' ? row.content.items[index] : undefined;
     if (!row || row.direction !== 'incoming' || !item || isGroupPeer(row.peerAccountId) || isLocalPeer(row.peerAccountId)) throw new Error('Only an attachment a contact sent you can be asked for again.');
     await chat.sendMessage(row.peerAccountId, { type: 'text', text: resendRequestText(messageId, item) });
@@ -367,6 +376,105 @@ export const createAttachmentService = ({ bulletin, store, chat = null, now = Da
     const existing = await getAttachmentRow(messageId, index);
     await db.attachments.put({ ...(existing ?? blankRow(messageId, index, item, 'failed', at)), status: 'failed', attempts: 0, firstFailedAt: at, resendAskedAt: at, error: null, updatedAt: at });
     schedule(messageId, index, item, 1);
+  };
+
+  /**
+   * HOP receive: the sender's node no longer holds it, and a phone cannot
+   * store it again under the same id, so the ask is a plain request for a
+   * new message (no `#resend` link, which only this app's sender side reads)
+   * and nothing retries.
+   */
+  const askHopResend = async (messageId: string, peer: PeerId, direction: string, attachments: readonly Attachment[], index: number): Promise<void> => {
+    const attachment = attachments[index];
+    if (!chat || direction !== 'incoming' || !attachment || isGroupPeer(peer) || isLocalPeer(peer)) throw new Error('Only an attachment a contact sent you can be asked for again.');
+    const item = hopItemOf(attachment);
+    await chat.sendMessage(peer, { type: 'text', text: `Please resend ${resendName(item)}` });
+    const at = now();
+    const existing = await getAttachmentRow(messageId, index);
+    await db.attachments.put({ ...(existing ?? blankRow(messageId, index, item, 'unavailable', at)), status: 'unavailable', resendAskedAt: at, updatedAt: at });
+  };
+
+  const HOP_STATUS: Record<Extract<HopFetchResult, { ok: false }>['reason'], AttachmentStatus> = {
+    notFound: 'unavailable',
+    tooLarge: 'tooLarge',
+    damaged: 'damaged',
+    refused: 'failed',
+    untrusted: 'failed',
+    network: 'failed',
+  };
+
+  /**
+   * HOP receive (base spec "Download Flow"): main claims and decrypts; the
+   * file is persisted here; only then are its entries acked, since the ack
+   * removes them from the sender's node for good. A network failure retries
+   * with the same backoff as a Bulletin fetch; the rest are final.
+   */
+  const runHopFetch = async (messageId: string, index: number, item: AttachmentItem): Promise<AttachmentStatus> => {
+    const existing = await getAttachmentRow(messageId, index);
+    if (existing?.status === 'ready' && existing.bytes) return 'ready';
+    const message = await db.messages.get(messageId);
+    const attachment = message?.content.type === 'richText' ? message.content.attachments[index] : undefined;
+    const base = existing ?? blankRow(messageId, index, item, 'downloading', now());
+    const settle = async (status: AttachmentStatus, error: string) => {
+      const attempts = base.attempts + 1;
+      const firstFailedAt = base.firstFailedAt ?? now();
+      await db.attachments.put({ ...base, status, attempts, firstFailedAt, error, updatedAt: now() });
+      return { attempts, firstFailedAt };
+    };
+    if (!attachment?.hop || !hop) {
+      await settle('failed', 'This app cannot download it.');
+      return 'failed';
+    }
+    if (attachment.fileSize > HOP_MAX_FILE_BYTES) {
+      await settle('tooLarge', `Larger than ${HOP_MAX_FILE_BYTES / (1024 * 1024)} MB.`);
+      return 'tooLarge';
+    }
+    await db.attachments.put({ ...base, status: 'downloading', done: 0, total: 1, error: null, updatedAt: now() });
+    const requestId = `hop-${index}-${messageId}`.slice(0, 64);
+    hopRequests.set(requestId, { messageId, index });
+    let result: HopFetchResult;
+    let ticket: Uint8Array = new Uint8Array(0);
+    try {
+      ticket = await hopTicket(messageId, index, attachment);
+      result = await hop.fetch(requestId, attachment.hop.node, attachment.hop.identifier, ticket);
+    } catch (error) {
+      result = { ok: false, reason: 'network', message: error instanceof Error ? error.message : String(error) };
+    } finally {
+      hopRequests.delete(requestId);
+    }
+    if (!result.ok) {
+      const status = HOP_STATUS[result.reason];
+      const { attempts, firstFailedAt } = await settle(status, result.message);
+      if (result.reason === 'network' && now() - firstFailedAt < RETRY_FOR_MS) schedule(messageId, index, item, attempts);
+      return status;
+    }
+    // Persisted first: after the ack the node deletes the entries. Not persisted: not acked, still claimable.
+    const ready: AttachmentRow = {
+      ...base,
+      status: 'ready',
+      bytes: result.bytes,
+      mime: attachment.mimeType,
+      done: result.entries.length,
+      total: result.entries.length,
+      attempts: 0,
+      firstFailedAt: null,
+      error: null,
+      hop: { cipher: result.cipher, layout: result.layout },
+      updatedAt: now(),
+    };
+    try {
+      await db.attachments.put(ready);
+    } catch (error) {
+      await settle('failed', error instanceof Error ? error.message : String(error));
+      return 'failed';
+    }
+    try {
+      await hop.ack(attachment.hop.node, ticket, result.entries);
+    } catch (error) {
+      // Not fatal: an entry left unacked expires on the node (24 h) or is promoted on chain.
+      console.warn('[attachments] HOP ack failed', error instanceof Error ? error.message : error);
+    }
+    return 'ready';
   };
 
   const classify = (error: unknown, item: AttachmentItem, local: AttachmentRow): AttachmentStatus => {
@@ -424,7 +532,7 @@ export const createAttachmentService = ({ bulletin, store, chat = null, now = Da
     const key = `${messageId}:${index}:${options.only ?? ''}`;
     const running = inFlight.get(key);
     if (running) return running;
-    const work = runFetch(messageId, index, item, options.only).finally(() => inFlight.delete(key));
+    const work = (item.via === 'hop' ? runHopFetch(messageId, index, item) : runFetch(messageId, index, item, options.only)).finally(() => inFlight.delete(key));
     inFlight.set(key, work);
     return work;
   };
@@ -437,14 +545,54 @@ export const createAttachmentService = ({ bulletin, store, chat = null, now = Da
     fetch,
     dispose: () => {
       stopProgress();
+      stopHopProgress();
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
     },
   };
 };
 
-/** Whether a received item downloads without a tap (images and voice notes up to 5 MiB). */
-export const autoDownloads = (item: AttachmentItem): boolean => (item.media.kind === 'image' || item.media.kind === 'voice') && item.size <= AUTO_DOWNLOAD_BYTES;
+/**
+ * Whether a received item downloads without a tap: images and voice notes
+ * up to 5 MiB (spec 0012); over HOP also files up to 5 MiB, since the
+ * sender's node keeps them only a day.
+ */
+export const autoDownloads = (item: AttachmentItem): boolean =>
+  (item.media.kind === 'image' || item.media.kind === 'voice' || (item.via === 'hop' && item.media.kind === 'file')) && item.size <= AUTO_DOWNLOAD_BYTES;
+
+/** A frame's shape when the sender gave none: 4:3 for a photo, 16:9 for a video. */
+const PHOTO_SHAPE = { width: 4, height: 3 };
+const VIDEO_SHAPE = { width: 16, height: 9 };
+
+/**
+ * HOP receive: a phone app's attachment as the item the M15 bubbles draw
+ * (`via: 'hop'`; no key, chunks or store: those come from the message's
+ * ticket and node). A `general` file with an image type is shown as a photo.
+ */
+export const hopItemOf = (attachment: Attachment): AttachmentItem => {
+  const photo = attachment.kind === 'image' || (attachment.kind === 'general' && isImageType(attachment.mimeType));
+  const shape = attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : null;
+  const media: AttachmentMedia = photo
+    ? { kind: 'image', ...(shape ?? PHOTO_SHAPE) }
+    : attachment.kind === 'video'
+      ? { kind: 'video', ...VIDEO_SHAPE, durationMs: (attachment.durationSecs ?? 0) * 1000 }
+      : { kind: 'file' };
+  return {
+    mime: attachment.mimeType,
+    name: null,
+    size: attachment.fileSize,
+    media,
+    blurhash: attachment.blurhash ?? null,
+    thumbnail: null,
+    key: new Uint8Array(0),
+    nonce: new Uint8Array(0),
+    chunkSize: 0,
+    chunks: [],
+    store: { genesis: '0x', mirror: null },
+    expiresAt: 0,
+    via: 'hop',
+  };
+};
 
 /** "1.2 MB", "340 KB", "12 bytes". */
 export const formatSize = (bytes: number): string => {

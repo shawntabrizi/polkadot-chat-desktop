@@ -13,10 +13,11 @@
 import { openAtRest, sealAtRest } from '../../app/atRest';
 import { type AttachmentKeyRow, type MessageRow, appDatabase, db } from '../../app/database';
 
-import type { AttachmentItem, MessageContent } from './content';
+import type { Attachment, AttachmentItem, MessageContent } from './content';
 
 const KEY_BYTES = 32;
 const NONCE_BYTES = 12;
+const TICKET_BYTES = 32;
 const PREFIX = 'att:';
 
 export const attachmentKeyId = (messageId: string, index: number): string => `${PREFIX}${messageId}:${index}`;
@@ -45,14 +46,46 @@ export const sealAttachmentKeys = (messageId: string, items: readonly Attachment
     }),
   );
 
+type RichTextContent = Extract<MessageContent, { type: 'richText' }>;
+
+/** HOP receive: whether a `richText` attachment still carries its claim ticket. */
+const hasInlineTicket = (attachment: Attachment): boolean => attachment.hop?.ticket.length === TICKET_BYTES;
+
+/** HOP receive: each claim ticket sealed in a `keys` row with the same id scheme, and the content without them. */
+const splitTickets = async (messageId: string, content: RichTextContent): Promise<{ content: RichTextContent; keys: AttachmentKeyRow[] }> => {
+  const keys: AttachmentKeyRow[] = [];
+  for (const [index, attachment] of content.attachments.entries()) {
+    if (!attachment.hop || !hasInlineTicket(attachment)) continue;
+    const id = attachmentKeyId(messageId, index);
+    const { nonce, sealed } = await sealAtRest(attachment.hop.ticket, id);
+    keys.push({ id, messageId, index, nonce, sealed });
+  }
+  const attachments = content.attachments.map(attachment => (attachment.hop ? { ...attachment, hop: { ...attachment.hop, ticket: new Uint8Array(0) } } : attachment));
+  return { content: { ...content, attachments }, keys };
+};
+
 /**
- * What `addMessage` stores for a row: an attachment row loses its keys to
- * sealed `keys` rows; any other row is unchanged.
+ * What `addMessage` stores for a row: an attachment row loses its keys, and
+ * a `richText` row its HOP claim tickets, to sealed `keys` rows; any other
+ * row is unchanged.
  */
 export const splitAttachmentKeys = async (row: MessageRow): Promise<{ row: MessageRow; keys: AttachmentKeyRow[] }> => {
+  if (row.content.type === 'richText' && row.content.attachments.some(hasInlineTicket)) {
+    const split = await splitTickets(row.messageId, row.content);
+    return { row: { ...row, content: split.content }, keys: split.keys };
+  }
   if (row.content.type !== 'attachment' || !row.content.items.some(hasInlineKey)) return { row, keys: [] };
   const keys = await sealAttachmentKeys(row.messageId, row.content.items);
   return { row: { ...row, content: stripAttachmentKeys(row.content) }, keys };
+};
+
+/** HOP receive: the claim ticket of attachment `index` of `messageId`. Rejects when it is gone. */
+export const hopTicket = async (messageId: string, index: number, attachment: Attachment): Promise<Uint8Array> => {
+  if (hasInlineTicket(attachment) && attachment.hop) return attachment.hop.ticket;
+  const id = attachmentKeyId(messageId, index);
+  const row = await db.attachmentKeys.get(id);
+  if (!row) throw new Error('The key of this attachment is not on this computer.');
+  return openAtRest({ nonce: row.nonce, sealed: row.sealed }, id);
 };
 
 /** Item `index` of `messageId` with its key and nonce; the inline ones when the row still has them. Rejects when the key is gone. */

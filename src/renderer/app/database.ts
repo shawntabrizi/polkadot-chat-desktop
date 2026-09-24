@@ -9,6 +9,8 @@
 
 import Dexie, { type Table } from 'dexie';
 
+import type { HopCipher, HopLayout } from '../../shared/desktop-api';
+
 import type { HexString } from './bytes';
 import type { BotInfo, GroupMember, MessageContent } from '../domain/chat/content';
 import type { GroupState } from '../domain/chat/groupCodec';
@@ -378,8 +380,13 @@ export type GroupRow = {
  * `done`/`total` count chunks stored (upload) or fetched (download).
  * M15c `freed`: Settings › Storage › Free space dropped the decrypted copy;
  * it downloads again on a tap, never on its own.
+ * HOP receive (a phone app's `richText` attachment): `unavailable` = the
+ * sender's node no longer holds it (another device acked it, or it
+ * expired); `tooLarge` = over the app's 32 MiB HOP cap. `hop` records the
+ * dialect the file came in; such a copy is never freed (the ack removed
+ * the only other one).
  */
-export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged' | 'freed';
+export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged' | 'freed' | 'unavailable' | 'tooLarge';
 
 export type AttachmentRow = {
   messageId: string;
@@ -397,6 +404,7 @@ export type AttachmentRow = {
   updatedAt: number;
   /** M15c: when this device asked the sender to resend it; the download retries for 24 h after, expired or not. */
   resendAskedAt?: number;
+  hop?: { cipher: HopCipher; layout: HopLayout };
 };
 
 export const DB_NAME = 'polkadot-chat-web';

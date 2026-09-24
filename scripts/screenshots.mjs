@@ -110,6 +110,11 @@
 //                   downloaded (poster, duration, Download) and a sent one in
 //                   the inline player; an expired file with "Ask to resend";
 //                   the peer's "Please resend" with our "Resend the photo"
+//   room-hop-image  HOP receive (fixture): a phone app's photos over HOP in
+//                   the M15 bubbles: one "No longer available from the
+//                   sender's node" with Ask to resend, one still downloading
+//                   (the sender's blurhash), one received with its text; a
+//                   video not yet downloaded above them
 //   settings-storage  M15c Settings › Storage: the Bulletin authorization
 //                   left (live read on devnet), uploads today (fixture count)
 //                   against the daily share, local copies, Free space
@@ -182,7 +187,7 @@ const WORKER_SHOTS = {
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-tx-expired', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
-    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
+    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'settings-storage',
     'settings-profiles', 'settings-security',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
@@ -1015,6 +1020,49 @@ const attachmentFixture = async () => {
   };
 };
 
+/**
+ * HOP receive: a fictional friend on the phone app. Her photos are
+ * `richText` attachments over HOP (the base spec's `P2PMixnet`); each row
+ * that could download has a local row, so nothing asks a real node (the
+ * video waits for a tap).
+ */
+const PRIYA = { account: account('c6'), username: 'priyaphone.27', at: Date.now() - 25 * 60_000 };
+const hopFixture = async () => {
+  const { encodeBlurhash } = await loadTs('src/renderer/domain/chat/blurhash.ts');
+  const t = step => PRIYA.at + step * 60_000;
+  const scene = (width, height, colours) => {
+    const image = drawScene(width, height, colours);
+    const small = shrink(image.rgba, width, height);
+    return { ...image, blurhash: encodeBlurhash(small.pixels, small.w, small.h, 4, 3) };
+  };
+  const garden = scene(480, 300, { top: [110, 170, 220], bottom: [220, 236, 214], sun: [255, 244, 200], sea: [60, 120, 70] });
+  const market = scene(480, 360, { top: [200, 120, 80], bottom: [250, 210, 150], sun: [255, 236, 180], sea: [120, 70, 60] });
+  const node = 'wss://paseo-hop-next-0.polkadot.io';
+  // The ticket is sealed at rest, so the row holds none; the id is made up.
+  const hop = byte => ({ identifier: account(byte), node, ticket: fill(0, 0) });
+  const photo = (image, byte) => ({ kind: 'image', mimeType: 'image/jpeg', fileSize: image.png.length, width: image.width, height: image.height, blurhash: image.blurhash, hop: hop(byte) });
+  const richText = (text, attachments) => ({ type: 'richText', text, attachments });
+  const local = (messageId, status, extra = {}) => ({
+    messageId, index: 0, status, done: 0, total: 1, bytes: null, mime: 'image/jpeg', expiresAt: 0, attempts: 0, firstFailedAt: null, error: null, updatedAt: Date.now(), ...extra,
+  });
+  return {
+    contacts: [contactRow(PRIYA)],
+    rooms: [roomRow(PRIYA, 'The tomatoes are finally red', t(4))],
+    messages: [
+      messageRow('fixture-priya-video', PRIYA, t(0), 'incoming', richText(null, [{ kind: 'video', mimeType: 'video/mp4', fileSize: 6_800_000, durationSecs: 14, blurhash: garden.blurhash, hop: hop('d4') }])),
+      messageRow('fixture-priya-hello', PRIYA, t(1), 'incoming', { type: 'text', text: 'Sending the garden photos from my phone.' }),
+      messageRow('fixture-priya-gone', PRIYA, t(2), 'incoming', richText(null, [photo(market, 'd3')])),
+      messageRow('fixture-priya-market', PRIYA, t(3), 'incoming', richText(null, [photo(market, 'd2')])),
+      messageRow('fixture-priya-garden', PRIYA, t(4), 'incoming', richText('The tomatoes are finally red', [photo(garden, 'd1')])),
+    ],
+    attachments: [
+      local('fixture-priya-garden', 'ready', { done: 2, total: 2, bytes: bytes(garden.png), hop: { cipher: 'chacha20-poly1305', layout: 'versioned' } }),
+      local('fixture-priya-market', 'downloading', { done: 1, total: 2 }),
+      local('fixture-priya-gone', 'unavailable', { error: "No longer available from the sender's node." }),
+    ],
+  };
+};
+
 /** The intent of the fixture tx button: 0.01 PAS from `selfHex` to itself, with call data the app builds. */
 /** The Meter's "Top up 1 PAS" as it offered it 3 h ago, expired 2 h ago. Never pressed (disabled), so the call data is a placeholder. */
 const expiredTopUpIntent = async () => {
@@ -1086,6 +1134,7 @@ const mainWorker = async () => {
     await writeRows(app, await daoFixture({ account: source.accountHex, username: source.username }));
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
+    await writeRows(app, await hopFixture());
     await recordFixtureVoice(app, voiceRows);
     await recordFixtureVideo(app, videoRows);
     writeFileSync(join(profile, 'pick.png'), pick);
@@ -1322,6 +1371,19 @@ const attachmentShots = async (app, pickPath) => {
     if (!(await app.waitFor(`${player}?.readyState >= 2 && !${player}.seeking && Number.isFinite(${player}.duration) && ${player}.currentTime === 0`, 10_000))) throw new Error('the inline video did not load');
     await sleep(500);
     await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-resend"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('room-hop-image', async () => {
+    if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== PRIYA.username) await openRow(app, PRIYA.username);
+    const shown = [
+      app.exists('[data-message-id="fixture-priya-garden"] [data-via=hop] [data-testid=attachment-image]'),
+      app.exists('[data-message-id="fixture-priya-market"] [data-testid=attachment-item][data-status=downloading]'),
+      app.exists('[data-message-id="fixture-priya-gone"] [data-testid=attachment-unavailable]'),
+      app.exists('[data-message-id="fixture-priya-video"] [data-kind=video] [data-testid=attachment-download]'),
+    ].join(' && ');
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('the HOP bubbles did not show: the photo, the download, "no longer available" and the video');
+    await app.waitFor(`[...document.querySelectorAll('[data-via=hop] [data-testid=attachment-image]')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-priya-garden"]')?.scrollIntoView({ block: 'end' }); true`);
   });
 
   await app.shot('composer-attach', async () => {

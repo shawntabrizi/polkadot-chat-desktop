@@ -241,3 +241,10 @@ Write the question, what you did meanwhile, and the date.
 - **The GitHub repo name in the README.** The install steps link to `github.com/shawntabrizi/polkadot-chat-desktop` Releases and Issues (the `origin` remote). If the public repo moves (for example to an organisation), the two links change.
 - **Restore on Paseo.** Only devnet was restored in e2e. A Paseo phrase goes the same path (the People chain of the chosen network); not run.
 - **Clipboard after Copy.** The copied phrase stays on the clipboard until something else is copied. Should Copy be removed, or should the app clear the clipboard at the 60 s hide when it still holds the phrase (Electron's main can read the clipboard)?
+
+## HOP receive (2026-09-24)
+
+- **Promoted entries.** The base spec leaves out a fetch for HOP data promoted on chain (unacked for 22 h). The phones fall back to `bitswap_v1_get` on the entry's blake2b-256 CID. Should this client do the same (a desktop offline for a day would then still get the file)? Not built.
+- **Phone node list.** The phones read their HOP nodes from Firebase config (not in the repos). This client trusts the devnet Bulletin nodes and `paseo-hop-next-0/1.polkadot.io` (pca's list). If a phone photo shows "The sender's node <host> is not one this app trusts", please send the host.
+- **Devnet `//Eve` budget.** A 64 MiB grant by `//Eve` now fails (`InsufficientAuthorizerBudget`); 8 MiB works. This app's own M15 devnet grant asks 64 MiB. Lower it, or is the devnet budget being refilled?
+- **Real phone test.** Only the owner can send a photo from the Polkadot phone app to a desktop identity; the phones' dialect (ChaCha20-Poly1305 + versioned root) is covered by vectors from the app code, not by a live phone.

@@ -164,6 +164,8 @@ export const App = () => {
             bulletin: window.desktop?.bulletin ?? null,
             store: bulletin ? { genesis: bulletin.genesis as `0x${string}`, mirror: null } : null,
             chat: created,
+            // Base spec HOP receive works on every profile: it needs only the message's node.
+            hop: window.desktop?.hop ?? null,
           }),
         );
         // M15c: attachment keys still inline in message rows (before M15c) move to the sealed `keys` table, once.

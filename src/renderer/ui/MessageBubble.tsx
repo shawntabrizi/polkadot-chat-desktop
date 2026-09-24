@@ -22,7 +22,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/cn';
 
-import { AttachmentBody } from './Attachments';
+import { AttachmentBody, HopAttachmentBody } from './Attachments';
 import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
 import { ReferenceBody } from './Transactions';
 import { type ForwardTarget, useChatActions } from './chatActionsContext';
@@ -272,16 +272,8 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
     // One element from the first streamed word to the finished reply (M12d): completion must not re-create it.
     if (markdown) return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
     if (row.content.type === 'richText') {
-      return (
-        <>
-          {row.content.text ? <p className="text-body-m whitespace-pre-wrap">{row.content.text}</p> : null}
-          {row.content.attachments.length > 0 ? (
-            <p className={cn('text-body-s', own ? 'text-fg-secondary-inverted' : 'text-fg-secondary')}>
-              This message can only be viewed in the mobile app
-            </p>
-          ) : null}
-        </>
-      );
+      if (row.content.attachments.length > 0) return <HopAttachmentBody row={row} own={own} />;
+      return row.content.text ? <p className="text-body-m whitespace-pre-wrap">{row.content.text}</p> : null;
     }
     if (text !== null) return <p className="text-body-m whitespace-pre-wrap">{text}</p>;
     return <p className="text-body-m">{messagePreview(row)}</p>;

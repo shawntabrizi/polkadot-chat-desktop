@@ -59,6 +59,9 @@ export const IPC = {
   bulletinProgress: 'bulletin:progress',
   bulletinFetch: 'bulletin:fetch',
   bulletinAllowance: 'bulletin:allowance',
+  hopFetch: 'hop:fetch',
+  hopAck: 'hop:ack',
+  hopProgress: 'hop:progress',
   fileOpen: 'file:open',
   fileSave: 'file:save',
   storageAtRestKey: 'storage:atRestKey',
@@ -465,6 +468,38 @@ export type DesktopBulletinApi = {
   allowance: () => Promise<BulletinQuota | null>;
 };
 
+/** The largest file this app takes over HOP (pca's cap too). */
+export const HOP_MAX_FILE_BYTES = 32 * 1024 * 1024;
+/** Base spec HOP: which AEAD opened the entries (the phones' and pca's, or the spec's). */
+export type HopCipher = 'chacha20-poly1305' | 'aes-256-gcm';
+/** Base spec HOP: the root entry as the phones wrap it (RFC 0001 `V1(Inline | Chunked)`), or the spec's plain `UploadedFile`. */
+export type HopLayout = 'versioned' | 'plain';
+/** A running HOP download: entries claimed so far of those the root lists. */
+export type HopProgress = { requestId: string; done: number; total: number };
+/**
+ * A HOP download's outcome. `entries` (0x-hex) are what to ack once the file
+ * is persisted. `notFound`: the node no longer holds it (acked by another
+ * device, or expired); `untrusted`: the message names a node this app does
+ * not open.
+ */
+export type HopFetchResult =
+  | { ok: true; bytes: Uint8Array; entries: string[]; cipher: HopCipher; layout: HopLayout }
+  | { ok: false; reason: 'notFound' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
+export type HopAckResult = { acked: number; notFound: number; failed: number };
+
+/**
+ * Base spec HOP receive: a phone app's `RichText` attachment. The main
+ * process talks to the message's node, derives the keys from the ticket,
+ * checks and decrypts; it never sends HOP.
+ */
+export type DesktopHopApi = {
+  /** Claims (read-only) and decrypts the file `identifier` (0x-hex) at `node` with `ticket`. */
+  fetch: (requestId: string, node: string, identifier: string, ticket: Uint8Array) => Promise<HopFetchResult>;
+  /** Acks `entries` (0x-hex): only after the file is persisted, since an ack removes them for good. */
+  ack: (node: string, ticket: Uint8Array, entries: string[]) => Promise<HopAckResult>;
+  onProgress: (listener: (progress: HopProgress) => void) => () => void;
+};
+
 /** Spec 0012: a decrypted attachment leaves the renderer only through these. */
 export type DesktopFilesApi = {
   /** Opens the file with the system's default app. */
@@ -537,6 +572,7 @@ export type DesktopApi = {
   demo: DesktopDemoApi;
   agent: DesktopAgentApi;
   bulletin: DesktopBulletinApi;
+  hop: DesktopHopApi;
   files: DesktopFilesApi;
   storage: DesktopStorageApi;
   profiles: DesktopProfilesApi;

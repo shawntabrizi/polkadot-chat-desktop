@@ -34,6 +34,12 @@ export type NetworkProfile = {
    * profile cannot send or fetch attachments.
    */
   bulletin: { endpoints: readonly string[]; genesis: string; gateway: string } | null;
+  /**
+   * Base spec HOP: the nodes a phone app's attachment may name on this
+   * network (pca's `hopEndpoints`, bot-core/lib/network-config.mjs). The app
+   * opens no other node a message names.
+   */
+  hopNodes: readonly string[];
 };
 
 export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
@@ -61,6 +67,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
       genesis: '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59',
       gateway: 'https://devnet-ipfs.api.polkadotcommunity.foundation/ipfs/',
     },
+    hopNodes: ['wss://bullet.sik.rocks', 'wss://bulletin-paseo.tservices.es:8443', 'wss://bullet.tunastaking.eu'],
   },
   paseo: {
     id: 'paseo',
@@ -73,6 +80,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
     // Paseo Bulletin Next (para 1501) has no descriptors here and no authorizer for
     // this identity (spec 0012 Unresolved 1): no attachments on this profile yet.
     bulletin: null,
+    hopNodes: ['wss://paseo-hop-next-0.polkadot.io', 'wss://paseo-hop-next-1.polkadot.io'],
   },
 };
 
