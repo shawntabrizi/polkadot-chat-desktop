@@ -520,8 +520,10 @@ a bot; the Diagnostics counter shows 1 submission per group message.
 
 ### Rulings after the pca M16b build (2026-09-24, pca 96bf004)
 
-9. Invite link form: `polkadotapp://g#<InviteLink base64url>` (the scheme the phone app already accepts for `url` buttons; the desktop registers it too). A host MAY wrap it in an https link it owns; the fragment is never sent to a server.
+9. Invite link form: `polkadot-chat://g#<InviteLink base64url>` (amended 2026-09-24: registering the phone app's `polkadotapp://` scheme would capture its pairing links). A host MAY wrap it in an https link it owns; the fragment is never sent to a server.
 10. New groups default to join policy 1 (link with approval); a bot admin gets `/joinpolicy <0|1|2>`; `/invite` on a policy-0 group creates the invite and warns.
 11. A promoted admin gets every flag except `manage admins` (0x00BF) by default.
 12. When the bot is the owner, it forwards a join request to the first other admin with `approve joins`.
 13. Policy numbers as written in this spec (0 admins add only, 1 link with approval, 2 link open); the coordinator's brief had them reversed, the code follows the spec.
+
+14. No epoch rotation at a join, even with `historyShare` 0; the cost table holds (a newcomer simply receives no history). Receivers hide a too-fast slow-mode carrier with a 2 s grace for network delay.
