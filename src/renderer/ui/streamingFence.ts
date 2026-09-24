@@ -4,18 +4,23 @@
  * read, so its raw JSON must never flash in a code block while it arrives.
  *
  * - An open directive fence: the text up to the fence, and a placeholder in
- *   place of the block.
- * - A closed, valid block: its keyboard (as the finished reply will show).
- * - A closed, malformed block: plain text, as at the end.
+ *   place of the block. Since M12e (spec 0006 "Host parsing leniency") an
+ *   open untagged or ```json fence whose first non-space character is `[` or
+ *   `{` counts as one too; while it has no character yet it is held back.
+ * - Closed blocks go through the same lenient extraction as the finished
+ *   reply (`extractButtonsBlock`): a valid one shows its keyboard, an invalid
+ *   button-looking one is stripped, and the text around them stays.
  * - A trailing partial fence (one or two backticks, or the start of a
  *   directive tag such as "```butt") is held back, so it does not flicker.
  * Ordinary code fences keep rendering as code.
  */
 
-import { type ButtonsBlock, parseButtonsBlock } from '../../shared/buttonsBlock';
+import { type ButtonsBlock, extractButtonsBlock } from '../../shared/buttonsBlock';
 
 /** Fence tags the client acts on instead of showing. Only `buttons` today. */
 export const CLIENT_DIRECTIVES: readonly string[] = ['buttons'];
+/** Fence tags that hide like a directive when their body starts as JSON (spec 0006 leniency). */
+const LENIENT_TAGS: readonly string[] = ['json', ''];
 
 export type StreamingView = { text: string; placeholder: boolean; block: ButtonsBlock | null };
 
@@ -31,28 +36,47 @@ const partialFence = (text: string): number | null => {
   return null;
 };
 
-/** The start of an open directive fence (a line "```buttons" with no closing fence after it), or null. */
-const openDirective = (text: string): number | null => {
-  for (const tag of CLIENT_DIRECTIVES) {
-    const fence = `\`\`\`${tag}`;
-    let at = text.lastIndexOf(fence);
-    while (at >= 0 && at > 0 && text[at - 1] !== '\n') at = text.lastIndexOf(fence, at - 1);
-    if (at < 0) continue;
-    const lineEnd = text.indexOf('\n', at);
-    const tagLine = text.slice(at + fence.length, lineEnd < 0 ? undefined : lineEnd);
-    if (tagLine.trim() !== '') continue;
-    const rest = lineEnd < 0 ? '' : text.slice(lineEnd + 1);
-    // Closed (valid or not) is not open: the caller shows the keyboard or the plain text.
-    if (!/(^|\n)```/.test(rest)) return at;
-  }
-  return null;
+/** A fence opened on a whole line and not closed yet: where its line starts, its tag, and its body so far. */
+const openFence = (text: string): { start: number; tag: string; body: string } | null => {
+  let open: { start: number; tag: string; bodyStart: number } | null = null;
+  let offset = 0;
+  const lines = text.split('\n');
+  lines.forEach((line, index) => {
+    const complete = index < lines.length - 1;
+    if (open) {
+      if (/^[ \t]*```[ \t]*$/.test(line)) open = null;
+    } else if (complete) {
+      const tag = /^[ \t]*```([^`]*)$/.exec(line)?.[1];
+      if (tag !== undefined) open = { start: offset, tag: tag.trim().toLowerCase(), bodyStart: offset + line.length + 1 };
+    }
+    offset += line.length + 1;
+  });
+  const found = open as { start: number; tag: string; bodyStart: number } | null;
+  return found ? { start: found.start, tag: found.tag, body: text.slice(found.bodyStart) } : null;
 };
 
 export const streamingView = (raw: string): StreamingView => {
-  const block = parseButtonsBlock(raw);
-  if (block) return { text: block.text, placeholder: false, block };
-  const open = openDirective(raw);
-  if (open !== null) return { text: raw.slice(0, open).trimEnd(), placeholder: true, block: null };
+  let closed = raw;
+  let placeholder = false;
+  let hidden = false;
+  const open = openFence(raw);
+  if (open) {
+    const first = open.body.trimStart()[0];
+    const directive = CLIENT_DIRECTIVES.includes(open.tag) || (LENIENT_TAGS.includes(open.tag) && (first === '[' || first === '{'));
+    // An empty untagged or json fence: its first character decides, so it is not shown yet.
+    const undecided = LENIENT_TAGS.includes(open.tag) && first === undefined;
+    if (directive || undecided) {
+      closed = raw.slice(0, open.start);
+      placeholder = directive;
+      hidden = true;
+    }
+  }
+  const extracted = extractButtonsBlock(closed);
+  if (extracted) {
+    const block = extracted.rows ? { text: extracted.text, rows: extracted.rows, oneShot: extracted.oneShot } : null;
+    return { text: extracted.text, placeholder, block };
+  }
+  if (hidden) return { text: closed.trimEnd(), placeholder, block: null };
   const partial = partialFence(raw);
   return { text: partial === null ? raw : raw.slice(0, partial).trimEnd(), placeholder: false, block: null };
 };

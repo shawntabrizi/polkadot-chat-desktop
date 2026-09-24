@@ -14,7 +14,10 @@ import type { PeerTyping } from '../domain/chat/signals';
 import type { ChatManager } from '../domain/chat/manager';
 import { listMessages, markButtonPressed, markRoomRead, setRoomMuted } from '../domain/chat/messages';
 import { getPeerInfo } from '../domain/chat/peerInfo';
+import { MAX_NICKNAME_CHARS, displayName, forwardText, isBlocked, setNickname } from '../domain/chat/chatActions';
+import { clearKey } from '../domain/chat/undo';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { AssistantSettings } from '../../shared/desktop-api';
@@ -27,6 +30,7 @@ import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader, TypingLine } from './RoomHeader';
+import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
 import { type StripPhase, TxStrip } from './Transactions';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
@@ -89,6 +93,7 @@ const valueToHint = (intent: TxIntent, hint: BalanceHint): bigint | null => {
 /** The last pressed button of the room; `since` is the newest incoming message at the press. */
 type PressState = { messageId: string; row: number; index: number; busy: boolean; since: string | null };
 
+const NO_ROWS: readonly MessageRow[] = [];
 const noActivity = { subscribe: () => () => undefined, snapshot: () => null };
 // A stable snapshot: useSyncExternalStore re-renders on every new object.
 const NO_TYPING: ReadonlyMap<PeerId, PeerTyping> = new Map();
@@ -132,6 +137,40 @@ const MuteButton = ({ peer, muted }: { peer: PeerId; muted: boolean }) => (
   </Tooltip>
 );
 
+/** The nickname in place of the title (M12e): Enter or leaving the field saves, Esc cancels. */
+const NicknameEditor = ({ initial, onDone }: { initial: string; onDone: (value: string | null) => void }) => {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (result: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(result);
+  };
+  return (
+    <Input
+      autoFocus
+      value={value}
+      maxLength={MAX_NICKNAME_CHARS}
+      onChange={event => setValue(event.target.value)}
+      onBlur={() => finish(value)}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          finish(value);
+        } else if (event.key === 'Escape') {
+          // Esc cancels here; it must not also close the room (Shell's shortcut).
+          event.preventDefault();
+          finish(null);
+        }
+      }}
+      placeholder="Nickname"
+      aria-label="Nickname"
+      data-testid="nickname-input"
+      className="h-9 max-w-xs rounded-nested px-2 text-heading-m md:text-heading-m"
+    />
+  );
+};
+
 export const Room = (props: Props) => {
   const { peer, connection, scrollToMessageId = null, scrollRequest = 0, transactions = null, self = null } = props;
   const manager = 'manager' in props ? props.manager : null;
@@ -143,6 +182,12 @@ export const Room = (props: Props) => {
   const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
   const peerInfo = useLiveQuery(() => (manager ? getPeerInfo(peer) : Promise.resolve(undefined)), [peer, manager]);
   const botInfo = peerInfo?.botInfo ?? null;
+  const blocked = useLiveQuery(() => (manager ? isBlocked(peer as HexString) : Promise.resolve(false)), [peer, manager]) ?? false;
+  const chatActions = useChatActions();
+  const pending = usePending();
+  // "Clear history" waits out its Undo time with the messages hidden (M12e).
+  const clearing = pending.has(clearKey(peer));
+  const [editingNickname, setEditingNickname] = useState(false);
   const balanceHint = manager && self ? (botInfo?.balance ?? null) : null;
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<Mode>({ mode: 'new' });
@@ -338,11 +383,16 @@ export const Room = (props: Props) => {
 
   const unread = room?.unreadCount ?? 0;
   const markSeen = () => {
-    if (unread === 0) return;
+    // A room marked as unread (M12e) is read once it is seen too.
+    if (unread === 0 && room?.markedUnread !== true) return;
     void (manager ? manager.markRead(peer as HexString) : markRoomRead(peer));
   };
 
-  const name = assistant ? ASSISTANT_USERNAME : (contact?.username ?? '');
+  const name = assistant ? ASSISTANT_USERNAME : contact ? displayName(contact) : '';
+  // M12e Forward: whose message the copy was, for the local caption.
+  const authorOf = (row: MessageRow): string => (row.direction === 'outgoing' ? (self?.username ?? 'you') : name);
+  const forwardFor = (row: MessageRow) =>
+    forwardText(row) !== null && row.status !== 'streaming' ? (target: ForwardTarget) => chatActions.forward(target, row, authorOf(row)) : undefined;
 
   const submit = async () => {
     const text = draft.trim();
@@ -439,8 +489,9 @@ export const Room = (props: Props) => {
     if (!manager) {
       // The Assistant: Copy text, its buttons, and Delete (local only) once a reply is finished.
       const keyboard = keyboardFor(row);
+      const forward = forwardFor(row);
       return (row.content.type === 'text' || row.content.type === 'buttons') && row.status !== 'streaming'
-        ? { remove: { label: 'Delete', run: () => requestDelete(row) }, ...(keyboard ? { keyboard } : {}) }
+        ? { remove: { label: 'Delete', run: () => requestDelete(row) }, ...(keyboard ? { keyboard } : {}), ...(forward ? { forward } : {}) }
         : {};
     }
     const keyboard = keyboardFor(row);
@@ -455,9 +506,11 @@ export const Room = (props: Props) => {
           onCancel={() => setStrip(null)}
         />
       ) : null;
+    const forward = forwardFor(row);
     return {
       ...(keyboard ? { keyboard } : {}),
       ...(below ? { below } : {}),
+      ...(forward ? { forward } : {}),
       react: emoji => void toggleReaction(row, emoji),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isEditable(row) ? () => startEdit(row) : undefined,
@@ -524,11 +577,27 @@ export const Room = (props: Props) => {
   return (
     <>
       <RoomHeader
-        avatar={assistant ? <AssistantAvatar /> : <PeerAvatar name={name || '?'} />}
+        avatar={assistant ? <AssistantAvatar /> : <PeerAvatar name={contact?.username || name || '?'} />}
         name={name}
+        nameNote={contact?.nickname ? contact.username : undefined}
+        titleEditor={
+          editingNickname && contact ? (
+            <NicknameEditor
+              initial={contact.nickname ?? ''}
+              onDone={value => {
+                setEditingNickname(false);
+                if (value !== null) void setNickname(contact.accountId, value).catch((cause: unknown) => setError(`${plainError(cause, 'The nickname was not saved.')} Try again.`));
+              }}
+            />
+          ) : undefined
+        }
         badge={botInfo ? <BotBadge kind={botInfo.kind} /> : undefined}
         status={
-          assistant ? (
+          blocked ? (
+            <span className="text-fg-tertiary" data-testid="blocked-status">
+              Blocked
+            </span>
+          ) : assistant ? (
             assistantWorking ? (
               <TypingLine typing={LOCAL_WORKING} />
             ) : assistantSettings ? (
@@ -563,10 +632,25 @@ export const Room = (props: Props) => {
         }
       >
         {room ? <MuteButton peer={peer} muted={muted} /> : null}
+        {assistant ? (
+          <RoomMenu subject={{ peer, name, kind: 'assistant', room }} />
+        ) : contact ? (
+          <RoomMenu
+            subject={{
+              peer,
+              name,
+              kind: 'contact',
+              room,
+              contact: { accountId: contact.accountId, username: contact.username, blocked },
+              onNickname: () => setEditingNickname(true),
+              hasNickname: contact.nickname !== undefined,
+            }}
+          />
+        ) : null}
       </RoomHeader>
       {!assistant && connection ? <ReconnectBanner connection={connection} /> : null}
       <MessageFlow
-        rows={messages ?? []}
+        rows={clearing ? NO_ROWS : (messages ?? [])}
         peerName={name}
         requests={requests ?? []}
         assistant={assistant !== null}
@@ -585,24 +669,33 @@ export const Room = (props: Props) => {
           {error}
         </p>
       ) : null}
-      <Composer
-        draft={draft}
-        onDraft={text => {
-          setDraft(text);
-          // Spec 0005: only a person's edits of a new message; never the Assistant, never an edit.
-          if (manager && mode.mode !== 'edit') manager.composing(peer as HexString, text);
-        }}
-        onSend={() => void submit()}
-        context={context}
-        sendDisabled={answering}
-        onStop={answering ? () => void assistant?.stop() : undefined}
-        sendLabel={mode.mode === 'edit' ? 'Save' : 'Send'}
-        sendKey={prefs.sendKey}
-        onEditLast={lastOwnText ? () => startEdit(lastOwnText) : undefined}
-        // Commands only for a new message: an edit or a reply is not one.
-        commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
-        quietSend={strip !== null}
-      />
+      {blocked && contact ? (
+        <div className="flex shrink-0 items-center justify-center gap-3 px-4 pt-2 pb-5" data-testid="blocked-bar">
+          <p className="text-body-m text-fg-secondary">You blocked {name}. Their messages are dropped on this device.</p>
+          <Button variant="secondary" className="rounded-medium text-label-m" onClick={() => chatActions.unblock(contact.accountId, name)}>
+            Unblock
+          </Button>
+        </div>
+      ) : (
+        <Composer
+          draft={draft}
+          onDraft={text => {
+            setDraft(text);
+            // Spec 0005: only a person's edits of a new message; never the Assistant, never an edit.
+            if (manager && mode.mode !== 'edit') manager.composing(peer as HexString, text);
+          }}
+          onSend={() => void submit()}
+          context={context}
+          sendDisabled={answering}
+          onStop={answering ? () => void assistant?.stop() : undefined}
+          sendLabel={mode.mode === 'edit' ? 'Save' : 'Send'}
+          sendKey={prefs.sendKey}
+          onEditLast={lastOwnText ? () => startEdit(lastOwnText) : undefined}
+          // Commands only for a new message: an edit or a reply is not one.
+          commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
+          quietSend={strip !== null}
+        />
+      )}
     </>
   );
 };

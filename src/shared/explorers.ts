@@ -20,6 +20,14 @@ export const EXPLORER_LABELS: Record<ExplorerId, string> = {
   polkadotjs: 'Polkadot.js Apps',
 };
 
+/**
+ * A quiet line under an explorer in the picker (M12e): Polkadot.js Apps fails
+ * to decode some newer runtimes (Paseo Asset Hub, 2026-09-24).
+ */
+export const EXPLORER_CAPTIONS: Partial<Record<ExplorerId, string>> = {
+  polkadotjs: 'May not decode newer runtimes',
+};
+
 export const isExplorerId = (value: unknown): value is ExplorerId => value === 'subscan' || value === 'polkadotjs';
 
 /** One chain as each explorer knows it; a missing field: that explorer does not know the chain. */

@@ -45,6 +45,22 @@ export type SubmissionMeter = {
 export const submissionsLine = ({ submissions, messages }: SubmissionCounts): string =>
   `${messages === 0 ? '—' : (submissions / messages).toFixed(2)} (${submissions} / ${messages})`;
 
+/**
+ * M12e: reports what `meter` counts to `sink` (the main process keeps the
+ * totals, so a reload does not zero them), as the difference since the last
+ * report. Returns the unsubscribe function.
+ */
+export const forwardCounts = (meter: Pick<SubmissionMeter, 'snapshot' | 'subscribe'>, sink: (delta: SubmissionCounts) => void): VoidFunction => {
+  let sent = meter.snapshot();
+  if (sent.submissions + sent.acknowledgements + sent.messages > 0) sink(sent);
+  return meter.subscribe(() => {
+    const now = meter.snapshot();
+    const delta = { submissions: now.submissions - sent.submissions, acknowledgements: now.acknowledgements - sent.acknowledgements, messages: now.messages - sent.messages };
+    sent = now;
+    sink(delta);
+  });
+};
+
 type Signed = Parameters<StatementStoreAdapter['submitStatement']>[0];
 type Submitted = Awaited<ReturnType<StatementStoreAdapter['submitStatement']>>;
 

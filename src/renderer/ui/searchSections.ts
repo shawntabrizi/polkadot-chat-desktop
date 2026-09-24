@@ -23,6 +23,10 @@ export const chatMatches = (name: string, query: string): boolean => {
   return needle === '' || name.toLowerCase().includes(needle);
 };
 
+/** A chat row matches on its name, and on the username behind a nickname (M12e: both find the contact). */
+export const rowMatches = (row: { name: string; username?: string }, query: string): boolean =>
+  chatMatches(row.name, query) || (row.username !== undefined && chatMatches(row.username, query));
+
 /**
  * A bot (spec 0008) matches when its username, its own name or its
  * description contains the query: "faucet" and "test funds" both find the

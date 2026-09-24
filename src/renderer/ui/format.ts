@@ -37,6 +37,15 @@ export const formatListTime = (timestamp: number, now: number = Date.now()): str
   });
 };
 
+/** How long ago, in whole units (M12e pending requests): "just now", "5 min ago", "3 h ago", "3 d ago". */
+export const formatAgo = (timestamp: number, now: number = Date.now()): string => {
+  const age = Math.max(0, now - timestamp);
+  if (age < MINUTE) return 'just now';
+  if (age < HOUR) return `${Math.floor(age / MINUTE)} min ago`;
+  if (age < 24 * HOUR) return `${Math.floor(age / HOUR)} h ago`;
+  return `${Math.floor(age / (24 * HOUR))} d ago`;
+};
+
 /** Date separator in a room: "Today", "Yesterday", else the full date. */
 export const formatDay = (timestamp: number, now: number = Date.now()): string => {
   const date = new Date(timestamp);

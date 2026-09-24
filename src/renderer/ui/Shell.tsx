@@ -16,6 +16,7 @@ import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
+import { deleteKey, withdrawKey } from '../domain/chat/undo';
 import { applyDripStatus, syncDrip } from '../domain/faucet/dripFlow';
 import { FAUCET_PEER } from '../domain/faucet/faucet';
 import type { TxRunner } from '../domain/chain/transactions';
@@ -31,7 +32,8 @@ import { cn } from '@/lib/cn';
 import type { DesktopAssistantApi } from '../../shared/desktop-api';
 
 import { PeerAvatar } from './Avatar';
-import { ChatList, type ChatSelection, type ChatTarget, useChatOrder } from './ChatList';
+import { ChatList, type ChatSelection, type ChatTarget, useChatOrder, useForwardTargets } from './ChatList';
+import { ChatActionsProvider, useChatActionsValue, usePending } from './chatActions';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
 import { BalanceChip, Pocket } from './Pocket';
 import { Room } from './Room';
@@ -114,9 +116,22 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const order = useChatOrder();
   const desktopApp = window.desktop?.app ?? null;
 
-  // A sent request that the peer accepts turns into their room.
-  const selection: Selection =
+  const forwardTargets = useForwardTargets();
+  const chatActions = useChatActionsValue(runtime?.manager ?? null, forwardTargets);
+  const pending = usePending();
+
+  // A sent request that the peer accepts turns into their room. A chat being
+  // deleted (or a request being withdrawn) closes at once (M12e); Undo does
+  // not reopen it.
+  const accepted: Selection =
     chosen.kind === 'outgoing' && contacts?.some(contact => contact.accountId === chosen.peer) ? { kind: 'room', peer: chosen.peer } : chosen;
+  const closing =
+    (accepted.kind === 'room' && pending.has(deleteKey(accepted.peer))) || (accepted.kind === 'outgoing' && pending.has(withdrawKey(accepted.peer)));
+  const selection: Selection = closing ? { kind: 'none' } : accepted;
+  useEffect(() => {
+    // Off the effect's render pass, as the unread anchor in Room.tsx.
+    if (closing) void Promise.resolve().then(() => setSelection({ kind: 'none' }));
+  }, [closing]);
 
   // ── Title and dock badge: unread of the rooms that are not muted.
   const unreadTotal = useLiveQuery(countUnread, []) ?? 0;
@@ -303,9 +318,9 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               setLeft('chats');
               setSelection({ kind: 'room', peer });
             }}
-            onDeclined={name => {
+            onDeclined={(name, options) => {
               setSelection({ kind: 'none' });
-              toast(`Request from ${name} was declined`);
+              if (!options?.silent) toast(`Request from ${name} was declined`);
             }}
           />
         );
@@ -358,122 +373,124 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   };
 
   return (
-    <div className="flex h-screen gap-2 bg-surface-main p-2">
-      <aside className="flex w-80 shrink-0 flex-col rounded-container bg-surface-container p-2 shadow-1" aria-label="Chats">
-        {left === 'requests' ? (
-          <RequestsPanel
-            selectedRequestId={selection.kind === 'incoming' ? selection.requestId : null}
-            onBack={() => setLeft('chats')}
-            onOpen={requestId => setSelection({ kind: 'incoming', requestId })}
-          />
-        ) : (
-          <>
-            <div className="flex h-12 shrink-0 items-center justify-between ps-2">
-              <h1 className="text-heading-m text-fg-primary">Polkadot Chat</h1>
-              <IconButton
-                label="New chat"
-                active={adding}
-                onClick={() => {
-                  setAdding(true);
-                  setSearchFocus(count => count + 1);
+    <ChatActionsProvider value={chatActions}>
+      <div className="flex h-screen gap-2 bg-surface-main p-2">
+        <aside className="flex w-80 shrink-0 flex-col rounded-container bg-surface-container p-2 shadow-1" aria-label="Chats">
+          {left === 'requests' ? (
+            <RequestsPanel
+              selectedRequestId={selection.kind === 'incoming' ? selection.requestId : null}
+              onBack={() => setLeft('chats')}
+              onOpen={requestId => setSelection({ kind: 'incoming', requestId })}
+            />
+          ) : (
+            <>
+              <div className="flex h-12 shrink-0 items-center justify-between ps-2">
+                <h1 className="text-heading-m text-fg-primary">Polkadot Chat</h1>
+                <IconButton
+                  label="New chat"
+                  active={adding}
+                  onClick={() => {
+                    setAdding(true);
+                    setSearchFocus(count => count + 1);
+                  }}
+                >
+                  <Plus className="size-5" />
+                </IconButton>
+              </div>
+              <SearchPane
+                query={search}
+                onQuery={setSearch}
+                adding={adding}
+                onExit={exitSearch}
+                focusSignal={searchFocus}
+                profile={NETWORK_PROFILES[profileId]}
+                selfIdentityAccountId={identity.identityAccountId}
+                selected={listSelection}
+                onOpenTarget={target => {
+                  leaveRecent();
+                  openTarget(target);
                 }}
+                onOpenMessage={(peer, messageId) => setSelection({ kind: 'room', peer, jump: { messageId, seq: Date.now() } })}
+                onPickGlobal={result => void pick(result)}
+                onNewGroup={() => setSelection({ kind: 'newGroup' })}
+                newGroupActive={selection.kind === 'newGroup'}
               >
-                <Plus className="size-5" />
+                {pendingIncoming.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setLeft('requests')}
+                    data-testid="new-requests"
+                    className="mb-2 flex w-fit cursor-pointer items-center gap-2 rounded-full bg-action-tertiary py-1.5 ps-3 pe-1.5 text-label-m text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+                  >
+                    New requests
+                    <Badge className="h-5 min-w-5 rounded-full px-1.5 text-label-s">{pendingIncoming.length}</Badge>
+                  </button>
+                ) : null}
+                <div className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2">
+                  <ChatList
+                    selected={listSelection}
+                    onOpenRoom={peer => setSelection({ kind: 'room', peer })}
+                    onOpenOutgoing={peer => setSelection({ kind: 'outgoing', peer })}
+                    typing={runtime?.manager.typing}
+                  />
+                </div>
+              </SearchPane>
+            </>
+          )}
+          {/* The account block (owner, 2026-09-23): its own nested surface, no hover, so it
+              never reads as a chat row; the chip has its own line, so the username never
+              shares its width. */}
+          <section className="mt-2 flex shrink-0 flex-col gap-1.5 rounded-nested bg-surface-nested px-3 py-2" aria-label="Your account" data-testid="account-block">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-overline text-fg-tertiary uppercase">You</p>
+              <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>
+                <SettingsIcon className="size-5" />
               </IconButton>
             </div>
-            <SearchPane
-              query={search}
-              onQuery={setSearch}
-              adding={adding}
-              onExit={exitSearch}
-              focusSignal={searchFocus}
-              profile={NETWORK_PROFILES[profileId]}
-              selfIdentityAccountId={identity.identityAccountId}
-              selected={listSelection}
-              onOpenTarget={target => {
-                leaveRecent();
-                openTarget(target);
+            <div className="flex min-w-0 items-center gap-2">
+              <PeerAvatar name={username} size="xs" />
+              <p className="min-w-0 text-label-m break-all text-fg-primary" data-testid="username">
+                {username}
+              </p>
+              <p
+                className={cn('shrink-0 text-caption', connection.state === 'offline' ? 'text-fg-error' : 'text-fg-tertiary')}
+                data-testid="connection-status"
+              >
+                {CONNECTION_LABEL[connection.state]}
+              </p>
+            </div>
+            <div className="flex">
+              <BalanceChip active={selection.kind === 'pocket'} onOpen={() => setSelection({ kind: 'pocket' })} />
+            </div>
+          </section>
+        </aside>
+        {selection.kind === 'settings' ? (
+          <main className="min-w-0 flex-1">
+            <Settings
+              username={username}
+              identity={identity}
+              profileId={profileId}
+              onReset={onReset}
+              assistantApi={assistantApi}
+              submissions={runtime?.manager.submissions ?? null}
+            />
+          </main>
+        ) : selection.kind === 'pocket' ? (
+          <main className="min-w-0 flex-1">
+            <Pocket
+              username={username}
+              address={toSs58(identity.identityAccountId)}
+              profileId={profileId}
+              onGetFunds={() => {
+                setLeft('chats');
+                setSelection({ kind: 'room', peer: FAUCET_PEER });
               }}
-              onOpenMessage={(peer, messageId) => setSelection({ kind: 'room', peer, jump: { messageId, seq: Date.now() } })}
-              onPickGlobal={result => void pick(result)}
-              onNewGroup={() => setSelection({ kind: 'newGroup' })}
-              newGroupActive={selection.kind === 'newGroup'}
-            >
-              {pendingIncoming.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setLeft('requests')}
-                  data-testid="new-requests"
-                  className="mb-2 flex w-fit cursor-pointer items-center gap-2 rounded-full bg-action-tertiary py-1.5 ps-3 pe-1.5 text-label-m text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-                >
-                  New requests
-                  <Badge className="h-5 min-w-5 rounded-full px-1.5 text-label-s">{pendingIncoming.length}</Badge>
-                </button>
-              ) : null}
-              <div className="-mx-2 min-h-0 flex-1 overflow-y-auto px-2">
-                <ChatList
-                  selected={listSelection}
-                  onOpenRoom={peer => setSelection({ kind: 'room', peer })}
-                  onOpenOutgoing={peer => setSelection({ kind: 'outgoing', peer })}
-                  typing={runtime?.manager.typing}
-                />
-              </div>
-            </SearchPane>
-          </>
+            />
+          </main>
+        ) : (
+          <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-container bg-surface-container shadow-1">{right}</main>
         )}
-        {/* The account block (owner, 2026-09-23): its own nested surface, no hover, so it
-            never reads as a chat row; the chip has its own line, so the username never
-            shares its width. */}
-        <section className="mt-2 flex shrink-0 flex-col gap-1.5 rounded-nested bg-surface-nested px-3 py-2" aria-label="Your account" data-testid="account-block">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-overline text-fg-tertiary uppercase">You</p>
-            <IconButton label="Settings" active={selection.kind === 'settings'} onClick={() => setSelection({ kind: 'settings' })}>
-              <SettingsIcon className="size-5" />
-            </IconButton>
-          </div>
-          <div className="flex min-w-0 items-center gap-2">
-            <PeerAvatar name={username} size="xs" />
-            <p className="min-w-0 text-label-m break-all text-fg-primary" data-testid="username">
-              {username}
-            </p>
-            <p
-              className={cn('shrink-0 text-caption', connection.state === 'offline' ? 'text-fg-error' : 'text-fg-tertiary')}
-              data-testid="connection-status"
-            >
-              {CONNECTION_LABEL[connection.state]}
-            </p>
-          </div>
-          <div className="flex">
-            <BalanceChip active={selection.kind === 'pocket'} onOpen={() => setSelection({ kind: 'pocket' })} />
-          </div>
-        </section>
-      </aside>
-      {selection.kind === 'settings' ? (
-        <main className="min-w-0 flex-1">
-          <Settings
-            username={username}
-            identity={identity}
-            profileId={profileId}
-            onReset={onReset}
-            assistantApi={assistantApi}
-            submissions={runtime?.manager.submissions ?? null}
-          />
-        </main>
-      ) : selection.kind === 'pocket' ? (
-        <main className="min-w-0 flex-1">
-          <Pocket
-            username={username}
-            address={toSs58(identity.identityAccountId)}
-            profileId={profileId}
-            onGetFunds={() => {
-              setLeft('chats');
-              setSelection({ kind: 'room', peer: FAUCET_PEER });
-            }}
-          />
-        </main>
-      ) : (
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-container bg-surface-container shadow-1">{right}</main>
-      )}
-    </div>
+      </div>
+    </ChatActionsProvider>
   );
 };

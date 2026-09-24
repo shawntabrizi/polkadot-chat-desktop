@@ -55,9 +55,11 @@ describe('streaming reply with a client directive fence', () => {
     expect(html).not.toContain('chip-placeholder');
   });
 
-  it('a closed but malformed block stays plain text (the end-of-reply fallback)', () => {
+  // M12e (spec 0006 "Host parsing leniency"): a button-looking block that breaks
+  // the rules is stripped, as the finished reply strips it; before M12e it stayed as text.
+  it('a closed but malformed buttons block is stripped, as at the end', () => {
     const bad = `${INTRO}\n\n\`\`\`buttons\n{"rows": "no"}\n\`\`\``;
-    expect(streamingView(bad)).toEqual({ text: bad, placeholder: false, block: null });
+    expect(streamingView(bad)).toEqual({ text: INTRO, placeholder: false, block: null });
   });
 
   it('holds back a trailing partial fence (one or two backticks, or "```butt") so it does not flicker', () => {
@@ -70,5 +72,40 @@ describe('streaming reply with a client directive fence', () => {
     const code = `${INTRO}\n\n\`\`\`js\nconst a = { b: 1 };`;
     expect(streamingView(code)).toEqual({ text: code, placeholder: false, block: null });
     expect(render(code)).toContain('<code');
+  });
+});
+
+// The owner's case (M12e): a small model wrote a bare fence with a flat array
+// and a tip line after it. While it streams, no JSON may flash either.
+describe('streaming reply with a lenient buttons fence', () => {
+  const HEAD = "I'm Claude Haiku 4.5, the model behind this bot.";
+  const JSON_ROW = '[{"label":"Got it","action":{"command":"ok"}}]';
+
+  it('an open bare fence whose body starts with [ shows placeholders, not JSON', () => {
+    const view = streamingView(`${HEAD}\n\n\`\`\`\n[{"label":"Got`);
+    expect(view).toEqual({ text: HEAD, placeholder: true, block: null });
+    expect(render(`${HEAD}\n\n\`\`\`\n[{"label":"Got`)).not.toContain('Got');
+  });
+
+  it('an open json fence whose body starts with { is hidden the same way', () => {
+    expect(streamingView(`${HEAD}\n\`\`\`json\n  {"rows":[[`)).toEqual({ text: HEAD, placeholder: true, block: null });
+  });
+
+  it('an open bare fence with nothing in it yet is held back until its first character', () => {
+    expect(streamingView(`${HEAD}\n\`\`\`\n`)).toEqual({ text: HEAD, placeholder: false, block: null });
+  });
+
+  it('closed, the keyboard shows and the tip line after it streams as text', () => {
+    const view = streamingView(`${HEAD}\n\n\`\`\`\n${JSON_ROW}\n\`\`\`\n\n(Tip: send /help`);
+    expect(view.text).toBe(`${HEAD}\n\n(Tip: send /help`);
+    expect(view.block?.rows).toEqual([[{ label: 'Got it', action: { command: 'ok' } }]]);
+    expect(view.placeholder).toBe(false);
+  });
+
+  it('an untagged fence of ordinary code or a plain list still streams as code', () => {
+    const code = `${INTRO}\n\n\`\`\`\nnpm test`;
+    expect(streamingView(code)).toEqual({ text: code, placeholder: false, block: null });
+    const numbers = `${INTRO}\n\n\`\`\`json\n[1, 2, 3]\n\`\`\``;
+    expect(streamingView(numbers)).toEqual({ text: numbers, placeholder: false, block: null });
   });
 });

@@ -49,6 +49,7 @@ const shapeOf = (actions: BubbleActions): string =>
     edit: !!actions.edit,
     retry: !!actions.retry,
     remove: actions.remove?.label ?? null,
+    forward: !!actions.forward,
     keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null } : null,
   });
 
@@ -69,6 +70,7 @@ export const createActionCache = () => {
     ...(actions.edit ? { edit: () => current(messageId)?.edit?.() } : {}),
     ...(actions.retry ? { retry: () => current(messageId)?.retry?.() } : {}),
     ...(actions.remove ? { remove: { label: actions.remove.label, run: () => current(messageId)?.remove?.run() } } : {}),
+    ...(actions.forward ? { forward: (target: Parameters<NonNullable<BubbleActions['forward']>>[0]) => current(messageId)?.forward?.(target) } : {}),
     ...(actions.keyboard
       ? {
           keyboard: {

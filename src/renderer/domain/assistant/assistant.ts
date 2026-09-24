@@ -17,7 +17,7 @@ import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
 import { readSetting, writeSetting } from '../../app/settings';
 import { type BotCommand, type MessageContent, keyboardOf, previewOf } from '../chat/content';
 import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '../chat/messages';
-import { parseButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
+import { extractButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
 import { type ReplyStream, createReplyStream } from './replyStream';
@@ -34,13 +34,18 @@ export const SYSTEM_PROMPT =
   'Only "command" and "url" (https) actions work here; at most 8 rows of 4 buttons, labels up to 40 characters. Put nothing after the block.';
 
 /**
- * A finished reply: a trailing ```buttons block (spec 0006, the parser pca
- * uses) becomes a keyboard under the text. The Assistant has no peer to
- * receive a `callback`, so a callback button shows disabled.
+ * A finished reply: a ```buttons block (spec 0006, the lenient extraction pca
+ * uses since a0e0497: a bare or `json` fence, a flat array, text after it)
+ * becomes a keyboard under the text. A block that looks like buttons but
+ * breaks the rules is stripped and logged, never shown as JSON. The
+ * Assistant has no peer to receive a `callback`, so a callback button shows
+ * disabled.
  */
 export const replyContent = (text: string): MessageContent => {
-  const block = parseButtonsBlock(text);
+  const block = extractButtonsBlock(text);
   if (!block) return { type: 'text', text };
+  if (block.invalid.length > 0) console.warn('[assistant] dropped an invalid buttons block: %s', block.invalid.join('; '));
+  if (!block.rows) return { type: 'text', text: block.text };
   const rows = keyboardOf(block.rows.map(row => row.map(toButtonWire))).map(row =>
     row.map(button => (button.action.kind === 'callback' ? { ...button, action: { kind: 'unsupported' as const } } : button)),
   );

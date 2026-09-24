@@ -2438,3 +2438,123 @@ This milestone did not change the chat manager; the run confirms the budget is u
 ### git status --short
 
 This file is part of the commit, so the result is in the M12d hand-off report.
+
+## M12e (2026-09-24)
+
+All commands ran on this machine. `npm run screenshots` and the acceptance `npm run smoke` ran headless (`PCD_HEADLESS=1`) on throwaway `PCD_USER_DATA_DIR` profiles; the Node e2e scripts use no Electron. The pca bots were not started, stopped or changed.
+
+**Deviation, reported:** my first `npm run smoke` of this milestone ran without `PCD_HEADLESS` and `PCD_USER_DATA_DIR`, so Electron opened the dev profile `~/Library/Application Support/polkadot-chat-desktop` for about one second. It changed only Chromium housekeeping files there (`blob_storage`, `DIPS-wal`, `Session Storage`, time stamps 22:11); `identity.json` and the IndexedDB folder were not written (their times stay 10:42 and 12:14). The smoke output below is the rerun with both variables set.
+
+### npm run check
+
+```
+ Test Files  63 passed (63)
+      Tests  515 passed (515)
+   Start at  22:15:58
+   Duration  16.39s (transform 2.20s, setup 912ms, import 10.52s, tests 34.62s, environment 3ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (149 files)
+```
+
+Specs that encode the milestone (each fails if its rule breaks):
+
+- `ui/ChatList.spec.ts`: a delete hides the chat at once, keeps the rows during the 6 s, and after it the room and its messages are gone from Dexie (the contact stays; its next message brings the chat back); Undo inside the time brings the chat back with every message and the commit never runs; a message that arrived during the Undo time is kept; clear history keeps contact, room and place; pin order and the limit of 5; archive moves the chat to the section and its unread still counts; archive, pin and the unread mark survive a new message; a marked chat counts one in the badge; the nickname survives a contact refresh; "No answer yet · sent 3 d ago".
+- `domain/chat/manager.management.spec.ts`: withdraw removes the row and nothing more is submitted (checked: with the channel left open the spec fails, `expected 3 to be 2`), a late accept makes no chat, also after a restart; a blocked peer's message makes no row and no unread, and arrives again after unblock; a blocked sender's request is not stored; a forward goes out as the plain `text` kind with the caption only on this device; delete keeps the contact and the next message brings the room back.
+- `shared/buttonsBlock.spec.ts` "extractButtonsBlock (lenient, shared with pca)": the six pca cases of a0e0497, the owner's reply first (bare fence, flat array, tip line after; the strict parser returns null for it). `ui/streamingFence.spec.ts`: an open bare fence starting with `[` and an open `json` fence starting with `{` show placeholders and no JSON; the owner's reply shows its keyboard and streams the tip line. `domain/assistant/assistant.spec.ts`: `replyContent` of the owner's reply, and an invalid block stripped and logged.
+- `main/diagnostics.spec.ts` and `submissions.spec.ts` "forwardCounts": the totals of two page loads add up; a malformed report changes nothing.
+- `shared/explorers.spec.ts`: the caption is on Polkadot.js Apps only. `ui/searchSections.spec.ts`: a nickname and its username both find the contact. `domain/chat/chatActions.spec.ts`: a keyboard, `tx` button included, forwards as text only.
+- `ui/MessageFlow.spec.tsx` (M12d render count) passes unchanged: 0 re-renders of other bubbles.
+
+### npm run smoke (PCD_HEADLESS=1, throwaway PCD_USER_DATA_DIR)
+
+```
+✓ built in 192ms
+SMOKE_OK
+```
+
+### npm run e2e:typing
+
+The tail (the repeated identity lookup retries are cut):
+
+```
+PEER 0x66b78abdcb4c89d2817ce45f201677c08240fde23c50b9c94a6abb6912888a63 key_type=0
+PREFS sendTyping=false readReceipts=true (a fresh profile: the defaults)
+REQUEST_SENT attempt=1
+ACCEPTED devices=1
+BOTINFO name="Captain Dot" version=1
+WORKING_LOCAL at=0.0s state={"kind":"working","until":1790215972376,"local":true}
+QUESTION_SENT 1010ac6a-3551-46b6-8516-d9d0624be402 QUESTION_SUBMISSIONS 1
+REPLY at=7.8s What's a pirate's favorite game with blocks? Tetra-treasure, where the pieces fall like booty from t
+WORKING_CLEARED at=7.8s state=null
+SEEN_RECEIVED upTo=1010ac6a-3551-46b6-8516-d9d0624be402 at=7.8s
+READ_SUBMISSIONS 1 (inside the 5 s window: 0)
+COUNTS submissions=2 messages=1 acknowledgements=1 (this round)
+DIAGNOSTICS submissions=3 messages=1 acknowledgements=3 (whole run: request and accept included)
+BUDGET_OK
+```
+
+The M12d carry: "inside the 5 s window" is 0 in this run (M12d printed 1 once).
+
+### npm run e2e:chat
+
+The bare command needs a peer and prints its usage (exit 2):
+
+```
+usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--botinfo] [--tx] [--seen] [--typing]
+```
+
+So it ran with the M2 peer, the echo bot: `npm run e2e:chat -- pcdpeer.47`
+
+```
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7056513 (runtime ready in 1.9s)
+PEER 0x44195d1bc476ac9c1673ed9b266a929898e98a02d60f141712c5ae8fd819281d key_type=0
+REQUEST_SENT
+ACCEPTED devices=1
+GREETING Echo: ping cf8248
+PING_SENT ping 2fa47a
+REPLY Echo: ping 2fa47a
+REPLY_HAS_NONCE yes
+E2E_OK
+```
+
+### npm run screenshots -- --only chat-menu,archived,settings-privacy
+
+With `PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json` (the flag is new in this milestone; about 12 s for both themes).
+
+```
+built
+seeded pcdecejakd.11
+assistant engine claude
+row menu: "Pin Mark as read Mute Archive Clear history Block Delete chat"
+saved berlin-day/chat-menu.png
+list: "Polkadot Chat Assistant AI, in this app Faucet Now Test funds for devnet N noahgreen.34 3h Lunch on Friday? M Maya (design) mayablue.12 The new icons are in the shared folder. 2 S silentbot.21 Sep 20 No answer yet · sent 3 d ago Archived · 2 1 I ivyreed.56 Sep 21 Thanks, all sorted. L leoashby.78 Sep 19 See you at the meetup. 1 YOU P pcdecejakd.11 Connected … PAS"
+saved berlin-day/archived.png
+saved berlin-day/settings-privacy.png
+row menu: "Pin Mark as read Mute Archive Clear history Block Delete chat"
+saved berlin-night/chat-menu.png
+list: "Polkadot Chat Assistant AI, in this app Faucet Now Test funds for devnet N noahgreen.34 3h Lunch on Friday? M Maya (design) mayablue.12 20m The new icons are in the shared folder. 2 S silentbot.21 Sep 20 No answer yet · sent 3 d ago Archived · 2 1 I ivyreed.56 Sep 21 Thanks, all sorted. L leoashby.78 Sep 19 See you at the meetup. 1 YOU P pcdecejakd.11 Connected … PAS"
+saved berlin-night/archived.png
+saved berlin-night/settings-privacy.png
+seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/chat-menu.png
+  .agent-runs/screens/berlin-day/archived.png
+  .agent-runs/screens/berlin-day/settings-privacy.png
+  .agent-runs/screens/berlin-night/chat-menu.png
+  .agent-runs/screens/berlin-night/archived.png
+  .agent-runs/screens/berlin-night/settings-privacy.png
+SCREENSHOTS_OK
+```
+
+The room-level actions were also driven once in the real app with a scratch copy of the script (outside the repo, same fixture): the room menu (with "Edit nickname"), the nickname edited in place and shown with the username beside it, Forward (the submenu listed the three other chats; the copy showed "Forwarded from Maya B."; it failed to send only because the fixture contact has no device, and stayed with Retry), Block (header "Blocked", the bar with Unblock, the Undo toast), Clear history (messages hidden at once; after 6 s the room row had an empty preview and kept its pin), Delete (the room closed and left the list at once; after 6 s the room row was gone from IndexedDB) and Withdraw (the pending row left the list at once).
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12e hand-off report.

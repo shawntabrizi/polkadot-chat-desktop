@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { bytesToHex } from '../../app/bytes';
 
-import { createSubmissionMeter, submissionsLine } from './submissions';
+import { type SubmissionCounts, createSubmissionMeter, forwardCounts, submissionsLine } from './submissions';
 
 type Store = ReturnType<typeof createInMemoryStatementStore>;
 type Signed = Parameters<Store['submitStatement']>[0];
@@ -59,5 +59,23 @@ describe('submission meter', () => {
     expect(submissionsLine({ submissions: 12, acknowledgements: 9, messages: 12 })).toBe('1.00 (12 / 12)');
     expect(submissionsLine({ submissions: 13, acknowledgements: 0, messages: 4 })).toBe('3.25 (13 / 4)');
     expect(submissionsLine({ submissions: 2, acknowledgements: 0, messages: 0 })).toBe('— (2 / 0)');
+  });
+});
+
+// M12e step 12: the main process adds up the reports, so each count must
+// reach it exactly once, also the ones made before the forwarder started.
+describe('forwardCounts', () => {
+  it('reports each change as the difference since the last report, and nothing after stop', () => {
+    const meter = createSubmissionMeter(createInMemoryStatementStore());
+    meter.messageSent();
+    const reports: SubmissionCounts[] = [];
+    const stop = forwardCounts(meter, delta => reports.push(delta));
+    meter.messageSent();
+    stop();
+    meter.messageSent();
+    expect(reports).toEqual([
+      { submissions: 0, acknowledgements: 0, messages: 1 },
+      { submissions: 0, acknowledgements: 0, messages: 1 },
+    ]);
   });
 });

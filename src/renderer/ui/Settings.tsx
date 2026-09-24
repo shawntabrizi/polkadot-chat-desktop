@@ -17,7 +17,8 @@ import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
 import type { ChatManager } from '../domain/chat/manager';
-import { submissionsLine } from '../domain/chat/submissions';
+import { listBlocked } from '../domain/chat/chatActions';
+import { type SubmissionCounts, submissionsLine } from '../domain/chat/submissions';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { THEMES, THEME_LABELS, type ThemeChoice, getTheme, setTheme } from '../theme/theme';
 import { Button } from '@/components/ui/button';
@@ -25,11 +26,13 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
-import { EXPLORERS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
+import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
+import { PeerAvatar } from './Avatar';
+import { useChatActions } from './chatActions';
 import { Checkbox, Switch } from './controls';
 import { ENGINE_LABELS, TOOL_CHOICES } from './engines';
-import { plainError, toHex } from './format';
+import { formatDay, plainError, toHex } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
 type Props = {
@@ -206,12 +209,16 @@ const ChatSection = () => {
       <Field label="Block explorer" htmlFor="explorer">
         <Select value={prefs.explorer} onValueChange={value => void writeExplorer(value as ExplorerId)}>
           <SelectTrigger id="explorer" className="w-64 rounded-nested text-body-m" data-testid="explorer-select">
-            <SelectValue />
+            {/* The trigger shows the name only; the caption belongs to the option. */}
+            <SelectValue>{EXPLORER_LABELS[prefs.explorer]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {EXPLORERS.map(explorer => (
-              <SelectItem key={explorer} value={explorer}>
-                {EXPLORER_LABELS[explorer]}
+              <SelectItem key={explorer} value={explorer} data-testid={`explorer-${explorer}`}>
+                <span className="flex flex-col items-start">
+                  <span>{EXPLORER_LABELS[explorer]}</span>
+                  {EXPLORER_CAPTIONS[explorer] ? <span className="text-caption text-fg-tertiary">{EXPLORER_CAPTIONS[explorer]}</span> : null}
+                </span>
               </SelectItem>
             ))}
           </SelectContent>
@@ -223,11 +230,77 @@ const ChatSection = () => {
 };
 
 /**
- * M12c: what this session cost the shared Statement Store
+ * M12e: who this device blocked, with Unblock. A block is local: their
+ * requests and messages are dropped here, and they are not told.
+ */
+/** "today", "yesterday", else "on 3 September 2026". */
+const blockedWhen = (at: number): string => {
+  const day = formatDay(at);
+  return day === 'Today' || day === 'Yesterday' ? day.toLowerCase() : `on ${day}`;
+};
+
+const PrivacySection = () => {
+  const blocked = useLiveQuery(listBlocked, []) ?? [];
+  const actions = useChatActions();
+  return (
+    <Section title="Privacy">
+      <div className="flex flex-col gap-1">
+        <p className="text-label-m text-fg-secondary">Blocked</p>
+        <p className="text-body-s text-fg-tertiary">Their requests and messages are dropped on this device. They are not told.</p>
+      </div>
+      {blocked.length === 0 ? (
+        <p className="text-body-m text-fg-secondary" data-testid="blocked-empty">
+          No one is blocked. Block someone from a chat’s menu or from their request.
+        </p>
+      ) : (
+        <ul className="-mx-2 flex flex-col" data-testid="blocked-list">
+          {blocked.map(row => (
+            <li key={row.accountId} className="flex items-center gap-3 rounded-nested px-2 py-2 transition-colors hover:bg-selection-container-hover" data-testid="blocked-row">
+              <PeerAvatar name={row.username} size="sm" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-label-m text-fg-primary">{row.username}</p>
+                <p className="text-caption text-fg-tertiary">Blocked {blockedWhen(row.blockedAt)}</p>
+              </div>
+              <Button variant="secondary" className="rounded-medium text-label-m" onClick={() => actions.unblock(row.accountId, row.username)} data-testid="unblock">
+                Unblock
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+};
+
+/** The totals main keeps (M12e); the manager's own count outside Electron. */
+const useDiagnostics = (submissions: NonNullable<Props['submissions']>): SubmissionCounts => {
+  const local = useSyncExternalStore(submissions.subscribe, submissions.snapshot);
+  const [totals, setTotals] = useState<SubmissionCounts | null>(null);
+  useEffect(() => {
+    const api = window.desktop?.diagnostics;
+    if (!api) return;
+    let live = true;
+    const stop = api.onChanged(counts => setTotals(counts));
+    api.get().then(
+      counts => {
+        if (live) setTotals(current => current ?? counts);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+      stop();
+    };
+  }, []);
+  return totals ?? local;
+};
+
+/**
+ * M12c: what this app cost the shared Statement Store
  * (docs/spec/efficiency.md). The budget is one submission per message.
  */
 const DiagnosticsSection = ({ submissions }: { submissions: NonNullable<Props['submissions']> }) => {
-  const counts = useSyncExternalStore(submissions.subscribe, submissions.snapshot);
+  const counts = useDiagnostics(submissions);
   return (
     <Section title="Diagnostics">
       <dl className="flex flex-col gap-1" data-testid="diagnostics">
@@ -242,7 +315,7 @@ const DiagnosticsSection = ({ submissions }: { submissions: NonNullable<Props['s
           <dd className="text-body-s text-fg-secondary tabular-nums">{counts.acknowledgements}</dd>
         </div>
       </dl>
-      <p className="text-body-s text-fg-tertiary">Since this window loaded. Every submission is checked and passed on by every network node.</p>
+      <p className="text-body-s text-fg-tertiary">Since the app started. Every submission is checked and passed on by every network node.</p>
     </Section>
   );
 };
@@ -537,6 +610,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
       <IdentitySection username={username} identity={identity} profileId={profileId} />
       <AppearanceSection />
       <ChatSection />
+      <PrivacySection />
       {assistantApi ? (
         <AssistantSection api={assistantApi} />
       ) : (

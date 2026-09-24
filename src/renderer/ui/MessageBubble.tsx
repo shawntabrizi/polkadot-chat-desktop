@@ -2,7 +2,7 @@
 // ReactionPills.tsx and QuickReactionRow.tsx (2026-09-23), rebuilt on the design
 // system tokens and shadcn DropdownMenu; no tr-ui.
 
-import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
+import { Check, CheckCheck, CircleAlert, Clock, Copy, Forward, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
 import { type ReactNode, memo, useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
@@ -14,6 +14,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -21,6 +24,7 @@ import { cn } from '@/lib/cn';
 
 import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
 import { ReferenceBody } from './Transactions';
+import { type ForwardTarget, useChatActions } from './chatActionsContext';
 import { formatClock } from './format';
 import { useTypingReveal } from './reveal';
 import { streamingView } from './streamingFence';
@@ -145,6 +149,26 @@ export type BubbleActions = {
   keyboard?: KeyboardActions;
   /** Inline content under the bubble: the spec 0007 signing strip of a pressed `tx` button. */
   below?: ReactNode;
+  /** M12e: send a copy of the text to another chat (the Forward submenu lists the chats). */
+  forward?: (target: ForwardTarget) => void;
+};
+
+/**
+ * The chats a message can go to, read only while the Forward submenu is open,
+ * so a change of the list does not re-render every bubble.
+ */
+const ForwardItems = ({ from, onPick }: { from: string; onPick: (target: ForwardTarget) => void }) => {
+  const targets = useChatActions().targets.filter(target => target.peer !== from);
+  if (targets.length === 0) return <p className="px-2 py-1.5 text-body-s text-fg-tertiary">No other chat yet</p>;
+  return (
+    <>
+      {targets.map(target => (
+        <DropdownMenuItem key={target.peer} onSelect={() => onPick(target)} data-testid="forward-target">
+          <span className="max-w-56 truncate">{target.name}</span>
+        </DropdownMenuItem>
+      ))}
+    </>
+  );
 };
 
 type Props = {
@@ -305,6 +329,16 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
               <Copy /> Copy text
             </DropdownMenuItem>
           ) : null}
+          {actions.forward ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger data-testid="forward-message">
+                <Forward /> Forward
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-72 overflow-y-auto">
+                <ForwardItems from={row.peerAccountId} onPick={target => actions.forward?.(target)} />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
           {actions.edit ? (
             <DropdownMenuItem onSelect={actions.edit}>
               <Pencil /> Edit
@@ -346,6 +380,11 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
           {sender && first && !own ? (
             <p className="truncate text-label-s text-fg-secondary" data-testid="sender-name">
               {sender}
+            </p>
+          ) : null}
+          {row.forwardedFrom ? (
+            <p className={cn('truncate text-label-s', own ? 'text-fg-secondary-inverted' : 'text-fg-secondary')} data-testid="forwarded-from">
+              Forwarded from {row.forwardedFrom}
             </p>
           ) : null}
           {quote ? (

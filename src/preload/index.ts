@@ -67,6 +67,13 @@ const api: DesktopApi = {
     onMenuSettings: listener => listen<void>(IPC.menuSettings)(() => listener()),
     openUrl: url => ipcRenderer.invoke(IPC.openUrl, url),
   },
+  diagnostics: {
+    add: delta => {
+      void ipcRenderer.invoke(IPC.diagnosticsAdd, delta);
+    },
+    get: () => ipcRenderer.invoke(IPC.diagnosticsGet),
+    onChanged: listen(IPC.diagnosticsChanged),
+  },
 };
 
 contextBridge.exposeInMainWorld('desktop', api);

@@ -91,6 +91,20 @@
 // in-app devnet transfer's reference ("Dripped 1 PAS from //Alice") and
 // "Balance now …". chats.png shows the footer's account block.
 //
+// M12e (chat management): chat-menu.png is the list with a contact's row menu
+// open (its nickname shown with the username beside it), archived.png the
+// list with a pinned chat, a pending request ("No answer yet · sent 3 d ago")
+// and the Archived section opened, settings-privacy.png Settings › Privacy
+// with the blocked list. They use local fixture rows written straight into
+// the profile's IndexedDB (fictional contacts with no device, never contacted
+// on the network), so they need no peer; the full run takes them last.
+//
+// `--only <name,name>` captures only the named shots (file names without
+// .png) and skips the flows they do not need: without "signup" no sign-up
+// run; when only M12e shots are named, no helper peer is started and none of
+// the network flows run (owner ask, 2026-09-24: faster runs).
+//   npm run screenshots -- --only chat-menu,archived,settings-privacy
+//
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -134,6 +148,21 @@ const GROUP_BOT = 'pcdguide.70';
 const GROUP_NAME = 'Weekend crew';
 const DRAFT = 'Ask about the People chain later';
 const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
+// --only a,b (or --only=a,b): capture only these shots.
+const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--only='.length) ?? (process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null);
+const only = onlyArg ? new Set(onlyArg.split(',').map(name => name.trim().replace(/\.png$/, '')).filter(Boolean)) : null;
+const wanted = name => only === null || only.has(name);
+// M12e: shots taken from local fixture rows, with no network flow before them.
+const MANAGE_SHOTS = ['chat-menu', 'archived', 'settings-privacy'];
+const SEEDED_SHOTS = ['chats', 'room', 'room-deleted', 'room-buttons', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'settings-diagnostics', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results'];
+const manageOnly = only !== null && !SEEDED_SHOTS.some(name => only.has(name));
+if (only) {
+  const unknown = [...only].filter(name => name !== 'signup' && !SEEDED_SHOTS.includes(name) && !MANAGE_SHOTS.includes(name));
+  if (unknown.length > 0) {
+    console.error(`unknown shot(s) for --only: ${unknown.join(', ')}`);
+    process.exit(2);
+  }
+}
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const t0 = Date.now();
@@ -256,10 +285,123 @@ const launch = async profile => {
   return { evaluate, waitFor, exists, click, clickText, type, capture, setTheme, quit, send, key, clearField, settle };
 };
 
+for (const theme of THEMES) mkdirSync(join(outDir, theme), { recursive: true });
+
+// ── M12e: chat management shots from local fixture rows ─────────────────
+
+/** Fictional contacts with no device: written into IndexedDB, never contacted. */
+const FIXTURE = (() => {
+  const account = byte => `0x${byte.repeat(32)}`;
+  const day = 24 * 3_600_000;
+  const now = Date.now();
+  const contacts = [
+    { accountId: account('a1'), username: 'mayablue.12', nickname: 'Maya (design)', text: 'The new icons are in the shared folder.', at: now - 20 * 60_000, unread: 2 },
+    { accountId: account('a2'), username: 'noahgreen.34', text: 'Lunch on Friday?', at: now - 3 * 3_600_000, pinnedAt: now - 2 * day },
+    { accountId: account('a3'), username: 'ivyreed.56', text: 'Thanks, all sorted.', at: now - 2 * day, archived: true },
+    { accountId: account('a4'), username: 'leoashby.78', text: 'See you at the meetup.', at: now - 4 * day, archived: true, unread: 1 },
+  ];
+  return {
+    contacts,
+    outgoing: { requestId: 'fixture-request-silentbot', accountId: account('a5'), username: 'silentbot.21', at: now - 3 * day - 3_600_000 },
+    blocked: [
+      { accountId: account('b1'), username: 'spamking.99', blockedAt: now - 3_600_000 },
+      { accountId: account('b2'), username: 'promobot.11', blockedAt: now - 5 * day },
+    ],
+  };
+})();
+
+/** Writes the fixture (idempotent: fixed keys) into the app's IndexedDB. */
+const seedFixture = app =>
+  app.evaluate(`new Promise((done, fail) => {
+    const fixture = ${JSON.stringify(FIXTURE)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages', 'requests', 'blocked'], 'readwrite');
+      const key = () => new Uint8Array(32).fill(7);
+      for (const c of fixture.contacts) {
+        tx.objectStore('contacts').put({ accountId: c.accountId, username: c.username, ...(c.nickname ? { nickname: c.nickname } : {}), chatPublicKey: key(), devices: [], createdAt: c.at, updatedAt: c.at });
+        tx.objectStore('rooms').put({ peerAccountId: c.accountId, unreadCount: c.unread ?? 0, lastMessageAt: c.at, lastPreview: c.text, createdAt: c.at, updatedAt: c.at,
+          ...(c.archived ? { archived: true } : {}), ...(c.pinnedAt ? { pinnedAt: c.pinnedAt } : {}) });
+        tx.objectStore('messages').put({ messageId: 'fixture-' + c.username, peerAccountId: c.accountId, timestamp: c.at, direction: 'incoming', status: 'received',
+          content: { type: 'text', text: c.text }, reactions: [], editedAt: null });
+      }
+      const o = fixture.outgoing;
+      tx.objectStore('requests').put({ requestId: o.requestId, peerAccountId: o.accountId, peerUsername: o.username, peerChatPublicKey: key(), direction: 'outgoing',
+        status: 'pending', welcomeMessage: 'Hello, can you help me with staking?', timestamp: o.at, senderDevice: null, createdAt: o.at });
+      for (const b of fixture.blocked) tx.objectStore('blocked').put(b);
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+/** Takes the fixture out again, so a later theme's other shots do not show it. */
+const unseedFixture = app =>
+  app.evaluate(`new Promise((done, fail) => {
+    const fixture = ${JSON.stringify(FIXTURE)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages', 'requests', 'blocked'], 'readwrite');
+      for (const c of fixture.contacts) {
+        tx.objectStore('contacts').delete(c.accountId);
+        tx.objectStore('rooms').delete(c.accountId);
+        tx.objectStore('messages').delete('fixture-' + c.username);
+      }
+      tx.objectStore('requests').delete(fixture.outgoing.requestId);
+      for (const b of fixture.blocked) tx.objectStore('blocked').delete(b.accountId);
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+/** Presses the mouse on an element (Radix menus open on pointer down, not on click()). */
+const pressOn = async (app, selector) => {
+  const rect = await app.evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null; })()`);
+  if (!rect) throw new Error(`nothing at ${selector}`);
+  await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y });
+  await app.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+  await app.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+};
+
+/** The three M12e shots on an open chat screen. `shot` records a miss and goes on. */
+const manageShots = async (app, shot) => {
+  await seedFixture(app);
+  // Dexie does not see writes made outside it: a reload reads them.
+  await app.evaluate('location.reload(); true');
+  await sleep(1000);
+  if (!(await app.waitFor(app.exists('[data-testid=chat-row-assistant]'), 60_000))) throw new Error('the chat screen did not come back after seeding');
+  const maya = FIXTURE.contacts[0];
+  await shot('chat-menu', async () => {
+    if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=chat-row]')].some(r => r.textContent.includes(${JSON.stringify(maya.nickname)}))`, 20_000))) {
+      throw new Error('the fixture contacts are not in the list');
+    }
+    await pressOn(app, `[aria-label=${JSON.stringify(`More for ${maya.nickname}`)}]`);
+    if (!(await app.waitFor(`${app.exists('[data-testid=chat-menu]')} && ${app.exists('[data-testid=menu-delete]')}`, 10_000))) throw new Error('the row menu did not open');
+    log('row menu:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=chat-menu]').innerText.replace(/\\s+/g, ' ')`)));
+  });
+  await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+  await app.waitFor(`!${app.exists('[data-testid=chat-menu]')}`, 5_000);
+  // Esc gives the focus back to the row's "More" button; the next shot is of the list at rest.
+  await app.evaluate('document.activeElement?.blur(); true');
+  await shot('archived', async () => {
+    if (!(await app.waitFor(app.exists('[data-testid=archived-toggle]'), 10_000))) throw new Error('no Archived section');
+    if ((await app.evaluate(`document.querySelector('[data-testid=archived-toggle]').getAttribute('aria-expanded')`)) !== 'true') await app.click('[data-testid=archived-toggle]');
+    if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=archived-section] [data-testid=chat-row]')].length === 2`, 10_000))) throw new Error('the archived chats did not show');
+    if (!(await app.evaluate(`[...document.querySelectorAll('[data-testid=chat-row-outgoing]')].some(r => r.textContent.includes('No answer yet'))`))) throw new Error('the pending request row has no "No answer yet"');
+    log('list:', JSON.stringify(await app.evaluate(`document.querySelector('aside').innerText.replace(/\\s+/g, ' ').slice(0, 400)`)));
+  });
+  await shot('settings-privacy', async () => {
+    await app.click('[aria-label=Settings]');
+    if (!(await app.waitFor(app.exists('[data-testid=blocked-list]'), 20_000))) throw new Error('no blocked list in Settings');
+    await app.evaluate(`document.querySelector('[data-testid=blocked-list]').closest('section').scrollIntoView({ block: 'center' }); true`);
+  });
+  await unseedFixture(app);
+};
+
 // ── Sign-up (a fresh profile per theme) ──────────────────────────────────
 
-for (const theme of THEMES) {
-  mkdirSync(join(outDir, theme), { recursive: true });
+for (const theme of wanted('signup') ? THEMES : []) {
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-signup-'));
   const app = await launch(profile);
   try {
@@ -280,8 +422,8 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'settings-diagnostics', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
-} else {
+  for (const theme of THEMES) for (const name of [...SEEDED_SHOTS, ...MANAGE_SHOTS].filter(wanted)) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+} else seeded: {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
   // Encrypt the mnemonic as the app's identity store does. Same app name as a
@@ -322,6 +464,35 @@ app.whenReady().then(() => {
     { mode: 0o600 },
   );
   log('assistant engine', engine);
+
+  // --only with M12e shots alone: no helper peer, no network flow.
+  if (manageOnly) {
+    for (const theme of THEMES) {
+      const app = await launch(profile);
+      const shot = async (name, run) => {
+        if (!wanted(name)) return;
+        try {
+          await run();
+          await app.capture(theme, name);
+        } catch (error) {
+          missing.push(`${theme}/${name}.png (${error.message})`);
+          log('missed', `${theme}/${name}.png:`, error.message);
+        }
+      };
+      try {
+        await app.setTheme(theme);
+        if (!(await app.waitFor(app.exists('[data-testid=username]'), 60_000))) throw new Error('the chat screen did not open');
+        await manageShots(app, shot);
+      } catch (error) {
+        missing.push(`${theme}: ${error.message}`);
+      } finally {
+        await app.quit();
+      }
+    }
+    rmSync(profile, { recursive: true, force: true });
+    log('seeded profile removed:', !existsSync(profile));
+    break seeded;
+  }
 
   // An incoming request for requests.png, from another test identity. The
   // script waits for an accept that never comes and times out; it is stopped
@@ -380,6 +551,7 @@ app.whenReady().then(() => {
   for (const theme of THEMES) {
     const app = await launch(profile);
     const shot = async (name, run, options) => {
+      if (!wanted(name)) return;
       try {
         await run();
         await app.capture(theme, name, options);
@@ -1009,6 +1181,9 @@ app.whenReady().then(() => {
       await shot('keyboard', async () => {
         await app.evaluate(`document.querySelector('[data-testid=keyboard-shortcuts]').closest('section').scrollIntoView({ block: 'center' }); true`);
       });
+
+      // M12e, last: the fixture rows would show in the shots above.
+      if (MANAGE_SHOTS.some(wanted)) await manageShots(app, shot);
     } catch (error) {
       missing.push(`${theme}: ${error.message}`);
     } finally {

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { bytesToHex } from '../app/bytes';
 import type { SearchResult } from '../domain/identity/search';
 
-import { assembleSections, botMatches, chatMatches, globalQuery, moveHighlight, snippetOf } from './searchSections';
+import { assembleSections, botMatches, chatMatches, globalQuery, moveHighlight, rowMatches, snippetOf } from './searchSections';
 
 const ss58 = AccountId(0).dec;
 const account = (fill: number) => new Uint8Array(32).fill(fill);
@@ -101,5 +101,17 @@ describe('snippetOf', () => {
     const long = snippetOf(`${'x'.repeat(40)} needle end`, 'needle');
     expect(long.before.startsWith('…')).toBe(true);
     expect(long.match).toBe('needle');
+  });
+});
+
+// M12e step 7: a nickname is only a label on this device; the person must
+// still be found by the username everyone else knows them by.
+describe('rowMatches (nicknames)', () => {
+  it('finds a contact by its nickname and by its username', () => {
+    const row = { name: 'Mum', username: 'alicejones.42' };
+    expect(rowMatches(row, 'mum')).toBe(true);
+    expect(rowMatches(row, 'alicejones')).toBe(true);
+    expect(rowMatches(row, 'bob')).toBe(false);
+    expect(rowMatches({ name: 'pcdpeer.47' }, 'peer')).toBe(true);
   });
 });

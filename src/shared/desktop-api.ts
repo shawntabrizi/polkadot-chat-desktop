@@ -37,6 +37,9 @@ export const IPC = {
   chainBalance: 'chain:balance',
   chainBestBlock: 'chain:bestBlock',
   faucetDrip: 'faucet:drip',
+  diagnosticsAdd: 'diagnostics:add',
+  diagnosticsGet: 'diagnostics:get',
+  diagnosticsChanged: 'diagnostics:changed',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -272,12 +275,34 @@ export type DesktopAppApi = {
   openUrl: (url: string) => Promise<void>;
 };
 
+/**
+ * Settings › Diagnostics (M12c): what this app submitted to the Statement
+ * Store. Kept by the main process since M12e, so a window reload or a theme
+ * switch does not zero it; it counts from the app's start.
+ */
+export type DiagnosticsCounts = {
+  /** Statements submitted, session acknowledgements not included. */
+  submissions: number;
+  /** Session acknowledgements (responses) submitted. */
+  acknowledgements: number;
+  /** Messages the user sent: the denominator. */
+  messages: number;
+};
+
+export type DesktopDiagnosticsApi = {
+  /** What the renderer counted since its last call; main adds it to the totals. */
+  add: (delta: DiagnosticsCounts) => void;
+  get: () => Promise<DiagnosticsCounts>;
+  onChanged: (listener: (counts: DiagnosticsCounts) => void) => () => void;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
   chain: DesktopChainApi;
   assistant: DesktopAssistantApi;
   app: DesktopAppApi;
+  diagnostics: DesktopDiagnosticsApi;
 };
 
 declare global {

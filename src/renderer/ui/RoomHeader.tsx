@@ -9,6 +9,10 @@ type Props = {
   status?: ReactNode;
   /** A spec 0008 bot badge after the name. */
   badge?: ReactNode;
+  /** M12e: the username next to a nickname, in the tertiary tone. */
+  nameNote?: string;
+  /** M12e: shown in place of the title while the nickname is edited. */
+  titleEditor?: ReactNode;
   /** Right-aligned actions. */
   children?: ReactNode;
 };
@@ -28,14 +32,23 @@ export const TypingLine = ({ typing }: { typing: PeerTyping }) => (
   </span>
 );
 
-export const RoomHeader = ({ avatar, name, status, badge, children }: Props) => (
+export const RoomHeader = ({ avatar, name, status, badge, nameNote, titleEditor, children }: Props) => (
   <header className="flex h-16 shrink-0 items-center gap-3 px-4">
     {avatar}
     <div className="min-w-0 flex-1">
       <div className="flex min-w-0 items-center gap-1.5">
-        <h2 className="truncate text-heading-m text-fg-primary" data-testid="room-title">
-          {name}
-        </h2>
+        {titleEditor ?? (
+          <>
+            <h2 className="truncate text-heading-m text-fg-primary" data-testid="room-title">
+              {name}
+            </h2>
+            {nameNote ? (
+              <span className="truncate text-body-m text-fg-tertiary" data-testid="room-username">
+                {nameNote}
+              </span>
+            ) : null}
+          </>
+        )}
         {badge}
       </div>
       {status ? <p className="truncate text-body-s text-fg-secondary">{status}</p> : null}

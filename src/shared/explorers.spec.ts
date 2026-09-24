@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { openableUrl } from './openUrl';
-import { accountLink, transactionLink } from './explorers';
+import { EXPLORERS, EXPLORER_CAPTIONS, accountLink, transactionLink } from './explorers';
 
 const ASSET_HUB = '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2';
 const DRIP = '0xa7cc3ec67cb09c846a33ec1ccf7a511f631873b9dcc505a993c9fcdc86af6dc5';
@@ -37,5 +37,14 @@ describe('explorer links', () => {
     expect(transactionLink('subscan', `0x${'00'.repeat(32)}`, DRIP, 1)).toHaveProperty('unavailable');
     expect(accountLink('polkadotjs', ASSET_HUB, '5Grw')).toHaveProperty('unavailable');
     expect(accountLink('subscan', ASSET_HUB, '5Grw')).toEqual({ url: 'https://assethub-paseo.subscan.io/account/5Grw' });
+  });
+});
+
+// M12e step 11: Polkadot.js Apps failed to decode Paseo Asset Hub's runtime
+// (2026-09-24); the picker warns before a person chooses it, and only there.
+describe('explorer captions', () => {
+  it('warns on Polkadot.js Apps only', () => {
+    expect(EXPLORER_CAPTIONS.polkadotjs).toBe('May not decode newer runtimes');
+    expect(EXPLORERS.filter(id => EXPLORER_CAPTIONS[id] !== undefined)).toEqual(['polkadotjs']);
   });
 });

@@ -385,6 +385,23 @@ describe('Assistant buttons (spec 0006 fenced block)', () => {
     expect(replyContent('no block here')).toEqual({ type: 'text', text: 'no block here' });
   });
 
+  // M12e, the owner's report: a small model wrote a bare fence, a flat array
+  // and a tip line after it; the strict parser showed the raw JSON.
+  it("takes the owner's lenient reply as text plus one row, and strips an invalid block with a log", () => {
+    const owner = 'I\'m Claude Haiku 4.5.\n\n```\n[{"label":"Got it","action":{"command":"ok"}}]\n```\n\n(Tip: send /help to see my commands.)';
+    expect(replyContent(owner)).toEqual({
+      type: 'buttons',
+      text: "I'm Claude Haiku 4.5.\n\n(Tip: send /help to see my commands.)",
+      rows: [[{ label: 'Got it', action: { kind: 'command', command: 'ok' } }]],
+      oneShot: false,
+      pressed: null,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(replyContent('Pick\n```\n[{"label":"Go","action":{"url":"http://insecure.example"}}]\n```')).toEqual({ type: 'text', text: 'Pick' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid buttons block'), expect.stringContaining('row 1 button 1'));
+    warn.mockRestore();
+  });
+
   it('stores the keyboard only when the reply ends, and keeps the text as context for the next turn', async () => {
     const fake = fakeApi();
     const chat = createAssistantChat(fake.api);

@@ -12,6 +12,7 @@ import type { NetworkProfile } from '../app/network';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import type { BotInfo } from '../domain/chat/content';
 import type { ChatManager } from '../domain/chat/manager';
+import { displayName } from '../domain/chat/chatActions';
 import { searchMessages } from '../domain/chat/messages';
 import { FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { IdentityLookup } from '../domain/identity/lookup';
@@ -34,7 +35,7 @@ import {
   RECENT_LIMIT,
   assembleSections,
   botMatches,
-  chatMatches,
+  rowMatches,
   globalQuery,
   moveHighlight,
   resultKey,
@@ -82,7 +83,7 @@ const peerNameOf = (data: ListData | undefined, peer: PeerId): string => {
   if (peer === ASSISTANT_PEER) return ASSISTANT_USERNAME;
   if (peer === FAUCET_PEER) return FAUCET_USERNAME;
   const contact = data?.contacts.find(row => row.accountId === peer);
-  if (contact) return contact.username;
+  if (contact) return displayName(contact);
   return data?.requests.find(row => row.peerAccountId === peer)?.peerUsername ?? 'Unknown';
 };
 
@@ -183,7 +184,7 @@ export const SearchPane = ({
   const messageHits = useLiveQuery(() => searchMessages(query), [query]) ?? [];
 
   const recent: Row[] = adding && typed === '' ? (chats?.rows ?? []).filter(row => row.target.kind === 'room' && !isLocalPeer(row.target.peer)).slice(0, RECENT_LIMIT) : [];
-  const chatHits = typed === '' ? [] : (chats?.rows ?? []).filter(row => chatMatches(row.name, query)).map(row => ({ key: row.key, peer: row.target.peer, row }));
+  const chatHits = typed === '' ? [] : (chats?.rows ?? []).filter(row => rowMatches(row, query)).map(row => ({ key: row.key, peer: row.target.peer, row }));
   const sections = assembleSections(chatHits, typed === '' ? [] : botHits(chats?.data, query), current?.results ?? [], typed === '' ? [] : messageHits);
   const order = typed === '' ? recent.map(row => resultKey.chat({ key: row.key, peer: row.target.peer })) : sections.order;
   const highlighted = highlight.query === query ? highlight.key : null;

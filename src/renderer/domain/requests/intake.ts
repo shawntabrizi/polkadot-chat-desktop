@@ -8,6 +8,8 @@ import { isUsablePeerDevice } from '../device/keys';
 import type { IdentityLookup } from '../identity/lookup';
 import type { UserIdentity } from '../identity/userIdentity';
 
+import { isBlocked } from '../chat/chatActions';
+
 import { decodeChatRequest, verifyIdentityProof } from './gateway';
 import { addRequest, getRequest } from './repository';
 
@@ -20,6 +22,8 @@ export const intakeRequestStatement = async (
   if (!decoded) return;
   if (bytesEqual(decoded.senderIdentityAccountId, identity.identityAccountId)) return;
   if (await getRequest(decoded.requestId)) return;
+  // M12e: a blocked sender's request is dropped (not stored, so it can show after an unblock).
+  if (await isBlocked(bytesToHex(decoded.senderIdentityAccountId))) return;
 
   const peer = await lookup.getPeerIdentity(decoded.senderIdentityAccountId);
   if (!peer) {

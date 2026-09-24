@@ -9,6 +9,7 @@ import { type AssistantChat, createAssistantChat } from '../domain/assistant/ass
 import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
+import { forwardCounts } from '../domain/chat/submissions';
 import { ensureFaucet } from '../domain/faucet/faucet';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
@@ -121,6 +122,7 @@ export const App = () => {
     let manager: ChatManager | null = null;
     let transactions: TxRunner | null = null;
     let follower: ReferenceFollower | null = null;
+    let stopForward: VoidFunction = () => undefined;
     const connection = getPeopleConnection(NETWORK_PROFILES[profileId]);
     const tracker = createConnectionTracker(connection);
     const stopStatus = tracker.subscribe(() => setConnection(tracker.snapshot()));
@@ -147,6 +149,9 @@ export const App = () => {
         // M12c: every reference bubble follows its transaction on the chain.
         const assetHub = NETWORK_PROFILES[profileId].assetHub;
         follower = chain && assetHub ? createReferenceFollower({ chain, onReference: created.onReference, chainId: assetHub.genesis }) : null;
+        // M12e: the Diagnostics totals live in main, so a reload does not zero them.
+        const diagnostics = window.desktop?.diagnostics;
+        stopForward = diagnostics ? forwardCounts(created.submissions, delta => diagnostics.add(delta)) : () => undefined;
         setRuntime({ manager: created, lookup, transactions });
       })
       .catch((cause: unknown) => {
@@ -159,6 +164,7 @@ export const App = () => {
       tracker.dispose();
       transactions?.dispose();
       follower?.dispose();
+      stopForward();
       manager?.dispose();
       setRuntime(null);
     };

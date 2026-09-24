@@ -23,15 +23,14 @@ const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta
   const now = Date.now();
   const newest = !existing || message.timestamp >= existing.lastMessageAt;
   await db.rooms.put({
+    // Local state (mute, group, and since M12e archive, pin, marked unread) survives a new message.
+    ...existing,
     peerAccountId,
     unreadCount: (existing?.unreadCount ?? 0) + unreadDelta,
     lastMessageAt: newest ? message.timestamp : existing.lastMessageAt,
     lastPreview: newest ? previewOf(message.content) : existing.lastPreview,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-    // A new message must not unmute the room, nor detach it from its group.
-    ...(existing?.muted ? { muted: true } : {}),
-    ...(existing?.groupId ? { groupId: existing.groupId } : {}),
   });
 };
 
@@ -295,15 +294,20 @@ export const removeMessage = (messageId: string): Promise<void> =>
     });
   });
 
+/** Read: no unread count, and no "Mark as unread" mark (M12e). */
 export const markRoomRead = (peerAccountId: PeerId): Promise<number> =>
-  db.rooms.update(peerAccountId, { unreadCount: 0 });
+  db.rooms.update(peerAccountId, { unreadCount: 0, markedUnread: false });
 
 /** A muted room does not notify and does not count in the badge (M6 step 7). */
 export const setRoomMuted = (peerAccountId: PeerId, muted: boolean): Promise<number> => db.rooms.update(peerAccountId, { muted });
 
-/** Unread messages of the rooms that are not muted: the window title and the dock badge. */
+/**
+ * Unread messages of the rooms that are not muted: the window title and the
+ * dock badge. Archived rooms count too; a room marked as unread with nothing
+ * unread counts as one (M12e).
+ */
 export const countUnread = async (): Promise<number> =>
-  (await db.rooms.toArray()).reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount), 0);
+  (await db.rooms.toArray()).reduce((sum, room) => sum + (room.muted ? 0 : room.unreadCount > 0 ? room.unreadCount : room.markedUnread ? 1 : 0), 0);
 
 /** How many message hits the search shows (M7b step 1c). */
 export const MESSAGE_SEARCH_LIMIT = 20;

@@ -41,6 +41,7 @@ import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
+import { createDiagnostics } from './diagnostics';
 import { readMetadata, writeMetadata } from './metadataCache';
 import { isHeadless } from './headless';
 import { showNotification } from './notify';
@@ -394,6 +395,15 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
       headless: isHeadless(),
     });
   });
+
+  // M12e: the Diagnostics totals outlive a page load (main/diagnostics.ts).
+  const diagnostics = createDiagnostics();
+  ipcMain.handle(IPC.diagnosticsAdd, (_event, delta: unknown): void => {
+    const totals = diagnostics.add(delta);
+    const win = getWindow();
+    if (totals && win && !win.webContents.isDestroyed()) win.webContents.send(IPC.diagnosticsChanged, totals);
+  });
+  ipcMain.handle(IPC.diagnosticsGet, () => diagnostics.snapshot());
 
   ipcMain.handle(IPC.appSetBadge, (_event, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.min(Math.floor(count), 9999) : 0;

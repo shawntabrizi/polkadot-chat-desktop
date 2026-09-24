@@ -38,6 +38,8 @@ export const upsertContactDevice = (seed: ContactSeed, device: PeerDevice | null
       username: seed.username,
       chatPublicKey: seed.chatPublicKey,
       devices,
+      // A local label (M12e) survives every refresh of the chain data.
+      ...(existing?.nickname ? { nickname: existing.nickname } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };

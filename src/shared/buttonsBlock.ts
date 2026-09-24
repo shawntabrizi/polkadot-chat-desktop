@@ -3,6 +3,10 @@
 // types, `unknown` inputs narrowed, the `BlockAction` / `ButtonsBlock` types
 // named, `toButtonWire` added (the desktop codec's action shape). The rules are
 // unchanged: keep the two files in step.
+// M12e (2026-09-24): `extractButtonsBlock` ported from the same file at pca
+// commit a0e0497 (spec 0006 "Host parsing leniency"); changes: TypeScript
+// types. pca's `validateButtons` also takes a `tx` action; this one does not
+// (the Assistant is not offered `tx`), so a `tx` button stays invalid here.
 //
 // Spec 0006 buttons from a brain's plain-text reply. A brain (an LLM) cannot
 // build a SCALE message, so it ends its reply with a fenced block:
@@ -107,9 +111,85 @@ export const parseButtonsBlock = (reply: unknown): ButtonsBlock | null => {
   return { text: body.slice(0, start).trimEnd(), ...buttons };
 };
 
+// Spec 0006 "host parsing leniency" (revision 2026-09-24). Small models write
+// a bare or ```json fence, a flat array of buttons instead of {"rows": [[…]]},
+// or text after the block. This accepts a fence tagged buttons, json or
+// untagged, anywhere in the reply, holding the rows object or a flat array
+// (one row). The content rules are validateButtons' rules. The last fence that
+// validates gives the rows. A fence that looks like buttons (tagged buttons,
+// or JSON with `label` keys) but fails the rules is stripped too, and its
+// reason goes in `invalid`, so a person never sees the raw JSON. Any other
+// fence (ordinary code) stays in the text.
+// -> null when no fence looks like buttons, else
+//    { text, rows, oneShot, invalid: [reason] } (rows null when none validated).
+export type ExtractedButtons = { text: string; rows: BlockButton[][] | null; oneShot: boolean; invalid: string[] };
+
+const FENCE = /(^|\n)[ \t]*```([^\n`]*)\n([\s\S]*?)\n?[ \t]*```[ \t]*(?=\n|$)/g;
+const LENIENT_TAGS = new Set(['buttons', 'json', '']);
+const isObject = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object' && !Array.isArray(value);
+const hasLabel = (value: unknown): boolean => isObject(value) && 'label' in value;
+const looksLikeButtons = (tag: string, spec: unknown): boolean =>
+  tag === 'buttons' ||
+  (Array.isArray(spec) && spec.some(hasLabel)) ||
+  (isObject(spec) && Array.isArray(spec.rows) && (spec.rows as unknown[]).some(row => Array.isArray(row) && row.some(hasLabel)));
+
+// Why a buttons-like spec fails validateButtons (a short reason for the log).
+const invalidReason = (spec: unknown): string => {
+  if (!isObject(spec)) return 'not a rows object or a flat array of buttons';
+  if (spec.oneShot !== undefined && typeof spec.oneShot !== 'boolean') return 'oneShot is not a boolean';
+  const { rows } = spec;
+  if (!Array.isArray(rows) || rows.length === 0) return 'no rows';
+  if (rows.length > MAX_ROWS) return `${rows.length} rows (max ${MAX_ROWS})`;
+  for (const [r, row] of (rows as unknown[]).entries()) {
+    if (!Array.isArray(row) || row.length === 0) return `row ${r + 1} is empty or not an array`;
+    if (row.length > MAX_BUTTONS_PER_ROW) return `row ${r + 1} has ${row.length} buttons (max ${MAX_BUTTONS_PER_ROW})`;
+    for (const [b, button] of (row as unknown[]).entries()) {
+      if (!validateButtons({ rows: [[button]] })) return `row ${r + 1} button ${b + 1}: bad label (1-${MAX_LABEL_CHARS} characters) or action`;
+    }
+  }
+  return 'invalid';
+};
+
+export const extractButtonsBlock = (reply: unknown): ExtractedButtons | null => {
+  if (typeof reply !== 'string') return null;
+  const pieces: string[] = [];
+  const invalid: string[] = [];
+  let found = false;
+  let best: Omit<ButtonsBlock, 'text'> | null = null;
+  let last = 0;
+  for (const match of reply.matchAll(FENCE)) {
+    const lead = match[1] ?? '';
+    const tag = (match[2] ?? '').trim().toLowerCase();
+    if (!LENIENT_TAGS.has(tag)) continue;
+    let spec: unknown;
+    try {
+      spec = JSON.parse(match[3] ?? '');
+    } catch {
+      spec = undefined;
+    }
+    if (spec === undefined ? tag !== 'buttons' : !looksLikeButtons(tag, spec)) continue;
+    found = true;
+    const start = match.index + lead.length;
+    pieces.push(reply.slice(last, start));
+    last = match.index + match[0].length;
+    const shaped = Array.isArray(spec) ? { rows: [spec] } : spec;
+    const buttons = spec === undefined ? null : validateButtons(shaped);
+    if (buttons) best = buttons;
+    else invalid.push(spec === undefined ? 'not JSON' : invalidReason(shaped));
+  }
+  if (!found) return null;
+  pieces.push(reply.slice(last));
+  const text = pieces
+    .map(piece => piece.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  return { text, rows: best?.rows ?? null, oneShot: best?.oneShot ?? false, invalid };
+};
+
 // Spec 0006 fallback for a peer without the extension: the text, then the
 // labels as a numbered list, in row order.
-export const buttonsFallbackText = (text: string, rows: readonly BlockButton[][]): string => {
+// Only the labels are read, so a stored keyboard (M12e forward) takes it too.
+export const buttonsFallbackText = (text: string, rows: readonly (readonly { label: string }[])[]): string => {
   const labels = rows.flat().map((button, i) => `${i + 1}. ${button.label}`);
   return [text, labels.join('\n')].filter(Boolean).join('\n\n');
 };

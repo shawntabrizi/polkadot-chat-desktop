@@ -65,7 +65,8 @@ export const useNotifications = (app: DesktopAppApi | null, selectedPeer: PeerId
         return { title: group.name, sender };
       }
       const contact = await db.contacts.get(peer);
-      return contact ? { title: contact.username, sender: null } : null;
+      // M12e: a nickname is the name this device shows.
+      return contact ? { title: contact.nickname ?? contact.username, sender: null } : null;
     };
     const notifyMessage = async (row: MessageRow) => {
       const [prefs, room, title] = await Promise.all([readChatPrefs(), db.rooms.get(row.peerAccountId), titleOf(row)]);

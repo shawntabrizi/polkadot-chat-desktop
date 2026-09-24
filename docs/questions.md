@@ -113,3 +113,12 @@ Write the question, what you did meanwhile, and the date.
 ## M12d (2026-09-24)
 
 - **What machine was the recording on?** On this Mac the old code shows no long task at normal CPU speed; the stalls show at 4x and 6x CPU throttling (5 and 68 long tasks). After the change there are none at 1x, 4x or 6x. If the owner's machine is fast, the choppiness in the recording came mostly from the restarted reveal and the re-rendered room; please say if a stall remains on the owner's machine.
+
+## M12e (2026-09-24)
+
+- **A late accept after Withdraw is not seen.** Withdraw closes the channel that listens for the accept, so if the peer accepts later, this device never learns it and the peer's messages have no session to arrive on; a new chat needs a new request from either side. The roadmap says "if the peer accepts later, the chat comes back as a fresh request". Keeping a listener open after a withdraw would cost the acknowledgements the owner wanted to stop. Is "not seen" acceptable, or should a withdrawn request keep listening (at the cost of one acknowledgement per statement the peer sends)?
+- **Delete keeps the contact.** After Delete chat, the contact row and its session stay, so the peer's next message brings the chat back (as the milestone asks). The person stays in the contact list that the "New group" view and the members panel use. Should Delete also remove the contact (and its session), so only a new request brings them back?
+- **A blocked peer's messages are still acknowledged.** The drop happens after the SDK session has read and acknowledged the batch, so the blocked peer sees its messages as delivered. Hiding that would need the session to stop listening to that peer (a transport change). Is the acknowledgement acceptable for a local block? The roadmap's synced deny list (mds) is not in this milestone.
+- **Archive and a new message.** An archived chat stays archived when a message arrives (its unread still reaches the badge). Telegram brings an unmuted archived chat back. Which one?
+- **Pinned chats sit under the Assistant and the Faucet.** The two local rows stay first, as before. Should pinned chats go above them?
+- **Forward to the Assistant** is not offered (the Assistant's rows are not sent through the chat manager, and a forward into it would start an engine turn). Wanted?

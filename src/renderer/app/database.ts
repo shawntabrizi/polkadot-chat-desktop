@@ -84,9 +84,17 @@ export type ContactRow = {
   /** The peer's identity chat X25519 public key (People-chain identifier key). */
   chatPublicKey: Uint8Array;
   devices: PeerDevice[];
+  /** M12e: a local label shown as the name; the username stays visible next to it. Never sent. */
+  nickname?: string;
   createdAt: number;
   updatedAt: number;
 };
+
+/**
+ * M12e: a peer this device blocked. Their requests and messages are dropped
+ * on arrival; nothing is sent to them about it. Local to this device.
+ */
+export type BlockedRow = { accountId: HexString; username: string; blockedAt: number };
 
 export type RequestDirection = 'incoming' | 'outgoing';
 export type RequestStatus = 'pending' | 'accepted' | 'declined';
@@ -133,6 +141,12 @@ export type RoomRow = {
   unreadCount: number;
   /** Muted: no notification, not in the badge. Absent on rows from before M6. */
   muted?: boolean;
+  /** M12e: in the collapsed "Archived" section; its unread still counts in the badge. */
+  archived?: boolean;
+  /** M12e: pinned to the top of the list; the time of the pin keeps the pinned order stable. */
+  pinnedAt?: number;
+  /** M12e: "Mark as unread" with nothing unread; cleared when the room is read. */
+  markedUnread?: boolean;
   lastMessageAt: number;
   lastPreview: string;
   createdAt: number;
@@ -174,6 +188,8 @@ export type MessageRow = {
   senderAccountId?: HexString;
   /** Spec 0009: the sender's `seq`, the tie-break after the timestamp. */
   groupSeq?: number;
+  /** M12e, own rows only: a forwarded copy and whose message it was. Local caption; nothing on the wire. */
+  forwardedFrom?: string;
 };
 
 /**
@@ -258,6 +274,9 @@ dexie.version(6).stores({
 dexie.version(7).stores({
   groups: 'id',
 });
+dexie.version(8).stores({
+  blocked: 'accountId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -275,6 +294,7 @@ export const db: {
   pendingDeletions: Table<PendingDeletionRow, [PeerId, string]>;
   peerInfo: Table<PeerInfoRow, PeerId>;
   groups: Table<GroupRow, string>;
+  blocked: Table<BlockedRow, HexString>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -288,4 +308,5 @@ export const db: {
   pendingDeletions: dexie.table('pendingDeletions'),
   peerInfo: dexie.table('peerInfo'),
   groups: dexie.table('groups'),
+  blocked: dexie.table('blocked'),
 };

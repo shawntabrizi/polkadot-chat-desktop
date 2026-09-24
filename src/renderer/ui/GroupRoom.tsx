@@ -16,7 +16,9 @@ import type { BotCommand } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import { getGroup, memberName } from '../domain/chat/groups';
 import type { ChatManager } from '../domain/chat/manager';
+import { forwardText } from '../domain/chat/chatActions';
 import { listMessages, setRoomMuted } from '../domain/chat/messages';
+import { clearKey } from '../domain/chat/undo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -29,6 +31,7 @@ import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader } from './RoomHeader';
+import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
 import { Checkbox } from './controls';
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -36,6 +39,7 @@ import { useLiveQuery } from './useLiveQuery';
 /** Remove, Leave and Delete act at once and can be undone this long. */
 const UNDO_MS = 6000;
 const DRAFT_SAVE_MS = 300;
+const NO_ROWS: readonly MessageRow[] = [];
 
 type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
 
@@ -246,6 +250,9 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const peerInfo = new Map(peerInfoRows.map(row => [row.peerId, row]));
+  const chatActions = useChatActions();
+  // "Clear history" waits out its Undo time with the messages hidden (M12e).
+  const clearing = usePending().has(clearKey(peer));
 
   // Draft: restored when the room opens, saved 300 ms after typing stops.
   const [draftLoaded, setDraftLoaded] = useState(false);
@@ -358,8 +365,12 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
             active: null,
           }
         : undefined;
+    // M12e Forward: a copy of the text, captioned with its author on this device only.
+    const author = row.direction === 'outgoing' ? 'you' : (senderOf(row) ?? group.name);
+    const forward = forwardText(row) !== null ? (target: ForwardTarget) => chatActions.forward(target, row, author) : undefined;
     return {
       ...(keyboard ? { keyboard } : {}),
+      ...(forward ? { forward } : {}),
       react: emoji => guarded(manager.react(peer, row.messageId, emoji, !row.reactions.some(r => r.emoji === emoji && r.by === 'me')), 'The reaction was not sent.'),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isOwnText(row)
@@ -408,16 +419,17 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
               {muted ? <BellOff className="size-5 text-fg-secondary" /> : <Bell className="size-5 text-fg-secondary" />}
             </IconToggle>
           ) : null}
+          <RoomMenu subject={{ peer, name: group.name, kind: 'group', room, member: active }} />
         </RoomHeader>
         <MessageFlow
-          rows={messages ?? []}
+          rows={clearing ? NO_ROWS : (messages ?? [])}
           peerName={group.name}
           requests={[]}
           assistant={false}
           actionsFor={actionsFor}
           unread={unread}
           onSeen={() => {
-            if (unread > 0) void manager.markRead(peer);
+            if (unread > 0 || room?.markedUnread === true) void manager.markRead(peer);
           }}
           deleting={deleting}
           reveal={prefs.revealReplies}

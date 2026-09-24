@@ -26,6 +26,7 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
+import { deleteChatLocally, isBlocked, withdrawRequestLocally } from './chatActions';
 import {
   type BotInfo,
   type GroupInfo,
@@ -102,8 +103,29 @@ export type ChatManager = {
   sendRequest: (peer: PeerIdentity, welcomeMessage: string | null) => Promise<void>;
   acceptRequest: (requestId: string) => Promise<void>;
   declineRequest: (requestId: string) => Promise<void>;
-  /** A new row: text, or a reply. Resolves once the row exists; delivery is tracked on the row. */
-  sendMessage: (peer: ChatTargetId, content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string }) => Promise<void>;
+  /**
+   * A new row: text, or a reply. Resolves once the row exists; delivery is
+   * tracked on the row. `forwardedFrom` (M12e) marks the row as a forwarded
+   * copy for this device only: the wire carries the plain text.
+   */
+  sendMessage: (
+    peer: ChatTargetId,
+    content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string },
+    options?: { forwardedFrom?: string },
+  ) => Promise<void>;
+  /**
+   * M12e: withdraw the pending request this identity sent `peer`. The row is
+   * removed and the identity channel that waits for the accept is closed, so
+   * nothing more is submitted for it; the request statement expires in the
+   * store. A later accept is not seen: a new chat needs a new request.
+   */
+  withdrawRequest: (peer: HexString) => Promise<void>;
+  /**
+   * M12e "Delete chat", after its Undo time: a group is left first (if still
+   * a member) and then removed; a pending outgoing request is withdrawn; the
+   * rest is `deleteChatLocally`. The peer keeps their copy.
+   */
+  deleteChat: (peer: ChatTargetId, at: number) => Promise<void>;
   react: (peer: ChatTargetId, messageId: string, emoji: string, add: boolean) => Promise<void>;
   edit: (peer: ChatTargetId, messageId: string, text: string) => Promise<void>;
   /**
@@ -268,6 +290,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   // ── Inbound content (session and identity channel alike) ──────────────
 
   const handleIncoming = async (peer: HexString, message: IncomingChatMessage): Promise<void> => {
+    // M12e: a blocked peer's content is dropped here, before any row or notification.
+    if (await isBlocked(peer)) return;
     const effect = fromWire(message.content);
     switch (effect.kind) {
       case 'message':
@@ -701,12 +725,13 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     await saveOwnGroupInfo(info, [...new Set([...kept, ...invites])], now);
   };
 
-  const sendMessage: ChatManager['sendMessage'] = async (peer, content) => {
+  const sendMessage: ChatManager['sendMessage'] = async (peer, content, options = {}) => {
     const ids = { messageId: randomId(), timestamp: Date.now() };
     await addMessage({
       messageId: ids.messageId,
       peerAccountId: peer,
       ...(isGroupPeer(peer) ? { groupId: groupIdOf(peer) } : {}),
+      ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       timestamp: ids.timestamp,
       direction: 'outgoing',
       status: 'sending',
@@ -728,6 +753,17 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       throw error;
     });
     meter.messageSent();
+  };
+
+  const leaveGroup: ChatManager['leaveGroup'] = async groupId => {
+    const group = await getGroup(groupId);
+    if (!group || group.self !== 'member') return;
+    const failures: unknown[] = [];
+    for (const member of otherMembers(group, self)) {
+      await sendTo(member.account, { type: 'groupLeave', groupId }).catch(error => failures.push(error));
+    }
+    await markSelfLeft(groupId);
+    if (failures.length > 0) console.warn('[chat] groupLeave did not reach %d member(s)', failures.length);
   };
 
   const sendRequestTo = async (peer: PeerIdentity, welcomeMessage: string | null): Promise<void> => {
@@ -795,6 +831,25 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     sendMessage,
+
+    withdrawRequest: async peer => {
+      await withdrawRequestLocally(peer);
+      // A contact keeps its channel: it carries the roster too.
+      if (await getContact(peer)) return;
+      channels.get(peer)?.dispose();
+      channels.delete(peer);
+    },
+
+    deleteChat: async (peer, at) => {
+      if (isGroupPeer(peer)) {
+        const group = await getGroup(groupIdOf(peer));
+        if (group?.self === 'member') await leaveGroup(group.id);
+      } else if (!(await getContact(peer))) {
+        channels.get(peer)?.dispose();
+        channels.delete(peer);
+      }
+      await deleteChatLocally(peer, at);
+    },
 
     pressButton: async (peer, messageId, row, index) => {
       const target = await getMessage(messageId);
@@ -963,16 +1018,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     updateRoster,
 
-    leaveGroup: async groupId => {
-      const group = await getGroup(groupId);
-      if (!group || group.self !== 'member') return;
-      const failures: unknown[] = [];
-      for (const member of otherMembers(group, self)) {
-        await sendTo(member.account, { type: 'groupLeave', groupId }).catch(error => failures.push(error));
-      }
-      await markSelfLeft(groupId);
-      if (failures.length > 0) console.warn('[chat] groupLeave did not reach %d member(s)', failures.length);
-    },
+    leaveGroup,
 
     dispose: () => {
       disposed = true;

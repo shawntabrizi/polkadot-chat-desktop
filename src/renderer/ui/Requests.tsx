@@ -8,6 +8,7 @@ import { useState } from 'react';
 import type { HexString } from '../app/bytes';
 import { type MessageRow, type RequestRow, db } from '../app/database';
 import type { ChatManager } from '../domain/chat/manager';
+import { useChatActions } from './chatActions';
 import { listRequests } from '../domain/requests/repository';
 import { Button } from '@/components/ui/button';
 
@@ -26,7 +27,9 @@ import { useLiveQuery } from './useLiveQuery';
 export const usePendingIncoming = (): RequestRow[] => {
   const requests = useLiveQuery(listRequests, []);
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
-  const known = new Set((contacts ?? []).map(contact => contact.accountId));
+  const blocked = useLiveQuery(() => db.blocked.toArray(), []);
+  // M12e: a blocked sender's earlier requests are not shown either.
+  const known = new Set([...(contacts ?? []).map(contact => contact.accountId), ...(blocked ?? []).map(row => row.accountId)]);
   const newest = new Map<string, RequestRow>();
   for (const request of requests ?? []) {
     if (request.direction !== 'incoming' || request.status !== 'pending' || known.has(request.peerAccountId)) continue;
@@ -101,7 +104,8 @@ type IncomingProps = {
   manager: ChatManager | null;
   /** Called with the new contact once the request is accepted. */
   onAccepted: (peer: HexString) => void;
-  onDeclined: (name: string) => void;
+  /** `silent`: the caller shows no toast of its own (Block has its own). */
+  onDeclined: (name: string, options?: { silent?: boolean }) => void;
 };
 
 /** The recipient's view: the banner replaces the composer. */
@@ -109,8 +113,15 @@ export const IncomingRequestRoom = ({ requestId, manager, onAccepted, onDeclined
   const request = useLiveQuery(() => db.requests.get(requestId), [requestId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const chatActions = useChatActions();
   if (!request) return null;
   const name = request.peerUsername;
+
+  // M12e: Block drops this request and every later one from them (Undo in the toast; Settings › Privacy unblocks).
+  const block = () => {
+    chatActions.block({ accountId: request.peerAccountId, username: name }, name);
+    onDeclined(name, { silent: true });
+  };
 
   const act = async (action: 'accept' | 'decline') => {
     if (!manager) return;
@@ -145,6 +156,9 @@ export const IncomingRequestRoom = ({ requestId, manager, onAccepted, onDeclined
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button variant="ghost" className="rounded-medium font-normal text-fg-error" disabled={busy} onClick={block} data-testid="request-block">
+              Block
+            </Button>
             <Button variant="secondary" className="rounded-medium text-label-m" disabled={busy || !manager} onClick={() => void act('decline')}>
               Decline
             </Button>
