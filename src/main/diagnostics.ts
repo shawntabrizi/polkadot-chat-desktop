@@ -23,6 +23,9 @@ export const parseDelta = (value: unknown): DiagnosticsCounts | null => {
 
 export const createDiagnostics = () => {
   let totals: DiagnosticsCounts = { submissions: 0, acknowledgements: 0, messages: 0 };
+  // Spec 0012: Bulletin transactions (feeless stores and devnet grants) are
+  // counted apart; they are chain transactions, not Statement Store statements.
+  let bulletinTransactions = 0;
   return {
     /** Adds a report; the new totals, or null when the report was refused or empty. */
     add: (value: unknown): DiagnosticsCounts | null => {
@@ -33,8 +36,13 @@ export const createDiagnostics = () => {
         acknowledgements: totals.acknowledgements + delta.acknowledgements,
         messages: totals.messages + delta.messages,
       };
-      return totals;
+      return { ...totals, bulletinTransactions };
     },
-    snapshot: (): DiagnosticsCounts => totals,
+    /** One Bulletin transaction was broadcast (main submits them itself). */
+    bulletinTransaction: (): DiagnosticsCounts => {
+      bulletinTransactions += 1;
+      return { ...totals, bulletinTransactions };
+    },
+    snapshot: (): DiagnosticsCounts => ({ ...totals, bulletinTransactions }),
   };
 };

@@ -913,3 +913,107 @@ describe('kinds 246/247/248: spec 0009 groups', () => {
     expect(effect.kind === 'groupInfo' ? [...effect.info.name].length : 0).toBe(60);
   });
 });
+
+describe('kind 250: spec 0012 attachment (vectors-0012.md)', () => {
+  // The bytes are copied from docs/spec/vectors-0012.md, computed by hand and
+  // pinned on the pca side too: both codecs must read and write them exactly,
+  // or a desktop photo is unreadable for a bot (and the reverse).
+  const opaque = Bytes();
+  const GENESIS = '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59';
+  const VECTOR_A =
+    '0x0503144154542d310030fd779001000000fa0428696d6167652f6a706567000f000000000000000180020000e001000001304c454856366e574232796b3800111111111111111111111111111111111111111111111111111111111111111122222222222222222222222280841e0004d47b2b87847e22939dd7b1f54541fffbb4afefc09c582fbae8892d0682fc8a8a00e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5900003816c090010000011c4f757220636174';
+  const VECTOR_B =
+    '0x5104144154542d320030fd779001000000fa0458617564696f2f6f67673b20636f646563733d6f707573000d00000000000000036810000010004080ff000011111111111111111111111111111111111111111111111111111111111111112222222222222222222222220800000008f2413e6849beeed0945f57c6e2ad2123ff1fb177fa95f711eb0685786b434bb47e79076d84989135f84e2f00d739f3d071485f143ea485ede4cd2033f1ebb0a800e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5901e868747470733a2f2f6465766e65742d697066732e6170692e706f6c6b61646f74636f6d6d756e6974792e666f756e646174696f6e2f697066732f003816c09001000000';
+  const key = new Uint8Array(32).fill(0x11);
+  const nonce = new Uint8Array(12).fill(0x22);
+  const imageItem = {
+    mime: 'image/jpeg',
+    name: null,
+    size: 15,
+    media: { kind: 'image' as const, width: 640, height: 480 },
+    blurhash: 'LEHV6nWB2yk8',
+    thumbnail: null,
+    key,
+    nonce,
+    chunkSize: 2_000_000,
+    chunks: [hexToBytes('0xd47b2b87847e22939dd7b1f54541fffbb4afefc09c582fbae8892d0682fc8a8a')],
+    store: { genesis: GENESIS as `0x${string}`, mirror: null },
+    expiresAt: 1721209600000,
+  };
+  const voiceItem = {
+    mime: 'audio/ogg; codecs=opus',
+    name: null,
+    size: 13,
+    media: { kind: 'voice' as const, durationMs: 4200, waveform: [0, 64, 128, 255] },
+    blurhash: null,
+    thumbnail: null,
+    key,
+    nonce,
+    chunkSize: 8,
+    chunks: [
+      hexToBytes('0xf2413e6849beeed0945f57c6e2ad2123ff1fb177fa95f711eb0685786b434bb4'),
+      hexToBytes('0x7e79076d84989135f84e2f00d739f3d071485f143ea485ede4cd2033f1ebb0a8'),
+    ],
+    store: { genesis: GENESIS as `0x${string}`, mirror: 'https://devnet-ipfs.api.polkadotcommunity.foundation/ipfs/' },
+    expiresAt: 1721209600000,
+  };
+  const encode = (messageId: string, content: OutgoingContent) =>
+    bytesToHex(opaque.enc(ChatMessageCodec.enc({ messageId, timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire(content) } })));
+
+  it('writes vector A (an image, C1) byte for byte', () => {
+    expect(encode('ATT-1', { type: 'attachment', items: [imageItem], caption: 'Our cat' })).toBe(VECTOR_A);
+  });
+
+  it('writes vector B (a voice note, C2, with a mirror) byte for byte', () => {
+    expect(encode('ATT-2', { type: 'attachment', items: [voiceItem], caption: null })).toBe(VECTOR_B);
+  });
+
+  it('reads vectors A and B into the stored content, and writes the read content back to the same bytes', () => {
+    const a = ChatMessageCodec.dec(opaque.dec(VECTOR_A));
+    expect(a.messageId).toBe('ATT-1');
+    const effectA = fromWire(a.versioned.value);
+    expect(effectA).toEqual({ kind: 'message', content: { type: 'attachment', items: [imageItem], caption: 'Our cat' } });
+    const b = ChatMessageCodec.dec(opaque.dec(VECTOR_B));
+    const effectB = fromWire(b.versioned.value);
+    expect(effectB).toEqual({ kind: 'message', content: { type: 'attachment', items: [voiceItem], caption: null } });
+    if (effectA.kind !== 'message' || effectA.content.type !== 'attachment') throw new Error('not an attachment');
+    expect(encode('ATT-1', { type: 'attachment', items: effectA.content.items, caption: effectA.content.caption })).toBe(VECTOR_A);
+  });
+
+  it('is not readable by a client without the kind: the SDK decoder refuses it (phone apps show their unsupported bubble)', () => {
+    expect(() => SdkChatMessage.dec(opaque.dec(VECTOR_A))).toThrow();
+  });
+
+  it('shows the unsupported bubble for an attachment this build cannot read (a later media tag)', () => {
+    // Vector A with the media tag 1 (image) at its offset turned into 4 (not defined yet).
+    const bytes = opaque.dec(VECTOR_A);
+    // messageId (1 + 5), timestamp 8, version 1, kind 1, items 1, mime (1 + 10), name 1, size 8.
+    const mediaAt = 6 + 8 + 1 + 1 + 1 + 11 + 1 + 8;
+    expect(bytes[mediaAt]).toBe(1);
+    const later = bytes.slice();
+    later[mediaAt] = 4;
+    expect(fromWire(ChatMessageCodec.dec(later).versioned.value)).toEqual({ kind: 'message', content: { type: 'unsupported', tag: 'attachment' } });
+  });
+
+  it('refuses an attachment whose chunk count does not match its size (a receiver would fetch the wrong number of chunks)', () => {
+    const wrong = { ...imageItem, size: 2_000_001 };
+    const bytes = ChatMessageCodec.enc({ messageId: 'x', timestamp: 1n, versioned: { tag: 'v1', value: toWire({ type: 'attachment', items: [wrong], caption: null }) } });
+    expect(fromWire(ChatMessageCodec.dec(bytes).versioned.value)).toEqual({ kind: 'message', content: { type: 'unsupported', tag: 'attachment' } });
+  });
+
+  it('refuses a thumbnail over 2048 bytes and more than 4 items (the 4 KB message budget)', () => {
+    const fat = { ...imageItem, thumbnail: new Uint8Array(2049) };
+    const five = Array.from({ length: 5 }, () => imageItem);
+    for (const items of [[fat], five]) {
+      const bytes = ChatMessageCodec.enc({ messageId: 'x', timestamp: 1n, versioned: { tag: 'v1', value: toWire({ type: 'attachment', items, caption: null }) } });
+      expect(fromWire(ChatMessageCodec.dec(bytes).versioned.value)).toEqual({ kind: 'message', content: { type: 'unsupported', tag: 'attachment' } });
+    }
+  });
+
+  it('previews as the caption, else "Photo", a voice duration or the file name', () => {
+    expect(previewOf({ type: 'attachment', items: [imageItem], caption: 'Our cat' })).toBe('Our cat');
+    expect(previewOf({ type: 'attachment', items: [imageItem], caption: null })).toBe('Photo');
+    expect(previewOf({ type: 'attachment', items: [voiceItem], caption: null })).toBe('Voice message (0:04)');
+    expect(previewOf({ type: 'attachment', items: [{ ...imageItem, media: { kind: 'file' }, name: 'a.pdf' }], caption: null })).toBe('File: a.pdf');
+  });
+});

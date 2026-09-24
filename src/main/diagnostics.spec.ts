@@ -15,7 +15,7 @@ describe('main-process diagnostics totals', () => {
     diagnostics.add({ submissions: 3, acknowledgements: 2, messages: 3 });
     // The reloaded page reports only what it counted itself.
     diagnostics.add({ submissions: 1, acknowledgements: 0, messages: 1 });
-    expect(diagnostics.snapshot()).toEqual({ submissions: 4, acknowledgements: 2, messages: 4 });
+    expect(diagnostics.snapshot()).toEqual({ submissions: 4, acknowledgements: 2, messages: 4, bulletinTransactions: 0 });
   });
 
   it('refuses a report that is not three non-negative whole counts', () => {
@@ -24,6 +24,14 @@ describe('main-process diagnostics totals', () => {
       expect(diagnostics.add(bad)).toBeNull();
     }
     expect(parseDelta({ submissions: 1, acknowledgements: 0, messages: 0 })).toEqual({ submissions: 1, acknowledgements: 0, messages: 0 });
-    expect(diagnostics.snapshot()).toEqual({ submissions: 0, acknowledgements: 0, messages: 0 });
+    expect(diagnostics.snapshot()).toEqual({ submissions: 0, acknowledgements: 0, messages: 0, bulletinTransactions: 0 });
+  });
+
+  it('counts Bulletin transactions apart from statements (spec 0012: an attachment costs 0 extra statements)', () => {
+    const diagnostics = createDiagnostics();
+    diagnostics.add({ submissions: 1, acknowledgements: 0, messages: 1 });
+    diagnostics.bulletinTransaction();
+    diagnostics.bulletinTransaction();
+    expect(diagnostics.snapshot()).toEqual({ submissions: 1, acknowledgements: 0, messages: 1, bulletinTransactions: 2 });
   });
 });

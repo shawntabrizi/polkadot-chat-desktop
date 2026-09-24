@@ -42,7 +42,9 @@ import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines'
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
 import { type AssetHubChain, type TxService, createTxService, openAssetHub } from './chain/assetHub';
+import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin } from './chain/bulletin';
 import { assertDevnetChain, dripDevnet } from './chain/faucet';
+import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
@@ -128,6 +130,34 @@ const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService>
   });
   return service;
 };
+
+/**
+ * Spec 0012: one Bulletin connection and service for the identity, opened on
+ * first use (like the tx service). It holds the Bulletin key's sign
+ * function, never the mnemonic.
+ */
+let bulletin: { key: string; service: Promise<BulletinService>; chain: Promise<BulletinChain> } | null = null;
+const bulletinFor = (onTransaction: () => void): Promise<BulletinService> => {
+  const identity = loadIdentity();
+  if (!identity) return Promise.reject(new Error('This computer has no identity yet.'));
+  const key = `${identity.profile}:${identity.accountHex}`;
+  if (bulletin?.key === key) return bulletin.service;
+  void bulletin?.chain.then(old => old.destroy(), () => undefined);
+  const chain = openBulletin(identity.profile);
+  const service = chain.then(opened => createBulletinService(opened, bulletinSigner(identity.mnemonic), { onTransaction }));
+  const entry = { key, service, chain };
+  bulletin = entry;
+  service.catch(() => {
+    if (bulletin === entry) bulletin = null;
+  });
+  return service;
+};
+/** Spec 0012 limits the main process checks again: 14 chunks of at most 2 MiB. */
+const MAX_CHUNKS = 14;
+const MAX_CHUNK_BYTES = 2 * 1024 * 1024;
+const UPLOAD_ID = /^[\w-]{1,64}$/;
+const CONTENT_HASH = /^0x[0-9a-fA-F]{64}$/;
+const FETCH_SOURCES = new Set(['bitswap', 'mirror', 'gateway']);
 
 /** One running reply per conversation; `assistant:cancel` aborts it. */
 const assistantStreams = new Map<string, AbortController>();
@@ -454,6 +484,35 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (totals && win && !win.webContents.isDestroyed()) win.webContents.send(IPC.diagnosticsChanged, totals);
   });
   ipcMain.handle(IPC.diagnosticsGet, () => diagnostics.snapshot());
+
+  // Spec 0012 (M15a): Bulletin stores and fetches. Every Bulletin transaction
+  // shows in Diagnostics apart from the statements.
+  const countBulletin = () => {
+    const totals = diagnostics.bulletinTransaction();
+    const win = getWindow();
+    if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.diagnosticsChanged, totals);
+  };
+  ipcMain.handle(IPC.bulletinStore, async (event, uploadId: unknown, chunks: unknown): Promise<void> => {
+    if (typeof uploadId !== 'string' || !UPLOAD_ID.test(uploadId)) throw new Error('Invalid upload.');
+    if (!Array.isArray(chunks) || chunks.length < 1 || chunks.length > MAX_CHUNKS) throw new Error('An attachment has 1 to 14 chunks.');
+    if (chunks.some(chunk => !(chunk instanceof Uint8Array) || chunk.length < 1 || chunk.length > MAX_CHUNK_BYTES)) throw new Error('A chunk is at most 2 MiB.');
+    const service = await bulletinFor(countBulletin);
+    await service.store(chunks as Uint8Array[], ({ stored, total }) => {
+      if (!event.sender.isDestroyed()) event.sender.send(IPC.bulletinProgress, { uploadId, stored, total });
+    });
+  });
+  ipcMain.handle(IPC.bulletinFetch, async (_event, genesis: unknown, hash: unknown, mirror: unknown, only: unknown): Promise<{ bytes: Uint8Array; source: string }> => {
+    if (typeof genesis !== 'string' || !GENESIS.test(genesis)) throw new Error('Invalid chain id.');
+    if (typeof hash !== 'string' || !CONTENT_HASH.test(hash)) throw new Error('Invalid content hash.');
+    if (mirror !== null && typeof mirror !== 'string') throw new Error('Invalid mirror.');
+    if (only !== undefined && (typeof only !== 'string' || !FETCH_SOURCES.has(only))) throw new Error('Invalid source.');
+    const service = await bulletinFor(countBulletin);
+    // Spec 0012: a client on another network refuses rather than fetch the wrong chain.
+    if (genesis.toLowerCase() !== service.genesis.toLowerCase()) throw new Error('This attachment is on another network.');
+    return service.fetchChunk(Uint8Array.from(Buffer.from(hash.slice(2), 'hex')), mirror, only as 'bitswap' | 'mirror' | 'gateway' | undefined);
+  });
+  ipcMain.handle(IPC.fileOpen, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<void> => openFile(bytes, name, mime));
+  ipcMain.handle(IPC.fileSave, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<boolean> => saveFile(getWindow(), bytes, name, mime));
 
   // M12i: the demo bots list; a manifest URL is fetched here, never by the renderer.
   const demoManifest = createDemoManifestSource();

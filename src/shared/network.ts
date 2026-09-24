@@ -27,6 +27,13 @@ export type NetworkProfile = {
    * name). Null: this profile cannot run chain actions.
    */
   assetHub: { endpoints: readonly string[]; genesis: string } | null;
+  /**
+   * Spec 0012 attachments: the Bulletin chain of this network (RPC endpoints
+   * in order, its genesis hash, which `Store.bulletin.genesis` must name, and
+   * the HTTPS IPFS gateway prefix, the last fetch fallback). Null: this
+   * profile cannot send or fetch attachments.
+   */
+  bulletin: { endpoints: readonly string[]; genesis: string; gateway: string } | null;
 };
 
 export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
@@ -46,6 +53,14 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
       endpoints: ['wss://asset-hub-paseo-rpc.n.dwellir.com', 'wss://sys.turboflakes.io/asset-hub-paseo', 'wss://sys.ibp.network/asset-hub-paseo'],
       genesis: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
     },
+    // Bulletin Paseo, para 1010 (bulletin-paseo 2004000 on 2026-09-24,
+    // docs/reference/bulletin-and-media.md); endpoints and gateway from
+    // .refs/polkadot-app-deploy and bulletin-deploy environments.
+    bulletin: {
+      endpoints: ['wss://bullet.sik.rocks', 'wss://bulletin-paseo.tservices.es:8443', 'wss://bullet.tunastaking.eu'],
+      genesis: '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59',
+      gateway: 'https://devnet-ipfs.api.polkadotcommunity.foundation/ipfs/',
+    },
   },
   paseo: {
     id: 'paseo',
@@ -55,6 +70,9 @@ export const NETWORK_PROFILES: Record<NetworkProfileId, NetworkProfile> = {
     identityRegistrationAuth: 'none',
     // Paseo Next has its own Asset Hub; no descriptors for it yet (M11 is devnet only).
     assetHub: null,
+    // Paseo Bulletin Next (para 1501) has no descriptors here and no authorizer for
+    // this identity (spec 0012 Unresolved 1): no attachments on this profile yet.
+    bulletin: null,
   },
 };
 

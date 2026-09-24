@@ -3441,3 +3441,75 @@ room-group2.png and group2-members.png were saved in both themes (`.agent-runs/s
 Clean after the commit (see the report).
 
 After the rebase onto main (c1b604b) `npm run check` is green again: `Test Files  77 passed (77)`, `Tests  670 passed (670)`, `check:tokens: clean (164 files)`.
+
+## M15a — Attachments on Bulletin (spec 0012): rail, codec, images (2026-09-24)
+
+### npm run check
+
+```
+ Test Files  82 passed (82)
+      Tests  713 passed (713)
+check:tokens: clean (173 files)
+```
+
+tsc, vitest, eslint and the token lint all exit 0. New specs: `content.spec.ts` (vectors A and B byte for byte both ways; the SDK decoder refuses kind 250; a later media tag, a wrong chunk count, a 2,049-byte thumbnail and 5 items show the unsupported bubble), `attachmentCrypto.spec.ts` (C1, C2; swap, drop, size change fail; a tampered chunk fails the hash and `crypto.subtle.decrypt` is never called), `attachments.spec.ts` (through the manager: one statement per attachment message, chunks stored before it; a failed upload sends nothing and Retry sends once; a tampered or expired or other-network chunk never becomes a file; thumbnail ≤ 2 KB and the 3,584-byte budget), `bulletin.spec.ts` (devnet-only grant, budget refusal, retry 10/30/90 s, no double store, wrong-hash source skipped), `blurhash.spec.ts`, `fileName.spec.ts`, and the Bulletin count in `diagnostics.spec.ts`.
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<throwaway> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:attach
+
+First run (a's Bulletin account had no grant yet: the `//Eve` grant on devnet):
+
+```
+[a] [bulletin] devnet: //Eve authorizes 5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT for 100 transactions / 64.0 MB
+[a] AUTH_OK account=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT granted=yes (//Eve, devnet) transactions_left=100 bytes_left=67108864 expires_block=1172674
+[a] STORED bafk2bzaceb5tzoyovzbceg7bjaenpwyyc4q6b2srnfvr5j76gdt5jvbaiqpwc block=971075 best=yes
+[a] SENT id=fae2248c-dd97-4435-9787-f24093a927fd sha256=1c89a9a0… statements_delta=1 messages_delta=1 bulletin_tx_delta=1 status=sent
+[b] FETCH_OK … status=ready sources=bitswap sha256=1c89a9a0…
+[b] GATEWAY_OK … status=ready sources=gateway sha256=1c89a9a0…
+BOT_DESCRIBE_SKIPPED no "M15a" commit on pca desktop/rfc-0003 yet
+ATTACH_OK at=38.9s (desktop steps; bot step skipped)
+```
+
+(That run drew a 163 KB image; the script now draws 303,840 bytes, as M15.md asks for about 300 KB.) Final run, after the rebase onto main (M16), exit 0:
+
+```
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[a] READY username=pcdecejakd.11 bulletin=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT
+[b] READY username=pcdeceb.89 bulletin=5GEPcEE6F6dDEA2aST5AmkYzAzSWxHPjXFNd5tzCSSwb4n75
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=5.0s
+[a] CHAT_REQUEST_SENT id=005546d4-5530-48ec-8096-e7eb8ed4896c to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11
+[a] CONTACT pcdeceb.89 devices=1
+[a] AUTH_OK account=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT granted=no (had storage) transactions_left=96 bytes_left=65610057 expires_block=1172674
+[a] IMAGE bytes=303840 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] STORED bafk2bzacecaqnw5nunojka33wtpcxwzuyhrium2lkmgsp76lkudl4tsvtnmic block=971145 best=yes
+[a] SENT id=b33e264a-c2a7-4de9-8e16-ea2c6ed1b456 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a statements_delta=1 messages_delta=1 bulletin_tx_delta=1 status=sent
+[b] FETCH_OK id=b33e264a-c2a7-4de9-8e16-ea2c6ed1b456 status=ready sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a chunks=1 cid0=bafk2bzacecaqnw5nunojka33wtpcxwzuyhrium2lkmgsp76lkudl4tsvtnmic
+[b] GATEWAY_OK id=b33e264a-c2a7-4de9-8e16-ea2c6ed1b456 status=ready sources=gateway sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+BOT_DESCRIBE_SKIPPED no "M15a" commit on pca desktop/rfc-0003 yet
+[b] EXIT
+[a] EXIT
+ATTACH_OK at=36.2s (desktop steps; bot step skipped)
+```
+
+The bot step is skipped: pca `desktop/rfc-0003` has no "M15a" commit and the fleet runs `cdf564f` (read with `ssh … cat /root/pca-bots/demo/app/REVISION`; nothing on the VPS changed).
+
+In-app check (a scratch CDP script, not in the repo; headless, throwaway profile, identity pcde2e, a fictional contact with no device): the Paperclip picked the 303,840-byte PNG, `prepareImage` kept it (PNG ≤ 1 MiB), blurhash 28 characters, WebP thumbnail 1,934 bytes; "Storing 0 of 1" then `ready` after the store over IPC; the send then failed as it must ("Not sent · Retry": no device); Diagnostics went from `bulletinTransactions: 0` to `1` with `submissions: 0`; `window.desktop.bulletin.fetch(devnet, hash, null)` returned 303,856 bytes from `bitswap`; with another genesis it rejected "This attachment is on another network."
+
+### PCD_HEADLESS=1 npm run screenshots
+
+```
+SCREENSHOTS_OK in 87.3 s
+```
+
+New: `room-attachment.png` (a received photo with caption, Open and Save…; one downloading with its blurhash, "Downloading 1 of 2"; one of ours "Storing 1 of 2") and `composer-attach.png` (the attach row with the notice and a caption), both themes, in `.agent-runs/screens/berlin-{day,night}/`. `settings-diagnostics.png` shows the new line ("Bulletin transactions (attachments; feeless, not statements) 0").
+
+### git status --short
+
+Clean after the commit (the `.agent-runs` link is removed first).

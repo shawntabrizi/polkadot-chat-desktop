@@ -28,6 +28,7 @@ import { addRequest, getRequest, listRequests, setRequestStatus } from '../reque
 
 import { deleteChatLocally, isBlocked, withdrawRequestLocally } from './chatActions';
 import {
+  type AttachmentItem,
   type BotInfo,
   type GroupInfo,
   type GroupMember,
@@ -114,6 +115,13 @@ export type ChatManager = {
     content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string },
     options?: { forwardedFrom?: string },
   ) => Promise<void>;
+  /**
+   * Spec 0012: an attachment message to a contact. The row exists at once
+   * (status `sending`); `upload(messageId)` stores the chunks on Bulletin;
+   * only when it resolves is the message submitted, as one statement on the
+   * normal path. A failed upload marks the row failed and sends nothing.
+   */
+  sendAttachment: (peer: HexString, content: { items: AttachmentItem[]; caption: string | null }, upload: (messageId: string) => Promise<void>) => Promise<void>;
   /**
    * M12e: withdraw the pending request this identity sent `peer`. The row is
    * removed and the identity channel that waits for the accept is closed, so
@@ -834,6 +842,22 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     meter.messageSent();
   };
 
+  const sendAttachment: ChatManager['sendAttachment'] = async (peer, content, upload) => {
+    const ids = { messageId: randomId(), timestamp: Date.now() };
+    const row: MessageContent = { type: 'attachment', items: content.items, caption: content.caption };
+    await addMessage({ messageId: ids.messageId, peerAccountId: peer, timestamp: ids.timestamp, direction: 'outgoing', status: 'sending', content: row, reactions: [], editedAt: null });
+    await settlePendingSeen(peer, ids.messageId);
+    typingSender.sent(peer);
+    try {
+      await upload(ids.messageId);
+      await submit(peer, { type: 'attachment', items: content.items, caption: content.caption }, ids);
+    } catch (error) {
+      await setMessageStatus(ids.messageId, 'failed');
+      throw error;
+    }
+    meter.messageSent();
+  };
+
   const leaveGroup: ChatManager['leaveGroup'] = async groupId => {
     const group = await getGroup(groupId);
     if (!group || group.self !== 'member') return;
@@ -911,6 +935,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     sendMessage,
+    sendAttachment,
 
     withdrawRequest: async peer => {
       await withdrawRequestLocally(peer);
@@ -1009,9 +1034,14 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     retry: async (peer, messageId) => {
       const row = await getMessage(messageId);
       if (!row || row.peerAccountId !== peer || row.direction !== 'outgoing' || row.status !== 'failed') return;
-      if (row.content.type !== 'text' && row.content.type !== 'reply') throw new Error('Only a text message can be sent again.');
+      if (row.content.type !== 'text' && row.content.type !== 'reply' && row.content.type !== 'attachment') throw new Error('Only a text message can be sent again.');
+      // An attachment's chunks are stored again by the caller first (attachments.ts); the message is the same.
       const content: OutgoingContent =
-        row.content.type === 'reply' ? { type: 'reply', messageId: row.content.messageId, text: row.content.text } : { type: 'text', text: row.content.text };
+        row.content.type === 'reply'
+          ? { type: 'reply', messageId: row.content.messageId, text: row.content.text }
+          : row.content.type === 'attachment'
+            ? { type: 'attachment', items: row.content.items, caption: row.content.caption }
+            : { type: 'text', text: row.content.text };
       await setMessageStatus(messageId, 'sending');
       // The same id: the peer dedups by it, so a first attempt that did land is not shown twice.
       await submit(peer, content, { messageId, timestamp: row.timestamp }).catch(async error => {

@@ -62,7 +62,9 @@ export type SettingKey =
   /** `subscan` (default) or `polkadotjs`: where "View on …" opens a transaction or an account (M12c). */
   | 'chat.explorer'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
-  | 'assistant.session';
+  | 'assistant.session'
+  /** `seen` once the first attachment went out: its notice (spec 0012 review) shows once. */
+  | 'chat.attachmentNotice';
 
 export type SettingRow = {
   key: SettingKey;
@@ -288,6 +290,30 @@ export type GroupRow = {
   rotateAt?: number | null;
 };
 
+/**
+ * Spec 0012: this device's copy and state of one attachment item of a
+ * message. `bytes` is the plaintext: the sender keeps it (the source for a
+ * re-store), a recipient stores it once fetched, checked and decrypted.
+ * `done`/`total` count chunks stored (upload) or fetched (download).
+ */
+export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged';
+
+export type AttachmentRow = {
+  messageId: string;
+  index: number;
+  status: AttachmentStatus;
+  done: number;
+  total: number;
+  bytes: Uint8Array | null;
+  mime: string;
+  expiresAt: number;
+  /** Download retries so far, and when the first failure was (spec 0012: retry with backoff for 24 h). */
+  attempts: number;
+  firstFailedAt: number | null;
+  error: string | null;
+  updatedAt: number;
+};
+
 export const DB_NAME = 'polkadot-chat-web';
 
 const dexie = new Dexie(DB_NAME);
@@ -320,6 +346,9 @@ dexie.version(7).stores({
 dexie.version(8).stores({
   blocked: 'accountId',
 });
+dexie.version(9).stores({
+  attachments: '[messageId+index], messageId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -338,6 +367,7 @@ export const db: {
   peerInfo: Table<PeerInfoRow, PeerId>;
   groups: Table<GroupRow, string>;
   blocked: Table<BlockedRow, HexString>;
+  attachments: Table<AttachmentRow, [string, number]>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -352,4 +382,5 @@ export const db: {
   peerInfo: dexie.table('peerInfo'),
   groups: dexie.table('groups'),
   blocked: dexie.table('blocked'),
+  attachments: dexie.table('attachments'),
 };

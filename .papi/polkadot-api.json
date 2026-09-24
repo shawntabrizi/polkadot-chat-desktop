@@ -19,6 +19,12 @@
       "metadata": ".papi/metadata/assetHubPaseo.scale",
       "genesis": "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
       "codeHash": "0x3d399dc2daeaaf831fc4fda6ddc1958494fc0f3319ebb8ec0c1e7ca8995eed56"
+    },
+    "bulletinDevnet": {
+      "wsUrl": "wss://bullet.sik.rocks",
+      "metadata": ".papi/metadata/bulletinDevnet.scale",
+      "genesis": "0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59",
+      "codeHash": "0xcfc45b6f601f6e2971053639331432857feea30c7668279df079b33eed7e01dc"
     }
   }
 }

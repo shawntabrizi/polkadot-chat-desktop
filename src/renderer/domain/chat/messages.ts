@@ -235,12 +235,14 @@ const refreshPreview = async (row: MessageRow): Promise<void> => {
  * already tombstoned is left alone (idempotent). `false` when there is no row.
  */
 export const tombstoneMessage = (messageId: string): Promise<boolean> =>
-  appDatabase.transaction('rw', db.messages, db.rooms, async () => {
+  appDatabase.transaction('rw', db.messages, db.rooms, db.attachments, async () => {
     const row = await db.messages.get(messageId);
     if (!row) return false;
     if (row.content.type === 'deleted') return true;
     const deleted = tombstone(row);
     await db.messages.put(deleted);
+    // Spec 0012: an attachment's local copy goes with the content.
+    await db.attachments.where('messageId').equals(messageId).delete();
     await refreshPreview(deleted);
     return true;
   });
@@ -257,7 +259,7 @@ export type DeletionResult = 'tombstoned' | 'pending' | 'ignored';
  * room) `sender` must also be the author of the message.
  */
 export const applyDeletion = (peer: PeerId, messageId: string, now: number = Date.now(), sender?: HexString): Promise<DeletionResult> =>
-  appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
+  appDatabase.transaction('rw', [db.messages, db.rooms, db.pendingDeletions, db.attachments], async () => {
     const row = await db.messages.get(messageId);
     if (row) {
       if (row.peerAccountId !== peer || row.direction !== 'incoming') return 'ignored';

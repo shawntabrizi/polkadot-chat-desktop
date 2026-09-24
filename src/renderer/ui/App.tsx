@@ -9,6 +9,8 @@ import { type AssistantChat, createAssistantChat } from '../domain/assistant/ass
 import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
+import { createAttachmentService } from '../domain/chat/attachments';
+import { attachmentService, setAttachmentService } from '../domain/chat/attachmentRuntime';
 import { forwardCounts } from '../domain/chat/submissions';
 import { ensureFaucet } from '../domain/faucet/faucet';
 import type { DeviceKeys } from '../domain/device/keys';
@@ -154,6 +156,14 @@ export const App = () => {
         // M12e: the Diagnostics totals live in main, so a reload does not zero them.
         const diagnostics = window.desktop?.diagnostics;
         stopForward = diagnostics ? forwardCounts(created.submissions, delta => diagnostics.add(delta)) : () => undefined;
+        // Spec 0012: attachments on this profile's Bulletin chain (none on a profile without one).
+        const bulletin = NETWORK_PROFILES[profileId].bulletin;
+        setAttachmentService(
+          createAttachmentService({
+            bulletin: window.desktop?.bulletin ?? null,
+            store: bulletin ? { genesis: bulletin.genesis as `0x${string}`, mirror: null } : null,
+          }),
+        );
         setRuntime({ manager: created, lookup, resolveUsername, transactions });
       })
       .catch((cause: unknown) => {
@@ -168,6 +178,8 @@ export const App = () => {
       follower?.dispose();
       stopForward();
       manager?.dispose();
+      attachmentService()?.dispose();
+      setAttachmentService(null);
       setRuntime(null);
     };
   }, [identity, deviceKeys, profileId, username]);

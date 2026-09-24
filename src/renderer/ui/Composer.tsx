@@ -1,8 +1,8 @@
 // Layout from .refs/polkadot-desktop/src/features/chat/ui/partials/MessageInput.tsx
 // (2026-09-23): a growing field, a round send button, a reply/edit card above.
 
-import { Plus, SendHorizontal, Square, X } from 'lucide-react';
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { Paperclip, Plus, SendHorizontal, Square, X } from 'lucide-react';
+import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import type { SendKey } from '../app/chatPrefs';
 import { isPrimaryModifier } from '../app/keyboard';
@@ -44,6 +44,13 @@ type Props = {
   plusMenu?: readonly PlusItem[];
   /** M12g: inline content above the field (the amount row, a send's signing strip). */
   panel?: ReactNode;
+  /**
+   * Spec 0012 (M15a): the Paperclip button, paste and drop of files. `accept`
+   * is the file picker's filter. None: no attachments in this room.
+   */
+  attach?: { accept: string; onFiles: (files: File[]) => void } | null;
+  /** An attachment waits in the composer: Send works with an empty field (the text is its caption). */
+  hasAttachment?: boolean;
 };
 
 export type PlusItem = { label: string; icon: ReactNode; onSelect: () => void; testId: string };
@@ -107,8 +114,11 @@ export const Composer = ({
   quietSend = false,
   plusMenu = [],
   panel = null,
+  attach = null,
+  hasAttachment = false,
 }: Props) => {
   const field = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
 
   // ── Command menu: open while the draft is `/word`, until Esc; the
   // selection belongs to one query and starts at the top for the next.
@@ -144,7 +154,7 @@ export const Composer = ({
     return () => window.removeEventListener('focus', onWindowFocus);
   }, []);
 
-  const canSend = (allowEmpty || draft.trim() !== '') && !sendDisabled;
+  const canSend = (allowEmpty || hasAttachment || draft.trim() !== '') && !sendDisabled;
   const send = () => {
     if (!canSend) return;
     onSend();
@@ -203,8 +213,30 @@ export const Composer = ({
     }
   };
 
+  // Pasted or dropped files go the same way as picked ones; text pastes stay text.
+  const filesOf = (list: FileList | null | undefined): File[] => (list ? [...list] : []);
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = filesOf(event.clipboardData?.files);
+    if (!attach || files.length === 0) return;
+    event.preventDefault();
+    attach.onFiles(files);
+  };
+
   return (
-    <div className="relative flex shrink-0 flex-col gap-2 px-4 pt-2 pb-4">
+    <div
+      className="relative flex shrink-0 flex-col gap-2 px-4 pt-2 pb-4"
+      onDragOver={attach ? event => event.preventDefault() : undefined}
+      onDrop={
+        attach
+          ? event => {
+              const files = filesOf(event.dataTransfer?.files);
+              if (files.length === 0) return;
+              event.preventDefault();
+              attach.onFiles(files);
+            }
+          : undefined
+      }
+    >
       {menuOpen ? <CommandMenu commands={matches} selected={selected} onPick={pick} /> : null}
       {context ? (
         <div className="flex items-start gap-2 rounded-nested bg-surface-nested py-2 ps-3 pe-2" data-testid="composer-context">
@@ -235,8 +267,37 @@ export const Composer = ({
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
+        {attach ? (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-10 shrink-0 rounded-full font-normal"
+              aria-label="Attach an image"
+              data-testid="composer-attach"
+              onClick={() => picker.current?.click()}
+            >
+              <Paperclip className="size-5 text-fg-secondary" />
+            </Button>
+            <input
+              ref={picker}
+              type="file"
+              accept={attach.accept}
+              className="hidden"
+              data-testid="composer-attach-input"
+              onChange={event => {
+                const files = filesOf(event.target.files);
+                // The same file can be picked again after a Remove.
+                event.target.value = '';
+                if (files.length > 0) attach.onFiles(files);
+              }}
+            />
+          </>
+        ) : null}
         <Textarea
           ref={field}
+          onPaste={onPaste}
           value={draft}
           onChange={event => changeDraft(event.target.value)}
           onKeyDown={onKeyDown}

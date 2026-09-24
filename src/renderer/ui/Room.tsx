@@ -46,6 +46,11 @@ import { BotBadge } from './BotBadge';
 import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
+import { AttachRow } from './Attachments';
+import { readSetting, writeSetting } from '../app/settings';
+import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
+import { IMAGE_TYPES, pickProblem } from '../domain/chat/attachments';
+import { prepareImage } from '../domain/chat/attachmentImage';
 import { RoomHeader, TypingLine } from './RoomHeader';
 import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
 import { AmountRow, type PaymentKind, RequestBody } from './Payments';
@@ -309,6 +314,22 @@ export const Room = (props: Props) => {
 
   // One assistant reply at a time: Send waits until it ends or is stopped.
   const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
+  // Spec 0012 (M15a): one image waits in the composer until Send; its notice shows until the first one went out.
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const attachNotice = useLiveQuery(async () => (await readSetting('chat.attachmentNotice')) !== 'seen', []) ?? false;
+  const attachments = useSyncExternalStore(subscribeAttachmentService, attachmentService, attachmentService);
+  const canAttach = manager !== null && contact !== undefined && contact !== null && !blocked && attachments !== null;
+  const pickFiles = (files: File[]) => {
+    const [file] = files;
+    if (!file) return;
+    const problem = pickProblem(file);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    setError(null);
+    setAttachment(file);
+  };
 
   // ── Buttons (spec 0006): the pressed button stays marked until the bot
   // answers (callback) or for a moment (anything else).
@@ -586,8 +607,34 @@ export const Room = (props: Props) => {
   const forwardFor = (row: MessageRow) =>
     forwardText(row) !== null && row.status !== 'streaming' ? (target: ForwardTarget) => chatActions.forward(target, row, authorOf(row)) : undefined;
 
+  const sendAttachment = async (file: File, caption: string | null) => {
+    const service = attachmentService();
+    if (!manager || !service) return;
+    setError(null);
+    setAttachment(null);
+    setDraft('');
+    setMode({ mode: 'new' });
+    let prepared;
+    try {
+      prepared = await prepareImage(file);
+    } catch (cause) {
+      setAttachment(file);
+      setDraft(caption ?? '');
+      setError(`${plainError(cause, 'This image cannot be read.')} Pick another one.`);
+      return;
+    }
+    try {
+      await writeSetting('chat.attachmentNotice', 'seen');
+      await service.send(manager, peer as HexString, [prepared], caption);
+    } catch (cause) {
+      // The bubble stays, marked "Not sent · Retry": the local copy is the source of a retry.
+      setError(`${plainError(cause, 'The image was not sent.')} Press Retry under it to try again.`);
+    }
+  };
+
   const submit = async () => {
     const text = draft.trim();
+    if (attachment && mode.mode !== 'edit') return sendAttachment(attachment, text === '' ? null : text);
     if (!text || answering) return;
     setError(null);
     const current = mode;
@@ -621,7 +668,10 @@ export const Room = (props: Props) => {
     if (!manager) return;
     setError(null);
     try {
-      await manager.retry(peer as HexString, row.messageId);
+      // An attachment stores its chunks again first (same key and nonce: the same message).
+      const service = attachmentService();
+      if (row.content.type === 'attachment' && service) await service.reupload(manager, peer as HexString, row.messageId);
+      else await manager.retry(peer as HexString, row.messageId);
     } catch (cause) {
       setError(`${plainError(cause, 'The message was not sent.')} Try again.`);
     }
@@ -930,8 +980,12 @@ export const Room = (props: Props) => {
                 onSign={() => void signSend()}
                 onCancel={() => setSendStrip(null)}
               />
+            ) : attachment ? (
+              <AttachRow file={attachment} notice={attachNotice} onRemove={() => setAttachment(null)} />
             ) : null
           }
+          attach={canAttach && mode.mode !== 'edit' ? { accept: IMAGE_TYPES.join(','), onFiles: pickFiles } : null}
+          hasAttachment={attachment !== null}
         />
       )}
     </>

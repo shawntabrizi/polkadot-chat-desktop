@@ -90,6 +90,15 @@ const api: DesktopApi = {
     onChanged: listen(IPC.agentChanged),
     onProgress: listen(IPC.agentProgress),
   },
+  bulletin: {
+    store: (uploadId, chunks) => ipcRenderer.invoke(IPC.bulletinStore, uploadId, chunks),
+    onProgress: listen(IPC.bulletinProgress),
+    fetch: (genesis, hash, mirror, only) => ipcRenderer.invoke(IPC.bulletinFetch, genesis, hash, mirror, only),
+  },
+  files: {
+    open: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileOpen, bytes, name, mime),
+    save: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileSave, bytes, name, mime),
+  },
 };
 
 contextBridge.exposeInMainWorld('desktop', api);

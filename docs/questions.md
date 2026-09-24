@@ -182,3 +182,13 @@ Write the question, what you did meanwhile, and the date.
 - **`deviceAdded` in a carrier** (0011 Multi-device, Testing list) is not built in M16: a member's posting accounts come from its contact devices when an admin writes a state. Build it with M16b, or earlier?
 - **Welcome from any contact.** A `welcome` for an unknown group is taken from any contact that is not blocked (as a v1 roster was). Should a person's client ask first ("X added you to Y")?
 - **Accounts full of DM statements cannot post in any v2 group** (live: pcde2e, pcdeceb). DM statements never expire, so an identity that has talked to many peers is permanently full and every group statement is refused with `AccountFull`. This needs the upstream quota answer (0011 Unresolved 3) or a DM expiry below u32.max. The e2e uses pcdbenchfinb as the admin for now.
+
+## M15a (2026-09-24)
+
+- **pca has not confirmed vectors-0012.md yet.** No "confirmed by pca codec" line and no "M15a" commit on `desktop/rfc-0003` when this landed. The pca checkout's uncommitted `bot-core/test/codec.test.mjs` pins the same hex for vectors A and B that `content.spec.ts` pins, so no disagreement is known. The desktop codec reproduces A, B, C1 and C2 byte for byte.
+- **Vector A's blurhash is not a BlurHash.** `"LEHV6nWB2yk8"` is 12 characters; a 4×3 hash is 28 (`LEHV6nWB2yk8pyo0adR*.7kCMdnj` is the blurha.sh example it was cut from). The codec does not care, but a client paints no placeholder for it. Change the vector (its bytes change), or keep it as a malformed-input case?
+- **vectors-0012.md TODO "store C1's c_0 on devnet"** is done: best block #970869, `Stored { index: 0, content_hash = chunks[0] }`, fetched back by `bitswap_v1_get` and the gateway (docs/decisions.md "## M15a"). The file is read-only for this agent; please copy it there.
+- **Spec 0012 step 7 (check every chunk once more after finality, re-store a missing one)** is not built. With M15c's re-store?
+- **"Open" leaves a copy in the OS temp folder** (`$TMPDIR/polkadot-chat-attachments/<uuid>/`), which macOS clears on its own schedule. Delete it on quit instead?
+- **The attachment key sits in the message row**, not in `secrets` (database.ts keeps private keys apart). It is message content, like the text it protects; M16 asked the same about epoch keys. One answer for both?
+- **Flag for M16 cleanup (not changed here):** `docs/acceptance.md` "## M16" › "npm run e2e:group (v1 unchanged)" holds three lines of an `e2e:attach` run (PEOPLE, BOT_DESCRIBE_SKIPPED, ATTACH_OK), not e2e:group output.

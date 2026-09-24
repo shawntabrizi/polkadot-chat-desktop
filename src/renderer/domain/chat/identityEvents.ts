@@ -9,7 +9,7 @@
  */
 
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
-import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, bool, createCodec, str, u128, u16, u32, u64, u8 } from 'scale-ts';
+import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, _void, bool, createCodec, str, u128, u16, u32, u64, u8 } from 'scale-ts';
 
 import { type HexString, hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
@@ -139,6 +139,33 @@ export type GroupControl =
   | { tag: 'keyRequest'; value: { groupId: string; haveEpoch: number } }
   | { tag: 'historyRequest'; value: { groupId: string; since: HistorySinceWire; limit: number } };
 export type GroupControlWire = { tag: 'groupControl'; value: GroupControl };
+/** Spec 0012 `Media`: file 0, image 1, video 2, voice 3 (a `waveform` of at most 64 samples). */
+export type AttachmentMediaWire =
+  | { tag: 'file'; value: undefined }
+  | { tag: 'image'; value: { width: number; height: number } }
+  | { tag: 'video'; value: { width: number; height: number; durationMs: number } }
+  | { tag: 'voice'; value: { durationMs: number; waveform: Uint8Array } };
+/**
+ * Spec 0012 `Attachment`: `chunks[i]` is the blake2b-256 of encrypted chunk
+ * i, which is also its Bulletin content hash and its CID digest. `size` and
+ * `expiresAt` are u64 on the wire.
+ */
+export type AttachmentItemWire = {
+  mime: string;
+  name: string | undefined;
+  size: bigint;
+  media: AttachmentMediaWire;
+  blurhash: string | undefined;
+  thumbnail: Uint8Array | undefined;
+  key: Uint8Array;
+  nonce: Uint8Array;
+  chunkSize: number;
+  chunks: Uint8Array[];
+  store: { tag: 'bulletin'; value: { genesis: Uint8Array; mirror: string | undefined } };
+  expiresAt: bigint;
+};
+/** Spec 0012 `attachment(AttachmentContent)`, provisional kind 250: 1 to 4 items and a caption. */
+export type AttachmentWire = { tag: 'attachment'; value: { items: AttachmentItemWire[]; caption: string | undefined } };
 
 export type ChatContent =
   | SdkChatMessageWire['versioned']['value']
@@ -153,6 +180,7 @@ export type ChatContent =
   | GroupMessageWire
   | GroupLeaveWire
   | GroupControlWire
+  | AttachmentWire
   | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
@@ -181,6 +209,8 @@ export const GROUP_LEAVE_KIND = 248;
 /** Spec 0011 provisional kind (docs/spec/kinds.md). */
 export const GROUP_CONTROL_KIND = 249;
 const GROUP_KINDS: readonly number[] = [GROUP_INFO_KIND, GROUP_MESSAGE_KIND, GROUP_LEAVE_KIND, GROUP_CONTROL_KIND];
+/** Spec 0012 provisional kind (docs/spec/kinds.md, review 0012: 250). */
+export const ATTACHMENT_KIND = 250;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -292,6 +322,75 @@ const withinControlBounds = (control: GroupControl): boolean => {
   }
 };
 
+// Spec 0012 layout (docs/spec/vectors-0012.md). scale-ts numbers enum
+// variants in key order: file 0, image 1, video 2, voice 3; bulletin 0.
+const MediaCodec = Enum({
+  file: _void,
+  image: Struct({ width: u32, height: u32 }),
+  video: Struct({ width: u32, height: u32, durationMs: u32 }),
+  voice: Struct({ durationMs: u32, waveform: Bytes() }),
+});
+const StoreCodec = Enum({ bulletin: Struct({ genesis: Bytes(32), mirror: Option(str) }) });
+const AttachmentItemCodec = Struct({
+  mime: str,
+  name: Option(str),
+  size: u64,
+  media: MediaCodec,
+  blurhash: Option(str),
+  thumbnail: Option(Bytes()),
+  key: Bytes(32),
+  nonce: Bytes(12),
+  chunkSize: u32,
+  chunks: Vector(Bytes(32)),
+  store: StoreCodec,
+  expiresAt: u64,
+});
+const AttachmentContentCodec = Struct({ items: Vector(AttachmentItemCodec), caption: Option(str) });
+
+/**
+ * Spec 0012 limits, checked on decode: 1 to 4 items; `mime` at most 64
+ * bytes, `name` 128, `blurhash` 64, `thumbnail` 2048, `caption` 1024; a
+ * `waveform` of at most 64 samples; `size` at least 1 and at most 25 MiB;
+ * `chunkSize` 1 to 2,000,000; 1 to 14 chunks, exactly ⌈size / chunkSize⌉.
+ * Outside them the message is undecodable (the unsupported bubble).
+ */
+export const ATTACHMENT_BOUNDS = {
+  items: 4,
+  mime: 64,
+  name: 128,
+  blurhash: 64,
+  thumbnail: 2048,
+  caption: 1024,
+  waveform: 64,
+  size: 25 * 1024 * 1024,
+  chunkSize: 2_000_000,
+  chunks: 14,
+} as const;
+const withinItemBounds = (item: AttachmentItemWire): boolean => {
+  const size = item.size;
+  if (size < 1n || size > BigInt(ATTACHMENT_BOUNDS.size)) return false;
+  if (item.chunkSize < 1 || item.chunkSize > ATTACHMENT_BOUNDS.chunkSize) return false;
+  const n = (size + BigInt(item.chunkSize) - 1n) / BigInt(item.chunkSize);
+  return (
+    item.chunks.length >= 1 &&
+    item.chunks.length <= ATTACHMENT_BOUNDS.chunks &&
+    BigInt(item.chunks.length) === n &&
+    utf8Length(item.mime) <= ATTACHMENT_BOUNDS.mime &&
+    (item.name === undefined || utf8Length(item.name) <= ATTACHMENT_BOUNDS.name) &&
+    (item.blurhash === undefined || utf8Length(item.blurhash) <= ATTACHMENT_BOUNDS.blurhash) &&
+    (item.thumbnail === undefined || item.thumbnail.length <= ATTACHMENT_BOUNDS.thumbnail) &&
+    (item.media.tag !== 'voice' || item.media.value.waveform.length <= ATTACHMENT_BOUNDS.waveform)
+  );
+};
+/** The encoded size of an `AttachmentContent` (spec 0012 limits it to 3,584 bytes so it fits a 4 KB batch). */
+export const attachmentContentLength = (content: AttachmentWire['value']): number => AttachmentContentCodec.enc(content).length;
+
+const withinAttachmentBounds = (content: AttachmentWire['value']): boolean =>
+  content.items.length >= 1 &&
+  content.items.length <= ATTACHMENT_BOUNDS.items &&
+  content.items.every(withinItemBounds) &&
+  (content.caption === undefined || utf8Length(content.caption) <= ATTACHMENT_BOUNDS.caption);
+
 /**
  * Spec 0009 decoder bounds: at most 16 members, the name at most 240 bytes
  * (4 per character of the 60 limit), usernames at most 256 bytes (64
@@ -315,7 +414,9 @@ type ExtensionWire =
   | TransactionReferenceWire
   | GroupInfoWire
   | GroupLeaveWire
-  | GroupControlWire;
+  | GroupControlWire
+
+  | AttachmentWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -334,6 +435,7 @@ const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
 const GroupInfoMessage = envelope(GroupInfoCodec);
 const GroupLeaveMessage = envelope(GroupLeaveCodec);
 const GroupControlMessage = envelope(GroupControlCodec);
+const AttachmentMessage = envelope(AttachmentContentCodec);
 // `groupMessage`: the header and the wrapper's own fields; the inner content
 // is the rest of the message (its kind byte and body).
 const GroupMessageHead = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, groupId: str, infoVersion: u32, seq: u64 });
@@ -417,6 +519,13 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       const value = decoded?.versioned.value;
       return decoded && value?.tag === 'groupControl' && withinControlBounds(value.value) ? decoded : undecodable(header);
     }
+    case ATTACHMENT_KIND: {
+      // An unknown media or store tag (a later revision) cannot be read past
+      // it: undecodable, which shows the unsupported bubble.
+      const decoded = decodeWith(AttachmentMessage, bytes, value => ({ tag: 'attachment', value }) as AttachmentWire);
+      const value = decoded?.versioned.value;
+      return decoded && value?.tag === 'attachment' && withinAttachmentBounds(value.value) ? decoded : undecodable(header);
+    }
     default:
       return null;
   }
@@ -461,9 +570,9 @@ const GROUP_KINDS_TAGS: readonly string[] = ['groupInfo', 'groupMessage', 'group
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
  * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005), kinds 242
  * `buttons` / 243 `buttonPress` (spec 0006), kind 244 `botInfo` (spec 0008) and
- * kind 245 `transactionReference` (spec 0007), and kinds 246 `groupInfo` /
- * 247 `groupMessage` / 248 `groupLeave` (spec 0009), and kind 249
- * `groupControl` (spec 0011).
+ * kind 245 `transactionReference` (spec 0007), kinds 246 `groupInfo` /
+ * 247 `groupMessage` / 248 `groupLeave` (spec 0009), kind 249
+ * `groupControl` (spec 0011), and kind 250 `attachment` (spec 0012).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -497,6 +606,8 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
       case 'groupControl':
         if (!withinControlBounds(content.value)) throw new Error('groupControl outside the spec 0011 bounds');
         return GroupControlMessage.enc({ ...head, kind: GROUP_CONTROL_KIND, content: content.value });
+      case 'attachment':
+        return AttachmentMessage.enc({ ...head, kind: ATTACHMENT_KIND, content: content.value });
       case 'groupMessage': {
         const { groupId, infoVersion, seq } = content.value;
         const wrapper = GroupMessageHead.enc({ ...head, kind: GROUP_MESSAGE_KIND, groupId, infoVersion, seq });

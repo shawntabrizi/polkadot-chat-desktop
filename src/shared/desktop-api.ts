@@ -52,6 +52,11 @@ export const IPC = {
   agentSetContacts: 'agent:setContacts',
   agentKill: 'agent:kill',
   agentChanged: 'agent:changed',
+  bulletinStore: 'bulletin:store',
+  bulletinProgress: 'bulletin:progress',
+  bulletinFetch: 'bulletin:fetch',
+  fileOpen: 'file:open',
+  fileSave: 'file:save',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -327,6 +332,8 @@ export type DiagnosticsCounts = {
   acknowledgements: number;
   /** Messages the user sent: the denominator. */
   messages: number;
+  /** Spec 0012: Bulletin transactions main broadcast (chunk stores, devnet grants); not statements. Main only. */
+  bulletinTransactions?: number;
 };
 
 export type DesktopDiagnosticsApi = {
@@ -385,6 +392,39 @@ export type DesktopAgentApi = {
   onProgress: (listener: (line: string) => void) => () => void;
 };
 
+/** Spec 0012: a running upload's steps ("storing k of n"). `uploadId` is the caller's. */
+export type BulletinProgress = { uploadId: string; stored: number; total: number };
+
+/**
+ * Spec 0012 attachments (M15a). The main process holds the Bulletin signer
+ * (`//allowance//bulletin//chat` of the identity) and talks to the chain;
+ * the renderer encrypts, decrypts and checks hashes.
+ */
+export type DesktopBulletinApi = {
+  /**
+   * Stores encrypted chunks (1 to 14, each at most 2 MiB) and resolves when a
+   * best block holds every one. On devnet a missing storage grant is asked
+   * of `//Eve` first; elsewhere a missing or spent budget rejects with the
+   * reason. Progress arrives on `onProgress`.
+   */
+  store: (uploadId: string, chunks: Uint8Array[]) => Promise<void>;
+  onProgress: (listener: (progress: BulletinProgress) => void) => () => void;
+  /**
+   * One chunk by its content hash (0x-hex) on the Bulletin chain `genesis`:
+   * `bitswap_v1_get`, then `mirror`, then the network's gateway (or only
+   * `only`). The bytes match the hash; the renderer checks again.
+   */
+  fetch: (genesis: string, hash: string, mirror: string | null, only?: 'bitswap' | 'mirror' | 'gateway') => Promise<{ bytes: Uint8Array; source: string }>;
+};
+
+/** Spec 0012: a decrypted attachment leaves the renderer only through these. */
+export type DesktopFilesApi = {
+  /** Opens the file with the system's default app. */
+  open: (bytes: Uint8Array, name: string | null, mime: string) => Promise<void>;
+  /** The system save dialog; false when cancelled. */
+  save: (bytes: Uint8Array, name: string | null, mime: string) => Promise<boolean>;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
@@ -394,6 +434,8 @@ export type DesktopApi = {
   diagnostics: DesktopDiagnosticsApi;
   demo: DesktopDemoApi;
   agent: DesktopAgentApi;
+  bulletin: DesktopBulletinApi;
+  files: DesktopFilesApi;
 };
 
 declare global {

@@ -48,7 +48,8 @@ export const assertDevnetChain = (chainId: unknown): string => {
 export const pickSource = (balances: readonly { account: DevAccount; free: bigint }[]): DevAccount | null =>
   DEV_ACCOUNTS.find(account => (balances.find(entry => entry.account === account)?.free ?? 0n) >= SOURCE_MIN_PLANCK) ?? null;
 
-const devPair = (account: DevAccount) => deriveSr25519PairFromSeed(mnemonicToMiniSecret(DEV_PHRASE), `//${account}`);
+/** A public dev account's pair. M15a also signs the devnet Bulletin grant with `//Eve` (chain/bulletin.ts). */
+export const devPair = (account: DevAccount) => deriveSr25519PairFromSeed(mnemonicToMiniSecret(DEV_PHRASE), `//${account}`);
 
 const readFree = (chain: AssetHubChain, address: string): Promise<bigint> =>
   retryOnNextEndpoint(

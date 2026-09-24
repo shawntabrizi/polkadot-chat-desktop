@@ -16,6 +16,9 @@ import { decodeTxIntent } from '../../../shared/txIntent';
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 
 import {
+  ATTACHMENT_KIND,
+  type AttachmentItemWire,
+  type AttachmentWire,
   BUTTONS_KIND,
   type BotInfoWire,
   type ButtonWire,
@@ -30,10 +33,39 @@ import {
 export type TypingKind = 'composing' | 'working' | 'stopped';
 const TYPING_KINDS: readonly TypingKind[] = ['composing', 'working', 'stopped'];
 
+/** A base-spec HOP attachment of a `richText` (phone apps): metadata only, never fetched here. */
 export type Attachment = {
   kind: 'general' | 'image' | 'video';
   mimeType: string;
   fileSize: number;
+};
+
+/** Spec 0012 `Media`, as this client stores it. */
+export type AttachmentMedia =
+  | { kind: 'file' }
+  | { kind: 'image'; width: number; height: number }
+  | { kind: 'video'; width: number; height: number; durationMs: number }
+  | { kind: 'voice'; durationMs: number; waveform: number[] };
+
+/**
+ * Spec 0012 `Attachment` (kind 250), as this client stores it. `key` and
+ * `nonce` decrypt the chunks; `chunks` are their blake2b-256 hashes (the
+ * Bulletin content hashes and CID digests). `size` and `expiresAt` fit a JS
+ * number (25 MiB, ms since epoch).
+ */
+export type AttachmentItem = {
+  mime: string;
+  name: string | null;
+  size: number;
+  media: AttachmentMedia;
+  blurhash: string | null;
+  thumbnail: Uint8Array | null;
+  key: Uint8Array;
+  nonce: Uint8Array;
+  chunkSize: number;
+  chunks: Uint8Array[];
+  store: { genesis: HexString; mirror: string | null };
+  expiresAt: number;
 };
 
 /**
@@ -144,7 +176,9 @@ export type MessageContent =
   /** Spec 0009 system row of a group room: a roster event, in words, or a sequence gap. */
   | { type: 'groupEvent'; text: string }
   /** A local line of a local room (the Faucet): `error` shows in the error colour. */
-  | { type: 'notice'; text: string; tone: 'info' | 'error' };
+  | { type: 'notice'; text: string; tone: 'info' | 'error' }
+  /** Spec 0012: 1 to 4 encrypted files on the Bulletin chain, and a caption. */
+  | { type: 'attachment'; items: AttachmentItem[]; caption: string | null };
 
 /** What this client can put on the wire. */
 export type OutgoingContent =
@@ -174,7 +208,9 @@ export type OutgoingContent =
   /** Spec 0009: "I left" (spec 0011 reuses it inside a carrier). */
   | { type: 'groupLeave'; groupId: string }
   /** Spec 0011: pairwise group control (kind 249). */
-  | { type: 'groupControl'; control: GroupControl };
+  | { type: 'groupControl'; control: GroupControl }
+  /** Spec 0012: an attachment whose chunks are in a best block already. */
+  | { type: 'attachment'; items: AttachmentItem[]; caption: string | null };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -239,8 +275,72 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'groupLeave', value: { groupId: content.groupId } };
     case 'groupControl':
       return { tag: 'groupControl', value: content.control };
+    case 'attachment':
+      return { tag: 'attachment', value: { items: content.items.map(attachmentItemWire), caption: content.caption ?? undefined } };
   }
 };
+
+const mediaWire = (media: AttachmentMedia): AttachmentItemWire['media'] => {
+  switch (media.kind) {
+    case 'file':
+      return { tag: 'file', value: undefined };
+    case 'image':
+      return { tag: 'image', value: { width: media.width, height: media.height } };
+    case 'video':
+      return { tag: 'video', value: { width: media.width, height: media.height, durationMs: media.durationMs } };
+    case 'voice':
+      return { tag: 'voice', value: { durationMs: media.durationMs, waveform: Uint8Array.from(media.waveform) } };
+  }
+};
+
+const mediaOf = (media: AttachmentItemWire['media']): AttachmentMedia => {
+  switch (media.tag) {
+    case 'file':
+      return { kind: 'file' };
+    case 'image':
+      return { kind: 'image', width: media.value.width, height: media.value.height };
+    case 'video':
+      return { kind: 'video', width: media.value.width, height: media.value.height, durationMs: media.value.durationMs };
+    case 'voice':
+      return { kind: 'voice', durationMs: media.value.durationMs, waveform: [...media.value.waveform] };
+  }
+};
+
+export const attachmentItemWire = (item: AttachmentItem): AttachmentItemWire => ({
+  mime: item.mime,
+  name: item.name ?? undefined,
+  size: BigInt(item.size),
+  media: mediaWire(item.media),
+  blurhash: item.blurhash ?? undefined,
+  thumbnail: item.thumbnail ?? undefined,
+  key: item.key,
+  nonce: item.nonce,
+  chunkSize: item.chunkSize,
+  chunks: item.chunks,
+  store: { tag: 'bulletin', value: { genesis: hexToBytes(item.store.genesis), mirror: item.store.mirror ?? undefined } },
+  expiresAt: BigInt(item.expiresAt),
+});
+
+const attachmentItemOf = (item: AttachmentItemWire): AttachmentItem => ({
+  mime: item.mime,
+  name: item.name ?? null,
+  size: Number(item.size),
+  media: mediaOf(item.media),
+  blurhash: item.blurhash ?? null,
+  thumbnail: item.thumbnail ?? null,
+  key: item.key,
+  nonce: item.nonce,
+  chunkSize: item.chunkSize,
+  chunks: item.chunks,
+  store: { genesis: bytesToHex(item.store.value.genesis), mirror: item.store.value.mirror ?? null },
+  expiresAt: Number(item.expiresAt),
+});
+
+const attachmentOfWire = (value: AttachmentWire['value']): MessageContent => ({
+  type: 'attachment',
+  items: value.items.map(attachmentItemOf),
+  caption: value.caption ?? null,
+});
 
 const groupInfoWire = (info: GroupInfo): GroupInfoWire['value'] => ({
   groupId: info.groupId,
@@ -442,12 +542,15 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       return { kind: 'groupLeave', groupId: content.value.groupId };
     case 'groupControl':
       return { kind: 'groupControl', control: content.value };
+    case 'attachment':
+      return { kind: 'message', content: attachmentOfWire(content.value) };
     case 'undecodable':
       // A keyboard or a reference we cannot read is still a message the peer
       // sent: the unsupported bubble. A press, typing, seen or botInfo we
       // cannot read is nothing.
       if (content.value.kind === BUTTONS_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } };
       if (content.value.kind === TRANSACTION_REFERENCE_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
+      if (content.value.kind === ATTACHMENT_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'attachment' } };
       return { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };
@@ -512,6 +615,34 @@ export const previewOf = (content: MessageContent): string => {
     case 'groupEvent':
     case 'notice':
       return content.text;
+    case 'attachment':
+      return attachmentPreview(content.items, content.caption);
+  }
+};
+
+const minutesSeconds = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+};
+
+/**
+ * Spec 0012 "Fallback": the caption, else "Photo", "Video", "Voice message
+ * (0:42)", "File: <name>"; "2 photos" for an album of images.
+ */
+export const attachmentPreview = (items: readonly AttachmentItem[], caption: string | null): string => {
+  if (caption && caption.trim() !== '') return caption;
+  const [first] = items;
+  if (!first) return 'sent an attachment';
+  if (items.length > 1) return items.every(item => item.media.kind === 'image') ? `${items.length} photos` : `${items.length} attachments`;
+  switch (first.media.kind) {
+    case 'image':
+      return 'Photo';
+    case 'video':
+      return 'Video';
+    case 'voice':
+      return `Voice message (${minutesSeconds(first.media.durationMs)})`;
+    case 'file':
+      return `File: ${first.name ?? 'Attachment'}`;
   }
 };
 

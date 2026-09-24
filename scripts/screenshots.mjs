@@ -75,6 +75,11 @@
 //   room-group2     M16 a private group (spec 0011, fixture): epoch 2 and
 //                   "one statement per message" in the header, the removal notice
 //   group2-members  M16 its members panel: owner/admin/member, Remove hovered
+//   room-attachment M15a images on Bulletin (fixture): a received photo with a
+//                   caption and Open / Save…, a sent one, one still
+//                   downloading (blurhash), one of ours storing chunk 1 of 2
+//   composer-attach M15a an image picked with the Paperclip: the attach row,
+//                   its size, Remove, the first-attachment notice, a caption
 //   settings-agent  M13 Settings › Agent, published for real on devnet with
 //                   PCD_SCREENSHOT_AGENT_IDENTITY (a path, default
 //                   .agent-runs/identity-pcdbenchcold/identity.json) as the
@@ -109,6 +114,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { debugPort, portAnswers } from './lib/app.mjs';
+import { drawScene, shrink } from './lib/testImage.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const electronBin = join(root, 'node_modules/.bin/electron');
@@ -142,6 +148,7 @@ const WORKER_SHOTS = {
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'settings-agent', 'demo-onboarding', 'settings-demo',
+    'room-attachment', 'composer-attach',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
@@ -752,6 +759,67 @@ const paymentFixture = async seededAccountHex => {
   return { ask, paid, paidMissing };
 };
 
+/**
+ * M15a: a fictional friend who swaps photos (spec 0012 fixture). The image
+ * bytes are drawn here and stored as the rows' local copies; nothing is on
+ * the Bulletin chain, so no row is left without a copy (a missing copy would
+ * start a real download of made-up hashes).
+ */
+const SOFIA = { account: account('f5'), username: 'sofiamarsh.31', at: Date.now() - 40 * 60_000 };
+const BULLETIN_GENESIS = '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59';
+const ATTACH_CAPTION = 'Sunset from the ferry';
+const attachmentFixture = async () => {
+  const { encodeBlurhash } = await loadTs('src/renderer/domain/chat/blurhash.ts');
+  const t = step => SOFIA.at + step * 60_000;
+  const scene = (width, height, colours) => {
+    const image = drawScene(width, height, colours);
+    const small = shrink(image.rgba, width, height);
+    return { ...image, blurhash: encodeBlurhash(small.pixels, small.w, small.h, 4, 3) };
+  };
+  const sunset = scene(480, 320, { top: [44, 62, 120], bottom: [247, 150, 92], sun: [255, 214, 140], sea: [40, 70, 110] });
+  const harbour = scene(360, 360, { top: [120, 180, 230], bottom: [214, 234, 248], sun: [255, 246, 200], sea: [30, 110, 140] });
+  const dusk = scene(480, 360, { top: [70, 40, 110], bottom: [230, 110, 120], sun: [255, 190, 150], sea: [50, 40, 90] });
+  const beach = scene(400, 300, { top: [90, 160, 220], bottom: [240, 220, 180], sun: [255, 240, 190], sea: [20, 120, 150] });
+  const item = (image, chunks) => ({
+    mime: 'image/png',
+    name: null,
+    size: chunks > 1 ? 3_400_000 : image.png.length,
+    media: { kind: 'image', width: image.width, height: image.height },
+    blurhash: image.blurhash,
+    thumbnail: null,
+    key: fill(32, 0x11),
+    nonce: fill(12, 0x22),
+    chunkSize: 2_000_000,
+    chunks: Array.from({ length: chunks }, (_, i) => fill(32, 0x30 + i)),
+    store: { genesis: BULLETIN_GENESIS, mirror: null },
+    expiresAt: Date.now() + 13 * 24 * 3_600_000,
+  });
+  const local = (messageId, image, status, done, total) => ({
+    messageId, index: 0, status, done, total, bytes: status === 'ready' ? bytes(image.png) : null, mime: 'image/png',
+    expiresAt: Date.now() + 13 * 24 * 3_600_000, attempts: 0, firstFailedAt: null, error: null, updatedAt: Date.now(),
+  });
+  const attachment = (image, chunks, caption = null) => ({ type: 'attachment', items: [item(image, chunks)], caption });
+  return {
+    contacts: [contactRow(SOFIA)],
+    rooms: [roomRow(SOFIA, ATTACH_CAPTION, t(5))],
+    messages: [
+      messageRow('fixture-sofia-hello', SOFIA, t(0), 'incoming', { type: 'text', text: 'Back from the islands! Photos coming.' }),
+      messageRow('fixture-sofia-harbour', SOFIA, t(1), 'outgoing', attachment(harbour, 1, 'Ours from the harbour')),
+      messageRow('fixture-sofia-dusk', SOFIA, t(2), 'incoming', attachment(dusk, 2)),
+      messageRow('fixture-sofia-beach', SOFIA, t(3), 'outgoing', attachment(beach, 2), { status: 'sending' }),
+      messageRow('fixture-sofia-sunset', SOFIA, t(5), 'incoming', attachment(sunset, 1, ATTACH_CAPTION)),
+    ],
+    attachments: [
+      local('fixture-sofia-sunset', sunset, 'ready', 1, 1),
+      local('fixture-sofia-harbour', harbour, 'ready', 1, 1),
+      local('fixture-sofia-dusk', dusk, 'downloading', 1, 2),
+      local('fixture-sofia-beach', beach, 'uploading', 1, 2),
+    ],
+    // The image the composer shot picks with the Paperclip.
+    pick: drawScene(480, 320, { top: [60, 110, 170], bottom: [250, 200, 140], sun: [255, 230, 170], sea: [30, 80, 120] }).png,
+  };
+};
+
 /** The intent of the fixture tx button: 0.01 PAS from `selfHex` to itself, with call data the app builds. */
 const selfTransferIntent = async (app, selfHex) => {
   const callData = await app.evaluate(`window.desktop.chain.transferCall(${JSON.stringify(selfHex)}, '100000000').then(bytes => Array.from(bytes))`);
@@ -806,9 +874,13 @@ const mainWorker = async () => {
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
     await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
+    const { pick, ...attachRows } = await attachmentFixture();
+    await writeRows(app, attachRows);
+    writeFileSync(join(profile, 'pick.png'), pick);
     await app.reload(app.exists('[data-testid=chat-row-assistant]'));
     log('fixture written');
     await mainShots(app, log, pay);
+    await attachmentShots(app, join(profile, 'pick.png'));
     if (wanted('settings-agent')) await agentShots(app, log, profile);
   } catch (error) {
     missing.push(`main worker: ${error.message}`);
@@ -817,6 +889,34 @@ const mainWorker = async () => {
     await app?.quit();
     if (profile) rmSync(profile, { recursive: true, force: true });
   }
+};
+
+/** M15a: the image bubble states and the composer's attach row (fixture rows, no chain). */
+const attachmentShots = async (app, pickPath) => {
+  const openSofia = async () => {
+    if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== SOFIA.username) await openRow(app, SOFIA.username);
+  };
+  const status = s => `document.querySelectorAll('[data-testid=attachment-item][data-status=${s}]').length`;
+
+  await app.shot('room-attachment', async () => {
+    await openSofia();
+    const shown = `${status('ready')} >= 2 && ${status('downloading')} >= 1 && ${status('uploading')} >= 1 && document.querySelectorAll('[data-testid=attachment-image]').length >= 2`;
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('the image bubbles did not show their states');
+    // The decoded images paint a frame later than the rows.
+    await app.waitFor(`[...document.querySelectorAll('[data-testid=attachment-image]')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-sunset"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('composer-attach', async () => {
+    await openSofia();
+    // The Paperclip's file picker, filled over CDP as a person's choice would.
+    const input = (await app.send('Runtime.evaluate', { expression: `document.querySelector('[data-testid=composer-attach-input]')` })).result?.result;
+    if (!input?.objectId) throw new Error('no Paperclip file input');
+    await app.send('DOM.enable');
+    await app.send('DOM.setFileInputFiles', { files: [pickPath], objectId: input.objectId });
+    if (!(await app.waitFor(`${app.exists('[data-testid=attach-row]')} && ${app.exists('[data-testid=attach-notice]')}`, 10_000))) throw new Error('no attach row with its notice');
+    await app.type('textarea[aria-label=Message]', 'For the trip album');
+  });
 };
 
 const mainShots = async (app, log, pay) => {

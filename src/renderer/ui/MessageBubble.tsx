@@ -22,6 +22,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/cn';
 
+import { AttachmentBody } from './Attachments';
 import { type ButtonPosition, ButtonKeyboard, type KeyboardActions, UrlConfirmStrip } from './ButtonKeyboard';
 import { ReferenceBody } from './Transactions';
 import { type ForwardTarget, useChatActions } from './chatActionsContext';
@@ -209,7 +210,9 @@ const textOf = (row: MessageRow): string | null =>
     ? row.content.text
     : row.content.type === 'richText'
       ? row.content.text
-      : null;
+      : row.content.type === 'attachment'
+        ? row.content.caption
+        : null;
 
 const Bubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null, sender = null, stream, onGrow }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -260,6 +263,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
     if (actions?.body) return actions.body;
+    if (row.content.type === 'attachment') return <AttachmentBody row={row} own={own} />;
     if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} line={actions?.referenceText ?? null} />;
     // One element from the first streamed word to the finished reply (M12d): completion must not re-create it.
     if (markdown) return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;

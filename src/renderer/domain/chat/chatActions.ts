@@ -18,6 +18,9 @@ export const MAX_PINNED = 5;
 /** A nickname is a short label. */
 export const MAX_NICKNAME_CHARS = 64;
 
+/** Spec 0012: the local copies of the attachments of removed messages go too. */
+const dropAttachments = (messageIds: readonly string[]) => (messageIds.length === 0 ? Promise.resolve(0) : db.attachments.where('messageId').anyOf([...messageIds]).delete());
+
 const messagesUpTo = (peer: PeerId, at: number) => db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, at], true, true);
 
 /** The room follows what is left: the newest row's preview, or an empty line. */
@@ -35,9 +38,11 @@ const refreshRoom = async (peer: PeerId, extra: { unreadCount?: number; markedUn
  * (with the session): if the peer writes again, the room comes back.
  */
 export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
-  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups], async () => {
+  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups, db.attachments], async () => {
     const group = isGroupPeer(peer);
-    await (group ? db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, Infinity]) : messagesUpTo(peer, at)).delete();
+    const rows = group ? db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, Infinity]) : messagesUpTo(peer, at);
+    await dropAttachments(await rows.primaryKeys());
+    await rows.delete();
     await db.drafts.delete(peer);
     await db.pendingDeletions.where('[peerAccountId+createdAt]').between([peer, -Infinity], [peer, Infinity]).delete();
     if (group) await db.groups.delete(groupIdOf(peer));
@@ -48,7 +53,8 @@ export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
 
 /** "Clear history" once its Undo time is up: messages up to `at`; the contact, the session and the room stay. */
 export const clearHistoryLocally = (peer: PeerId, at: number): Promise<void> =>
-  appDatabase.transaction('rw', db.rooms, db.messages, async () => {
+  appDatabase.transaction('rw', db.rooms, db.messages, db.attachments, async () => {
+    await dropAttachments(await messagesUpTo(peer, at).primaryKeys());
     await messagesUpTo(peer, at).delete();
     await refreshRoom(peer, { unreadCount: 0, markedUnread: false });
   });

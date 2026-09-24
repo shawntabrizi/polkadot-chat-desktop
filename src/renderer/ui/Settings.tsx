@@ -277,9 +277,9 @@ const PrivacySection = () => {
 };
 
 /** The totals main keeps (M12e); the manager's own count outside Electron. */
-const useDiagnostics = (submissions: NonNullable<Props['submissions']>): SubmissionCounts => {
+const useDiagnostics = (submissions: NonNullable<Props['submissions']>): SubmissionCounts & { bulletinTransactions?: number } => {
   const local = useSyncExternalStore(submissions.subscribe, submissions.snapshot);
-  const [totals, setTotals] = useState<SubmissionCounts | null>(null);
+  const [totals, setTotals] = useState<(SubmissionCounts & { bulletinTransactions?: number }) | null>(null);
   useEffect(() => {
     const api = window.desktop?.diagnostics;
     if (!api) return;
@@ -317,6 +317,12 @@ const DiagnosticsSection = ({ submissions }: { submissions: NonNullable<Props['s
         <div className="flex items-baseline justify-between gap-4">
           <dt className="text-body-s text-fg-secondary">Delivery acknowledgements (not counted above)</dt>
           <dd className="text-body-s text-fg-secondary tabular-nums">{counts.acknowledgements}</dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-body-s text-fg-secondary">Bulletin transactions (attachments; feeless, not statements)</dt>
+          <dd className="text-body-s text-fg-secondary tabular-nums" data-testid="bulletin-transactions">
+            {counts.bulletinTransactions ?? 0}
+          </dd>
         </div>
       </dl>
       <p className="text-body-s text-fg-tertiary">Since the app started. Every submission is checked and passed on by every network node.</p>
