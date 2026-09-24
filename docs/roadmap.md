@@ -15,6 +15,7 @@ Goal: an agent-native, Telegram-quality chat client on Polkadot's encrypted rail
 | M12e | Chat management: delete, withdraw, archive, pin, unread, clear, nickname, forward, blocked list; lenient buttons parsing | none | a request to a silent bot can be removed |
 | M12f | Meter header shows one spendable number (`pending` on the balance hint, spec 0008 v3) | 0008 v3 | header = `/balance` |
 | M12g | Payments in chat: send PAS to a peer; request PAS with a `tx` button; paid matching by reference note (owner ask 2026-09-24) | none (0006 + 0007 reused; `note` convention `req:<id>`) | two people settle a request on devnet |
+| M12i | Demo mode (owner ask 2026-09-24): after sign-up and in Settings, one button starts chats with the demo bot fleet on the owner's VPS; built-in manifest with optional URL | none | a fresh identity has 6 chats within a minute |
 | M12h | Fix round: faster screenshot passes, pcdflip heartbeat noise, typing e2e window count | none | full screenshot pass under 3 min |
 | M13 | Publish the local agent as an on-chain peer | none | a phone user chats with the desktop's agent |
 
