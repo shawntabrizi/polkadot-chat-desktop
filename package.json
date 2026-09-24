@@ -15,6 +15,7 @@
     "smoke": "npm run build && electron out/main/index.js --smoke",
     "package": "npm run build && electron-builder --mac --arm64",
     "smoke:packaged": "bash scripts/smoke-packaged.sh",
+    "smoke:reopen": "bash scripts/smoke-reopen.sh",
     "postinstall": "node -e \"const fs = require('fs'); const d = 'node_modules/electron/dist'; process.exit(fs.existsSync(d) && fs.readdirSync(d).length > 0 ? 0 : 1)\" || node node_modules/electron/install.js",
     "prepare": "papi generate",
     "identity:register": "node scripts/identity-register.mjs",
