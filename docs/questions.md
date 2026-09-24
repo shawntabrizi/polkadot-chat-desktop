@@ -125,6 +125,9 @@ Write the question, what you did meanwhile, and the date.
 
 ## Morning review (coordinator, 2026-09-24 night)
 
+- **Attachments phone interop: DECIDED 2026-09-24 (owner):** support both. Bulletin (0012) for groups and peers that advertise it; HOP for 1:1 chats with baseline clients (phones). The choice is made from a new capabilities message (spec 0013); a peer that never sends one is a baseline client. Receive always handles both.
+
+
 - **Guide bot image understanding:** DECIDED 2026-09-24 morning: all public Claude bots get `read,web` with workspace scope after two guards land in pca (per-peer staging wiped after the turn; web egress guard: private-range block + budgets). Never write or bash on public bots.
 
 
