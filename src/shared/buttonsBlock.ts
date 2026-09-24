@@ -88,6 +88,40 @@ export const validateButtons = (spec: unknown): Omit<ButtonsBlock, 'text'> | nul
   return { rows: out, oneShot: oneShot === true };
 };
 
+// Spec 0006 "Long labels" (2026-09-24): the lenient paths (a fenced block
+// found by extractButtonsBlock, a send_buttons tool call) fix labels before
+// the rules run, so one wordy label does not drop the whole keyboard. A label
+// over MAX_LABEL_CHARS code points becomes its first MAX_LABEL_CHARS - 1 plus
+// "…"; a missing or blank label becomes "Option N" (N counts buttons in row
+// order from 1). Anything else is left for validateButtons. The strict parser
+// and the wire encoder still refuse a label over the limit.
+export const fitLabel = (label: unknown, n: number): unknown => {
+  if (label === undefined || (typeof label === 'string' && label.trim() === '')) return `Option ${n}`;
+  if (typeof label !== 'string') return label;
+  const chars = [...label.trim()];
+  return chars.length > MAX_LABEL_CHARS ? `${chars.slice(0, MAX_LABEL_CHARS - 1).join('')}…` : label;
+};
+
+// { rows: [[button]] } -> the same with each button's label fitted. Any
+// other shape is returned as it is.
+export const fitLabels = (spec: unknown): unknown => {
+  if (spec == null || typeof spec !== 'object' || Array.isArray(spec)) return spec;
+  const { rows } = spec as { rows?: unknown };
+  if (!Array.isArray(rows)) return spec;
+  let n = 0;
+  const fitted = rows.map(row =>
+    Array.isArray(row)
+      ? row.map(button => {
+          n += 1;
+          return button != null && typeof button === 'object' && !Array.isArray(button)
+            ? { ...button, label: fitLabel((button as { label?: unknown }).label, n) }
+            : button;
+        })
+      : row,
+  );
+  return { ...spec, rows: fitted };
+};
+
 // A reply that ENDS with a ```buttons block -> { text, rows, oneShot }, where
 // text is the reply without the block. No block, or an invalid one -> null.
 export const parseButtonsBlock = (reply: unknown): ButtonsBlock | null => {
@@ -172,7 +206,7 @@ export const extractButtonsBlock = (reply: unknown): ExtractedButtons | null => 
     const start = match.index + lead.length;
     pieces.push(reply.slice(last, start));
     last = match.index + match[0].length;
-    const shaped = Array.isArray(spec) ? { rows: [spec] } : spec;
+    const shaped = fitLabels(Array.isArray(spec) ? { rows: [spec] } : spec);
     const buttons = spec === undefined ? null : validateButtons(shaped);
     if (buttons) best = buttons;
     else invalid.push(spec === undefined ? 'not JSON' : invalidReason(shaped));

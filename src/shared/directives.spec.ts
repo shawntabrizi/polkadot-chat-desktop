@@ -91,4 +91,28 @@ describe('the directive tools (M13)', () => {
     expect(code.directive).toBeNull();
     expect(code.invalid[0]).toContain('map(');
   });
+
+  // Spec 0006 "Long labels": the tool path shortens like the fenced path, so
+  // a wordy quiz still reaches the person as four buttons, and bot-core's
+  // strict wire rule (40) accepts the block the agent writes.
+  it('shortens sentence-long labels to 39 characters plus an ellipsis; a normal call is untouched', () => {
+    const answers = [
+      'The relay chain validates parachain blocks for shared security',
+      'Parachains each run their own separate validator set 🙂',
+      'Collators finalise every block on the relay chain directly',
+      'Nominators produce the blocks and validators only watch them',
+    ];
+    const quiz = directiveFromToolCalls([buttonsCall({ rows: [answers.map((label, i) => ({ label, action: { command: 'ABCD'[i] } }))] })], ['buttons']);
+    expect(quiz.invalid).toEqual([]);
+    const labels = quiz.directive?.rows.flat().map(button => button.label) ?? [];
+    expect(labels).toEqual(answers.map(answer => `${[...answer].slice(0, MAX_LABEL_CHARS - 1).join('')}…`));
+    expect(labels.every(label => [...label].length === MAX_LABEL_CHARS)).toBe(true);
+    expect(botCoreExtract(withDirectiveBlock('Which is true?', quiz.directive))?.rows?.flat()).toHaveLength(4);
+    // Bare strings: the label is shortened, the command keeps the whole answer.
+    const strings = directiveFromToolCalls([buttonsCall({ rows: [[answers[0]]] })], ['buttons']);
+    expect(strings.directive?.rows[0]?.[0]?.action).toEqual({ command: answers[0] });
+    const blank = directiveFromToolCalls([buttonsCall({ rows: [[{ label: '', action: { command: 'a' } }]] })], ['buttons']);
+    expect(blank.directive?.rows[0]?.[0]?.label).toBe('Option 1');
+    expect(directiveFromToolCalls([buttonsCall({ rows })], ['buttons']).directive?.rows).toEqual(rows);
+  });
 });

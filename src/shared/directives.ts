@@ -12,7 +12,7 @@
  * The wire format does not change. Browser-safe: no Node imports.
  */
 
-import { MAX_BUTTONS_PER_ROW, MAX_CALLBACK_BYTES, MAX_LABEL_CHARS, MAX_ROWS, validateButtons } from './buttonsBlock';
+import { MAX_BUTTONS_PER_ROW, MAX_CALLBACK_BYTES, MAX_LABEL_CHARS, MAX_ROWS, fitLabels, validateButtons } from './buttonsBlock';
 import { MAX_CALL_DATA, MAX_DESCRIPTION, MAX_TITLE, MAX_TX_CALLS, txIntentFromJson } from './txIntent';
 
 export const BUTTONS_TOOL = 'send_buttons';
@@ -191,7 +191,7 @@ export const directiveFromToolCalls = (calls: readonly ToolCall[], kinds: readon
   for (const call of calls) {
     const args = parseArguments(call.arguments);
     if (call.name === BUTTONS_TOOL && kinds.includes('buttons')) {
-      const shaped = isRecord(args) ? shapeButtonsArguments(args) : null;
+      const shaped = isRecord(args) ? (fitLabels(shapeButtonsArguments(args)) as Record<string, unknown>) : null;
       if (!shaped || !validateButtons(shaped)) {
         invalid.push(`${BUTTONS_TOOL}: arguments break the buttons rules (${call.arguments.slice(0, 120)})`);
         continue;

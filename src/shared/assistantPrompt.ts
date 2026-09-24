@@ -23,7 +23,11 @@ export const ASSISTANT_TOOLS_HINT =
   'A pressed command button sends its command text back to you as the user\'s next message, so you will know which one was chosen. ' +
   'Only "command" and "url" (https) actions work here.';
 
-export const SYSTEM_PROMPT = `${ASSISTANT_PERSONA} ${ASSISTANT_FENCE_HINT}`;
+/** Spec 0006 "Long labels": both prompts (the Assistant's, the published agent's) carry it, with or without tools. */
+export const BUTTON_LABELS_HINT =
+  'Labels are at most 40 characters: a few words, never a sentence; put the full text in the message and use short labels like A, B, C or the key words.';
+
+export const SYSTEM_PROMPT = `${ASSISTANT_PERSONA} ${ASSISTANT_FENCE_HINT} ${BUTTON_LABELS_HINT}`;
 
 /** The Assistant prompt for an engine that gets the buttons as a tool: the fenced wording goes, the tool wording comes. */
 export const withToolsHint = (systemPrompt: string): string => systemPrompt.replace(ASSISTANT_FENCE_HINT, ASSISTANT_TOOLS_HINT);

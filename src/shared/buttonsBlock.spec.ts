@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buttonsFallbackText, extractButtonsBlock, parseButtonsBlock, toButtonWire, validateButtons } from './buttonsBlock';
+import { MAX_LABEL_CHARS, buttonsFallbackText, extractButtonsBlock, parseButtonsBlock, toButtonWire, validateButtons } from './buttonsBlock';
 import { openableUrl } from './openUrl';
 
 const block = (json: unknown) => `Pick one\n\n\`\`\`buttons\n${typeof json === 'string' ? json : JSON.stringify(json)}\n\`\`\`\n`;
@@ -144,12 +144,44 @@ describe('extractButtonsBlock (lenient, shared with pca)', () => {
     };
     check(Array.from({ length: 5 }, (_, i) => ({ label: `B${i}`, action: { command: 'x' } })), /row 1 has 5 buttons/);
     check({ rows: Array.from({ length: 9 }, () => one) }, /9 rows/);
-    check([{ label: 'x'.repeat(41), action: { command: 'x' } }], /row 1 button 1/);
+    check([{ label: 41, action: { command: 'x' } }], /row 1 button 1/);
     check([{ label: 'Go', action: { url: 'http://insecure.example' } }], /row 1 button 1/);
     check({ rows: [one], oneShot: 'yes' }, /oneShot/);
     // A ```buttons fence is meant as buttons even when its JSON breaks.
     const notJson = extractButtonsBlock(`Text\n${fence('buttons', '{not json')}`);
     expect([notJson?.text, notJson?.rows, notJson?.invalid]).toEqual(['Text', null, ['not JSON']]);
+  });
+
+  // Spec 0006 "Long labels", seen live: a model put whole quiz answers in the
+  // labels and the person lost the keyboard. The answers are in the message;
+  // the buttons only have to be pressable.
+  it('shortens sentence-long quiz answers instead of dropping the keyboard', () => {
+    const answers = [
+      'The relay chain validates parachain blocks for shared security',
+      'Parachains each run their own separate validator set 🙂',
+      'Collators finalise every block on the relay chain directly',
+      'Nominators produce the blocks and validators only watch them',
+    ];
+    const quiz = { rows: [answers.map((label, i) => ({ label, action: { command: 'ABCD'[i] } }))] };
+    // The strict parser (the wire rule) still refuses a label over 40.
+    expect(parseButtonsBlock(block(quiz))).toBeNull();
+    const parsed = extractButtonsBlock(block(quiz));
+    expect(parsed?.invalid).toEqual([]);
+    const labels = parsed?.rows?.flat().map(button => button.label) ?? [];
+    expect(labels).toHaveLength(4);
+    for (const [i, label] of labels.entries()) {
+      // 39 code points of the answer, then the ellipsis: 40 in all.
+      expect([...label]).toHaveLength(MAX_LABEL_CHARS);
+      expect(label).toBe(`${[...answers[i]!].slice(0, MAX_LABEL_CHARS - 1).join('')}…`);
+    }
+    expect(parsed?.rows?.flat().map(button => button.action)).toEqual(['A', 'B', 'C', 'D'].map(command => ({ command })));
+  });
+
+  it('names a blank label "Option N" and leaves a normal keyboard untouched', () => {
+    const blank = extractButtonsBlock(fence('', [{ label: ' ', action: { command: 'a' } }, { action: { command: 'b' } }]));
+    expect(blank?.rows?.[0]?.map(button => button.label)).toEqual(['Option 1', 'Option 2']);
+    const normal = { rows: rowsOf(2, 2).map((row, r) => (r === 0 ? [{ label: 'x'.repeat(MAX_LABEL_CHARS), action: { command: 'max' } }, ...row] : row)) };
+    expect(extractButtonsBlock(block(normal))?.rows).toEqual(parseButtonsBlock(block(normal))?.rows);
   });
 });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BUTTONS_HINT } from 'polkadot-chat-agents/lib/agent-context.mjs';
 
+import { BUTTON_LABELS_HINT, SYSTEM_PROMPT, withToolsHint } from '../../shared/assistantPrompt';
 import { extractButtonsBlock } from '../../shared/buttonsBlock';
 import type { EngineRunResult } from '../assistant/engines/types';
 
@@ -51,6 +52,8 @@ describe('the published agent\'s brain (M13)', () => {
       expect(turn.directives).toEqual(['buttons', 'tx']);
       // With tools the fenced wording would contradict them.
       expect(turn.systemPrompt).not.toContain(BUTTONS_HINT);
+      // Spec 0006 "Long labels": short labels, the full text in the message.
+      expect(turn.systemPrompt).toContain(BUTTON_LABELS_HINT);
       return { text: 'Pick one.', directive: { rows: [[{ label: 'Red', action: { command: 'red' } }]], oneShot: false } };
     });
     const reply = await brain.answer('p', 'give me a choice');
@@ -64,9 +67,17 @@ describe('the published agent\'s brain (M13)', () => {
     const brain = brainWith(cli, async turn => {
       expect(turn.directives).toEqual([]);
       expect(turn.systemPrompt).toContain(BUTTONS_HINT);
+      expect(turn.systemPrompt).toContain(BUTTON_LABELS_HINT);
       return { text: 'ok' };
     });
     expect((await brain.answer('p', 'hi'))?.text).toBe('ok');
+  });
+
+  // The Assistant room says the same, with the fenced wording or the tool wording.
+  it('the Assistant prompt keeps the short-labels line with or without tools', () => {
+    expect(SYSTEM_PROMPT).toContain(BUTTON_LABELS_HINT);
+    expect(withToolsHint(SYSTEM_PROMPT)).toContain(BUTTON_LABELS_HINT);
+    expect(BUTTON_LABELS_HINT).toBe('Labels are at most 40 characters: a few words, never a sentence; put the full text in the message and use short labels like A, B, C or the key words.');
   });
 
   it('keeps each peer\'s earlier turns apart', async () => {

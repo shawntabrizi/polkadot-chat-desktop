@@ -17,7 +17,7 @@
 
 import { buildOperatorContext } from 'polkadot-chat-agents/lib/agent-context.mjs';
 
-import { ASSISTANT_PERSONA } from '../../shared/assistantPrompt';
+import { ASSISTANT_PERSONA, BUTTON_LABELS_HINT } from '../../shared/assistantPrompt';
 import { type DirectiveKind, withDirectiveBlock } from '../../shared/directives';
 import type { EngineRunResult, Turn } from '../assistant/engines/types';
 
@@ -94,6 +94,7 @@ export const systemPromptFor = ({ username, owner, engine }: { username: string;
       // With tools the buttons come as a tool call; the fenced wording is for text-only engines.
       buttons: !engine.tools,
     }),
+    BUTTON_LABELS_HINT,
   ].join('\n');
 
 export const createAgentBrain = (deps: AgentBrainDeps): AgentBrain => {
