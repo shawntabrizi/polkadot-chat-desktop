@@ -2721,3 +2721,141 @@ I looked at the day onboarding PNG (seven rows with avatar, name, tag chip and t
 ### git status --short
 
 This file is part of the commit, so the result is in the M12i hand-off report.
+
+## M12g (2026-09-24)
+
+Every app launch below set `PCD_HEADLESS=1` and a throwaway `PCD_USER_DATA_DIR` (smoke: `mktemp -d`; screenshots: the script makes its own profiles and removes them). The e2e scripts start no app (domain code over fake-indexeddb). Identities: this repo's test identities pcde2e (`pcdecejakd.11`, person a) and pcdeceb (`pcdeceb.89`, person b), devnet only. Both held more than 30 PAS, so no drip was needed. The pca bots were not touched.
+
+While I worked, another agent (M12i demo mode) edited the same working tree. The commands under "On the committed tree" ran in a clean worktree of exactly the M12g commit's tree; the e2e, smoke-before-commit and screenshot runs ran in the shared tree (the M12i files then were partial or absent).
+
+### npm run e2e:pay (third run)
+
+```
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b
+[a] READY username=pcdecejakd.11 free=34.4157 PAS
+[b] READY username=pcdeceb.89 free=38.482 PAS
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=5.2s
+[a] CHAT_REQUEST_SENT id=19da84d1-ab98-41df-b045-1ad91c7d5286 to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11
+[a] CONTACT pcdeceb.89 devices=1
+[a] REQUEST_SENT id=fc22b339-e7b2-4e7a-88fb-3abd1e819824 text="Requested 0.2 PAS · e2e lunch" free_before=34.4157 PAS
+[b] REQUEST_SEEN amount=0.2 title="Pay pcdecejakd.11 0.2 PAS" button="Pay 0.2 PAS" state=pending
+[b] DRYRUN ok=true value=0.2 PAS fee=0.0009 PAS
+[b] PAID hash=0x1fbced4e43653caf9fd9c29e5d7ee6e06857a26ebce292df652a1cc365ce34b4 block=13628911 note="req:fc22b339-e7b2-4e7a-88fb-3abd1e819824 e2e lunch" state=paid
+[a] REQUEST_PAID hash=0x1fbced4e43653caf9fd9c29e5d7ee6e06857a26ebce292df652a1cc365ce34b4 block=13628911 chain_moved=0.2 PAS line="pcdeceb.89 paid your request of 0.2 PAS · e2e lunch · in block #13628911"
+[a] BALANCE_OK before=34.4157 PAS after=34.6157 PAS delta=0.2 PAS expected=0.2
+[b] OVER_BALANCE_REFUSED amount=38.2811 PAS error="Not enough PAS: 38.2701 available after fees." id=null
+[b] DRYRUN ok=true value=0.1 PAS fee=0.0009 PAS
+[b] SENT hash=0x4eecf9f265184a668791fbada45ed6b963113fa58ca83bc5b54515bdcc4b0bcd block=13628914 line="Sent 0.1 PAS to pcdecejakd.11 · e2e direct · in block #13628914"
+[a] RECEIVED hash=0x4eecf9f265184a668791fbada45ed6b963113fa58ca83bc5b54515bdcc4b0bcd block=13628914 chain_moved=0.1 PAS line="pcdeceb.89 sent you 0.1 PAS · e2e direct · in block #13628914"
+[a] EXIT
+[b] EXIT
+BLOCKS request_paid=13628911 sent=13628914
+PAY_OK at=23.0s
+```
+
+The two block numbers: the request's payment is in block **#13628911** (hash 0x1fbced4e…34b4), the direct send in block **#13628914** (hash 0x4eecf9f2…0bcd). Run 2 of the same script (after the balance check moved before the chain's dry-run) also ended PAY_OK, blocks 13628722 and 13628725. Run 1 failed at OVER_BALANCE (`Token.NotExpendable` from the chain's dry-run instead of this app's message); that is the fix in `assetHub.ts`.
+
+### npm run e2e:typing
+
+```
+[ws] connected
+best block #7057351 (runtime ready in 2.1s)
+PEER 0x66b78abdcb4c89d2817ce45f201677c08240fde23c50b9c94a6abb6912888a63 key_type=0
+PREFS sendTyping=false readReceipts=true (a fresh profile: the defaults)
+REQUEST_SENT attempt=1
+ACCEPTED devices=1
+BOTINFO name="Captain Dot" version=1
+WORKING_LOCAL at=0.0s state={"kind":"working","until":1790219662846,"local":true}
+QUESTION_SENT 5d000fd0-e192-478f-b8c1-eabee469356a QUESTION_SUBMISSIONS 1
+SEEN_RECEIVED upTo=5d000fd0-e192-478f-b8c1-eabee469356a at=5.6s (before the reply)
+REPLY at=6.8s Why did the pirate captain love the blockchain, ye ask? Because every block be another treasure ches
+WORKING_CLEARED at=6.8s state=null
+READ_SUBMISSIONS 1 (inside the 5 s window: 0)
+COUNTS submissions=2 messages=1 acknowledgements=2 (this round)
+DIAGNOSTICS submissions=3 messages=1 acknowledgements=4 (whole run: request and accept included)
+BUDGET_OK
+```
+
+### PCD_HEADLESS=1 PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots -- --only send-pas,room-request,room-request-paid
+
+```
+2.0s built
+2.4s seeded pcdecejakd.11
+2.4s assistant engine claude
+6.3s request: "Requested 0.5 PAS · Concert tickets Pay 0.5 PAS 0.5 PAS Decline 11:03 PM 👍 ❤️ 😂 😮 😢 🙏 🔥 👏"
+7.2s saved berlin-day/room-request.png
+8.1s saved berlin-day/send-pas.png
+22.6s send strip: "Send 1.5 PAS to rubyfinch.23 Your ticket Amount 1.5 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 Balance after: 33.2148 PAS Cancel Sign"
+23.7s paid: "You requested 0.2 PAS e2e lunch Paid · in block #13628911" reference: "pcdeceb.89 paid your request of 0.2 PAS · e2e lunch · finalized in block #13628911 0x1fbc…34b4 Copy hash View on Subscan"
+24.5s saved berlin-day/room-request-paid.png
+28.7s request: "Requested 0.5 PAS · Concert tickets Pay 0.5 PAS 0.5 PAS Decline 11:04 PM 👍 ❤️ 😂 😮 😢 🙏 🔥 👏"
+29.5s saved berlin-night/room-request.png
+30.4s saved berlin-night/send-pas.png
+32.0s send strip: "Send 1.5 PAS to rubyfinch.23 Your ticket Amount 1.5 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 Balance after: 33.2148 PAS Cancel Sign"
+32.7s paid: "You requested 0.2 PAS e2e lunch Paid · in block #13628911" reference: "pcdeceb.89 paid your request of 0.2 PAS · e2e lunch · finalized in block #13628911 0x1fbc…34b4 Copy hash View on Subscan"
+33.6s saved berlin-night/room-request-paid.png
+34.1s seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/room-request.png
+  .agent-runs/screens/berlin-day/send-pas.png
+  .agent-runs/screens/berlin-day/room-request-paid.png
+  .agent-runs/screens/berlin-night/room-request.png
+  .agent-runs/screens/berlin-night/send-pas.png
+  .agent-runs/screens/berlin-night/room-request-paid.png
+SCREENSHOTS_OK
+```
+
+I looked at berlin-day/send-pas.png (amount row "Send PAS to rubyfinch.23", 1.5 PAS, note, Review), berlin-night/room-request.png ("Requested 0.5 PAS · Concert tickets", the tx button with the wallet icon and "0.5 PAS", Decline beside it) and berlin-day/room-request-paid.png ("You requested 0.2 PAS", "Paid · in block #13628911", and "pcdeceb.89 paid your request of 0.2 PAS · e2e lunch · finalized in block #13628911"). The first run of this command missed room-request and room-request-paid: the M12d action cache dropped the new fields (fixed, see Decisions).
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) npm run smoke (shared tree, before the commit)
+
+```
+SMOKE_OK
+```
+
+### On the committed tree: npm run check
+
+Run in a clean worktree of the M12g tree (without the M12i files). Under a load average of 25–36 (a runaway process, later stopped by the coordinator) the same two timing tests of `messages.spec.ts` failed in each of several runs, as they did on the unchanged HEAD. I did not change those tests. At 23:32, load average 7.19, the whole check passed. Last 10 lines:
+
+```
+ Test Files  65 passed (65)
+      Tests  547 passed (547)
+   Start at  23:32:17
+   Duration  16.46s (transform 2.67s, setup 956ms, import 10.73s, tests 35.01s, environment 3ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (152 files)
+```
+
+### On the committed tree: PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) npm run smoke
+
+```
+SMOKE_OK
+```
+
+### Combined tree (HEAD 88043de: M12g + M12i): npm run check, load average 3.81
+
+```
+ Test Files  68 passed (68)
+      Tests  566 passed (566)
+   Start at  23:33:27
+   Duration  16.38s (transform 2.57s, setup 1.09s, import 10.65s, tests 34.89s, environment 3ms)
+
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (155 files)
+```
+
+`docs/milestones/M12g.check.sh` runs after the commit (it needs a clean tree); its output is in the hand-off report.
+
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12g hand-off report. The M12i agent committed while my hunks were staged, so the M12g code is in b9b0c88 and 88043de (see questions.md "## M12g"). The runs below "On the committed tree" used a tree whose M12g files are identical to HEAD's (checked file by file); the combined tree is checked under "Combined tree".
