@@ -169,6 +169,35 @@ describe('createAssistantChat', () => {
     chat.dispose();
   });
 
+  // M12d: each delta written to Dexie re-read and re-rendered the whole room.
+  it('keeps the streaming text in memory at once and writes Dexie at most every 500 ms', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('hello');
+    let writes = 0;
+    const count = () => {
+      writes++;
+    };
+    db.messages.hook('updating', count);
+    try {
+      for (let i = 0; i < 20; i++) fake.delta('reply-1', `${i} `);
+      expect(chat.stream.text('reply-1')).toBe(Array.from({ length: 20 }, (_, i) => `${i} `).join(''));
+      await new Promise(done => setTimeout(done, 100));
+      expect(writes).toBe(0);
+      await vi.waitFor(async () => expect(text(await db.messages.get('reply-1'))).toBe(chat.stream.text('reply-1')));
+      expect(writes).toBe(1);
+      fake.done('reply-1');
+      await vi.waitFor(async () => expect((await db.messages.get('reply-1'))?.status).toBe('received'));
+      // A delta after the end does not bring the reply back to "streaming".
+      fake.delta('reply-1', 'late');
+      await new Promise(done => setTimeout(done, 600));
+      expect((await db.messages.get('reply-1'))?.status).toBe('received');
+    } finally {
+      db.messages.hook('updating').unsubscribe(count);
+      chat.dispose();
+    }
+  });
+
   it('keeps the partial text of a broken reply and adds the reason as a notice', async () => {
     const fake = fakeApi();
     const chat = createAssistantChat(fake.api);

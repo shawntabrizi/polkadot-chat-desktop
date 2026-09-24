@@ -578,6 +578,7 @@ export const Room = (props: Props) => {
         deleting={deleting}
         reveal={prefs.revealReplies}
         jumpTo={scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null}
+        stream={assistant?.stream}
       />
       {error ? (
         <p role="alert" className="px-4 text-body-s text-fg-error">

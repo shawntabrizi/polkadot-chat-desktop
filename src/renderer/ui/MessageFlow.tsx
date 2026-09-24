@@ -2,9 +2,10 @@
 // (2026-09-23); the context menu is the bubble's DropdownMenu.
 
 import { ArrowDown, MessagesSquare } from 'lucide-react';
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { MessageRow, RequestRow } from '../app/database';
+import type { ReplyStream } from '../domain/assistant/replyStream';
 import { isLiveFrame } from '../domain/chat/content';
 import { compareGroupRows } from '../domain/chat/groups';
 import { Badge } from '@/components/ui/badge';
@@ -12,6 +13,7 @@ import { cn } from '@/lib/cn';
 
 import { type BubbleActions, DateSeparator, GreetingRow, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
 import { formatDay } from './format';
+import { createActionCache, createRowCache } from './stableProps';
 
 type Props = {
   rows: readonly MessageRow[];
@@ -42,6 +44,8 @@ type Props = {
    * above the first bubble of each run; a run ends where the sender changes.
    */
   senderOf?: (row: MessageRow) => string | null;
+  /** The Assistant's streaming replies, painted from memory (M12d). */
+  stream?: ReplyStream;
 };
 
 type DayGroup = { day: string; rows: MessageRow[] };
@@ -74,7 +78,7 @@ const FOLLOW_SLACK_PX = 80;
 const JUMP_HIGHLIGHT_MS = 1500;
 
 export const MessageFlow = ({
-  rows,
+  rows: liveRows,
   peerName,
   requests,
   assistant,
@@ -88,6 +92,7 @@ export const MessageFlow = ({
   reveal = false,
   jumpTo = null,
   senderOf,
+  stream,
 }: Props) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -99,6 +104,10 @@ export const MessageFlow = ({
   const [flashId, setFlashId] = useState<string | null>(null);
   const handledJump = useRef<number | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Same row and actions objects while nothing of a row changed: the bubbles are memoized.
+  const [rowCache] = useState(createRowCache);
+  const [actionCache] = useState(createActionCache);
+  const rows = useMemo(() => rowCache.stabilize(liveRows), [rowCache, liveRows]);
   const byId = new Map(rows.map(row => [row.messageId, row]));
   const last = rows.at(-1);
   // Follow the bottom as rows arrive and as a streamed reply grows.
@@ -178,6 +187,12 @@ export const MessageFlow = ({
     setFarFromBottom(distance > element.clientHeight);
   };
 
+  // A streaming reply grows between row changes: follow it when at the bottom.
+  const onGrow = useCallback(() => {
+    const element = scrollRef.current;
+    if (element && nearBottom.current) element.scrollTop = element.scrollHeight;
+  }, []);
+
   const jumpToBottom = () => {
     const element = scrollRef.current;
     if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
@@ -246,8 +261,10 @@ export const MessageFlow = ({
                           live={!assistant && row.direction === 'incoming' && isLiveFrame(row.content)}
                           deleting={deleting?.has(row.messageId) ?? false}
                           reveal={reveal}
-                          actions={actionsFor(row)}
+                          actions={actionCache.get(row.messageId, actionsFor(row))}
                           note={noteFor?.(row) ?? null}
+                          stream={stream}
+                          onGrow={onGrow}
                         />
                       </div>
                     </div>

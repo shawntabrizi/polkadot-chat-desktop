@@ -3,9 +3,10 @@
 // system tokens and shadcn DropdownMenu; no tr-ui.
 
 import { Check, CheckCheck, CircleAlert, Clock, Copy, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, memo, useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
+import type { ReplyStream } from '../domain/assistant/replyStream';
 import { keyboardOf, liveFrameText, previewOf } from '../domain/chat/content';
 import { renderMarkdown } from '../domain/markdown/markdown';
 import { Button } from '@/components/ui/button';
@@ -167,7 +168,13 @@ type Props = {
   note?: string | null;
   /** A group room (spec 0009): who sent this incoming message; shown on the first bubble of a run. */
   sender?: string | null;
+  /** The Assistant's in-memory reply text: a streaming reply paints from here, not from its row (M12d). */
+  stream?: ReplyStream;
+  /** Called after a streaming reply painted more text, so the room can follow the bottom. */
+  onGrow?: () => void;
 };
+
+const noSubscription = () => () => undefined;
 
 const textOf = (row: MessageRow): string | null =>
   row.content.type === 'text' || row.content.type === 'reply' || row.content.type === 'buttons'
@@ -176,13 +183,28 @@ const textOf = (row: MessageRow): string | null =>
       ? row.content.text
       : null;
 
-export const MessageBubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null, sender = null }: Props) => {
+const Bubble = ({ row, quote, first, last, thinking = false, live = false, deleting = false, reveal = false, actions, note = null, sender = null, stream, onGrow }: Props) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirm, setConfirm] = useState<(ButtonPosition & { url: string }) | null>(null);
   const own = row.direction === 'outgoing';
-  const text = textOf(row);
+  const streaming = row.status === 'streaming';
+  // A streaming Assistant reply: its text comes from memory, repainted once per frame.
+  const streamId = stream && streaming && !own ? row.messageId : null;
+  const subscribe = useCallback((listener: () => void) => (stream && streamId ? stream.subscribe(streamId, listener) : noSubscription()), [stream, streamId]);
+  const snapshot = () => (stream && streamId ? stream.text(streamId) : undefined);
+  const streamed = useSyncExternalStore(subscribe, snapshot, snapshot);
+  const text = streamed ?? textOf(row);
   const deleted = row.content.type === 'deleted';
-  const painted = useTypingReveal({ text: text ?? '', live, streaming: row.status === 'streaming' }, reveal && !own);
+  const markdown = !own && (row.content.type === 'text' || row.content.type === 'buttons');
+  // A reply still arriving: a client directive fence (```buttons) is never shown raw.
+  const view = markdown && streaming ? streamingView(text ?? '') : null;
+  const painted = useTypingReveal({ text: view ? view.text : (text ?? ''), live, streaming }, reveal && !own);
+  // Incoming text (contacts, bots and the Assistant write markdown) renders as
+  // markdown, sanitized by renderMarkdown; parsed again only when the painted text changes.
+  const html = useMemo(() => (markdown ? renderMarkdown(painted) : ''), [markdown, painted]);
+  useLayoutEffect(() => {
+    if (streamId) onGrow?.();
+  }, [streamId, painted, onGrow]);
   // Reactions on a deleted message are not shown (RFC-0003).
   const reactions = deleted || live ? [] : countReactions(row.reactions);
   const quiet = cn('text-body-m italic', own ? 'text-fg-tertiary-inverted' : 'text-fg-tertiary');
@@ -193,7 +215,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     : cn('rounded-container', !first && 'rounded-ss-small', last ? 'rounded-es-xs' : 'rounded-es-small');
 
   const body = (() => {
-    if (thinking) return <span className="animate-pulse text-body-m text-fg-tertiary">Thinking…</span>;
+    if (thinking && !text) return <span className="animate-pulse text-body-m text-fg-tertiary">Thinking…</span>;
     if (live && text !== null) {
       return (
         <p className="animate-pulse text-body-m whitespace-pre-wrap text-fg-tertiary" data-testid="live-frame">
@@ -210,22 +232,8 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
     if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} />;
-    if (row.content.type === 'text' && !own && row.status === 'streaming') {
-      // A reply still arriving: a client directive fence (```buttons) is never shown raw.
-      const view = streamingView(painted);
-      return (
-        <>
-          {view.text ? <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(view.text) }} /> : null}
-          {view.placeholder ? <KeyboardPlaceholder /> : null}
-          {view.block ? <ButtonKeyboard rows={keyboardOf(view.block.rows.map(r => r.map(toButtonWire)))} keyboard={null} onAskUrl={() => undefined} confirming={null} /> : null}
-        </>
-      );
-    }
-    if ((row.content.type === 'text' || row.content.type === 'buttons') && !own) {
-      // Incoming text (contacts, bots and the Assistant write markdown) renders as
-      // markdown, sanitized by renderMarkdown; own messages stay plain.
-      return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(painted) }} />;
-    }
+    // One element from the first streamed word to the finished reply (M12d): completion must not re-create it.
+    if (markdown) return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
     if (row.content.type === 'richText') {
       return (
         <>
@@ -247,6 +255,17 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     row.content.type === 'buttons' && !(row.content.oneShot && row.content.pressed) && row.content.rows.some(r => r.length > 0)
       ? row.content.rows
       : null;
+  // One place for the buttons: the placeholders and the keyboard of a
+  // streaming reply, then the finished keyboard, in the same slot, so
+  // completion updates the keyboard instead of mounting a new one.
+  const streamedRows = view?.block ? keyboardOf(view.block.rows.map(r => r.map(toButtonWire))) : null;
+  const keyboardSlot = deleting ? null : view?.placeholder ? (
+    <KeyboardPlaceholder />
+  ) : streamedRows ? (
+    <ButtonKeyboard rows={streamedRows} keyboard={null} onAskUrl={() => undefined} confirming={null} />
+  ) : keyboardRows ? (
+    <ButtonKeyboard rows={keyboardRows} keyboard={actions?.keyboard ?? null} onAskUrl={(position, url) => setConfirm({ ...position, url })} confirming={confirm} />
+  ) : null;
 
   const toolbar = actions ? (
     <div
@@ -341,14 +360,7 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
             </div>
           ) : null}
           <div className="min-w-0 break-words">{body}</div>
-          {keyboardRows && !deleting ? (
-            <ButtonKeyboard
-              rows={keyboardRows}
-              keyboard={actions?.keyboard ?? null}
-              onAskUrl={(position, url) => setConfirm({ ...position, url })}
-              confirming={confirm}
-            />
-          ) : null}
+          {keyboardSlot}
           {live ? null : (
             <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
               {row.editedAt && !deleted ? <span>(edited)</span> : null}
@@ -412,3 +424,21 @@ export const MessageBubble = ({ row, quote, first, last, thinking = false, live 
     </div>
   );
 };
+
+/** The quote is built fresh by the room on every render; equal text is the same quote. */
+const sameProps = (a: Props, b: Props): boolean => {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof Props)[]);
+  for (const key of keys) {
+    if (key === 'quote') {
+      if (a.quote?.sender !== b.quote?.sender || a.quote?.text !== b.quote?.text) return false;
+    } else if (!Object.is(a[key], b[key])) return false;
+  }
+  return true;
+};
+
+/**
+ * Memoized (M12d step 2): a room re-renders on every change of any row, and
+ * a bubble re-renders only when its own props change (MessageFlow keeps rows
+ * and actions stable).
+ */
+export const MessageBubble = memo(Bubble, sameProps);

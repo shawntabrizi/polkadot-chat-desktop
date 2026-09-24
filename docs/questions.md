@@ -109,3 +109,7 @@ Write the question, what you did meanwhile, and the date.
 - **Polkadot.js Apps and accounts.** It has no page for one account, so the Pocket's "View on Polkadot.js Apps" is disabled with a reason. Should it open something else (for example the chain state page), or is disabled right?
 - **The Pocket's Copy button** has the same "Copied" that never resets. It was not in the owner's report; fix it the same way in a later milestone?
 - **Step 10 is only in docs/decisions.md.** I could not append it to `docs/milestones/M12c.md` (AGENTS.md forbids edits there and the edit was refused). Please add it there if the milestone file should be complete.
+
+## M12d (2026-09-24)
+
+- **What machine was the recording on?** On this Mac the old code shows no long task at normal CPU speed; the stalls show at 4x and 6x CPU throttling (5 and 68 long tasks). After the change there are none at 1x, 4x or 6x. If the owner's machine is fast, the choppiness in the recording came mostly from the restarted reveal and the re-rendered room; please say if a stall remains on the owner's machine.

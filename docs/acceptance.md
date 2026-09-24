@@ -2318,3 +2318,123 @@ SCREENSHOTS_OK
 ### git status --short
 
 This file is part of the commit, so the result is in the M12c hand-off report.
+
+## M12d (2026-09-24)
+
+All commands ran on this machine. Headless: `npm run smoke` and `scripts/measure-stream.mjs` ran with `PCD_HEADLESS=1` and throwaway `PCD_USER_DATA_DIR` profiles; the Node e2e scripts use no Electron. `e2e:typing` ran against the live pca bot (not started, stopped or changed).
+
+### npm run check
+
+```
+ Test Files  59 passed (59)
+      Tests  480 passed (480)
+   Start at  21:38:54
+   Duration  16.43s (transform 2.16s, setup 912ms, import 9.71s, tests 34.00s, environment 3ms)
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (142 files)
+```
+
+Specs that encode the fix (each fails on the old code; checked by running them with the old renderer files):
+
+- `MessageFlow.spec.tsx` "re-renders only the streaming bubble on a delta, also when the text is written to Dexie": 10 deltas, one `act` each, then 700 ms (past a Dexie write), in a room of 60.
+- `MessageFlow.spec.tsx` "completes a reply that ends in a buttons block without typing it again or re-creating it": the painted text right after completion is the whole streamed text, and the markdown element and the keyboard element are the same objects.
+- `MessageFlow.spec.tsx` "completes with a closing text that starts with what streamed by appending only".
+- `MessageFlow.spec.tsx` "a bot's live frame replaced by its answer": revealed from its start, once (step 5).
+- `reveal.spec.ts` `revealStart`, `stableProps.spec.ts`, and `assistant.spec.ts` "keeps the streaming text in memory at once and writes Dexie at most every 500 ms".
+
+### Render counts (MessageFlow.spec.tsx, 10 deltas, room of 60 + question + reply)
+
+| | renders of other bubbles | renders of the streaming bubble |
+|---|---|---|
+| before | 610 (61 per delta) | 20 |
+| after | 0 | 21 (2 per delta: the reveal's state-from-render pass, plus the Dexie write) |
+
+Before, from the spec run on the old renderer files: `AssertionError: 610 renders of other bubbles for 10 deltas`.
+
+### Long tasks: node scripts/measure-stream.mjs
+
+A 1398-character markdown reply (list, code block, closing ```buttons block) in 280 deltas at 50 per second from a local fake proxy, into the Assistant room holding 60 messages; window from Send to 2.5 s after the stream ended. `--cpu-throttle N` is CDP `Emulation.setCPUThrottlingRate`. Before = the renderer files of f7b2e8c (stashed), same script.
+
+```
+== BEFORE
+STREAM 280 deltas in 5.9 s, 1398 chars, room of 60, CPU throttle 1x
+LONG_TASKS 0 (total 0 ms, max 0 ms)
+SLOW_FRAMES 0 of 1055 (max gap 25 ms)
+SHRINKS 1 (largest 1190 chars)
+STREAM 280 deltas in 5.8 s, 1398 chars, room of 60, CPU throttle 4x
+LONG_TASKS 5 (total 316 ms, max 67 ms)
+SLOW_FRAMES 7 of 636 (max gap 68 ms)
+SHRINKS 1 (largest 1190 chars)
+STREAM 280 deltas in 5.8 s, 1398 chars, room of 60, CPU throttle 6x
+LONG_TASKS 68 (total 4275 ms, max 106 ms)
+SLOW_FRAMES 74 of 534 (max gap 107 ms)
+SHRINKS 1 (largest 1190 chars)
+== AFTER
+STREAM 280 deltas in 5.9 s, 1398 chars, room of 60, CPU throttle 1x
+LONG_TASKS 0 (total 0 ms, max 0 ms)
+SLOW_FRAMES 0 of 1053 (max gap 9 ms)
+SHRINKS 0 (largest 0 chars)
+KEYBOARD shown
+STREAM 280 deltas in 5.8 s, 1398 chars, room of 60, CPU throttle 4x
+LONG_TASKS 0 (total 0 ms, max 0 ms)
+SLOW_FRAMES 0 of 1037 (max gap 17 ms)
+SHRINKS 0 (largest 0 chars)
+KEYBOARD shown
+STREAM 280 deltas in 5.8 s, 1398 chars, room of 60, CPU throttle 6x
+LONG_TASKS 0 (total 0 ms, max 0 ms)
+SLOW_FRAMES 0 of 1043 (max gap 25 ms)
+SHRINKS 0 (largest 0 chars)
+KEYBOARD shown
+```
+
+`SHRINKS 1 (largest 1190 chars)` before is the second reveal: at completion the painted reply fell back to its first 40 characters. An earlier 4x run of the old code gave 12 long tasks (703 ms, max 77 ms); the counts vary between runs, the zero after does not (three runs at 4x and 6x). The window was visible to the page (`document.visibilityState` "visible"), so the typing reveal ran.
+
+### npm run smoke
+
+```
+✓ built in 181ms
+SMOKE_OK
+```
+
+### npm run e2e:assistant
+
+```
+proxy https://llm.substrate.dev model auto/deepseek-v4.1-flash
+prompt: Reply with exactly: proxy ok
+reply: proxy ok
+deltas 1, 8 chars
+ASSISTANT_OK
+```
+
+This e2e drives the main-process proxy client only; the renderer's stream path is covered by the specs and `measure-stream.mjs` above.
+
+### npm run e2e:typing
+
+The tail (repeated `[identity] lookup timed out … asking once more in 5 s` lines before the accept are cut):
+
+```
+[ws] disconnected
+[ws] connecting
+[ws] connected
+[chat] connection restored, rebuilding sessions
+ACCEPTED devices=1
+BOTINFO name="Captain Dot" version=1
+WORKING_LOCAL at=0.0s state={"kind":"working","until":1790214103041,"local":true}
+QUESTION_SENT 99febd5a-e6f2-4a2d-8395-9fac8b5a79a7 QUESTION_SUBMISSIONS 1
+SEEN_RECEIVED upTo=99febd5a-e6f2-4a2d-8395-9fac8b5a79a7 at=7.3s (before the reply)
+REPLY at=8.3s What do ye call a pirate's collection of building blocks? A treasure trove of squares, ye scurvy dog
+WORKING_CLEARED at=8.3s state=null
+READ_SUBMISSIONS 1 (inside the 5 s window: 1)
+COUNTS submissions=2 messages=1 acknowledgements=3 (this round)
+DIAGNOSTICS submissions=3 messages=1 acknowledgements=4 (whole run: request and accept included)
+BUDGET_OK
+```
+
+This milestone did not change the chat manager; the run confirms the budget is unchanged. The line "inside the 5 s window: 1" differs from the M12c run (0); the script still passed, and it is noted here, not investigated (outside this milestone).
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12d hand-off report.

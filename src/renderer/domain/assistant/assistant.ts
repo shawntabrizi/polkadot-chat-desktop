@@ -20,6 +20,8 @@ import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '..
 import { parseButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
+import { type ReplyStream, createReplyStream } from './replyStream';
+
 export const ASSISTANT_PEER: AssistantPeerId = 'local:assistant';
 export const ASSISTANT_USERNAME = 'Assistant';
 export const SYSTEM_PROMPT =
@@ -44,6 +46,12 @@ export const replyContent = (text: string): MessageContent => {
   );
   return { type: 'buttons', text: block.text, rows, oneShot: block.oneShot, pressed: null };
 };
+/**
+ * How often a streaming reply's text goes to Dexie (M12d). The bubble paints
+ * from memory (`AssistantChat.stream`); the row is for history and restarts.
+ */
+export const PERSIST_MS = 500;
+
 /** How many earlier messages of the room go with a new one as context. */
 export const CONTEXT_TURNS = 30;
 
@@ -95,6 +103,8 @@ export type AssistantChat = {
    * so the next turn starts fresh from the room, which leaves tombstones out.
    */
   deleteMessage: (messageId: string) => Promise<void>;
+  /** The text of each streaming reply, for its bubble to paint (M12d). */
+  stream: ReplyStream;
   /** The current tool line (useSyncExternalStore). */
   activity: () => AssistantActivityLine;
   onActivity: (listener: () => void) => () => void;
@@ -138,10 +148,16 @@ export const activityTitle = (title: string): string => {
 };
 
 export const createAssistantChat = (api: Api, now: () => number = Date.now): AssistantChat => {
-  // Reply text so far, per reply id. Dexie is written from here, one write at
-  // a time (`queue`), with the latest text: a burst of deltas makes one write.
+  // Reply text so far, per reply id. The bubble paints it from `stream`;
+  // Dexie is written from here at most every PERSIST_MS, one write at a time
+  // (`queue`), with the latest text.
   const replies = new Map<string, { text: string; timestamp: number }>();
-  const dirty = new Set<string>();
+  const stream = createReplyStream();
+  const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const cancelPersist = (messageId: string) => {
+    clearTimeout(persistTimers.get(messageId));
+    persistTimers.delete(messageId);
+  };
   // Replies that already ended: a late `send` answer must not bring them back.
   const ended = new Set<string>();
   // A reply sorts after the message it answers, even within one millisecond.
@@ -207,19 +223,24 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   });
 
   const stopDelta = api.onDelta(event => {
-    if (event.conversationId !== ASSISTANT_PEER) return;
-    track(event.messageId, lastSentAt).text += event.text;
-    if (dirty.has(event.messageId)) return;
-    dirty.add(event.messageId);
-    void queue(async () => {
-      dirty.delete(event.messageId);
-      await writeReply(event.messageId, 'streaming');
-    });
+    if (event.conversationId !== ASSISTANT_PEER || ended.has(event.messageId)) return;
+    const reply = track(event.messageId, lastSentAt);
+    reply.text += event.text;
+    stream.set(event.messageId, reply.text);
+    if (persistTimers.has(event.messageId)) return;
+    persistTimers.set(
+      event.messageId,
+      setTimeout(() => {
+        persistTimers.delete(event.messageId);
+        void queue(() => writeReply(event.messageId, 'streaming'));
+      }, PERSIST_MS),
+    );
   });
 
   const stopDone = api.onDone(event => {
     if (event.conversationId !== ASSISTANT_PEER) return;
     endActivity(event.messageId);
+    cancelPersist(event.messageId);
     void queue(async () => {
       const reply = track(event.messageId, lastSentAt);
       // A CLI's closing text is the answer; what streamed before it may
@@ -238,6 +259,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   const stopError = api.onError(event => {
     if (event.conversationId !== ASSISTANT_PEER) return;
     endActivity(event.messageId);
+    cancelPersist(event.messageId);
     void queue(async () => {
       const reply = replies.get(event.messageId);
       if (reply?.text) await writeReply(event.messageId, 'failed');
@@ -315,6 +337,8 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   return {
     send: async text => {
       if (await runCommand(text)) return;
+      // Ended replies are painted from their rows now; their in-memory text can go.
+      stream.forget(ended);
       const earlier = await listMessages(ASSISTANT_PEER);
       const outgoing: MessageRow = {
         messageId: randomId(),
@@ -357,6 +381,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       // The CLI session still holds the deleted text; do not resume it.
       await writeSetting('assistant.session', '');
     },
+    stream,
     activity: () => activity,
     onActivity: listener => {
       activityListeners.add(listener);
@@ -367,6 +392,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       stopDelta();
       stopDone();
       stopError();
+      for (const id of [...persistTimers.keys()]) cancelPersist(id);
     },
   };
 };
