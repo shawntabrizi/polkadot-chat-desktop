@@ -405,3 +405,7 @@ thumbnail.
    chat-spec.
 9. **Gateway deprecation.** Bulletin docs mark HTTP gateways deprecated; the
    fallback order may need a Helia or smoldot path later.
+
+### Source order (measured on devnet 2026-09-24)
+
+`bitswap_v1_get` returns a 200 KB chunk in 2–4 s but a 2 MB chunk in 30–33 s; the gateway returns 2 MB in 6–8 s. Clients SHOULD try bitswap first for chunks up to 512 KB and the gateway first above that, falling back to the other; the privacy note stands (a gateway learns which CIDs a client asks for).
