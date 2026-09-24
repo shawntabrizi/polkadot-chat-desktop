@@ -1,13 +1,14 @@
 // Layout from .refs/polkadot-desktop/src/features/chat/ui/partials/MessageInput.tsx
 // (2026-09-23): a growing field, a round send button, a reply/edit card above.
 
-import { SendHorizontal, Square, X } from 'lucide-react';
-import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
+import { Plus, SendHorizontal, Square, X } from 'lucide-react';
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import type { SendKey } from '../app/chatPrefs';
 import { isPrimaryModifier } from '../app/keyboard';
 import type { BotCommand } from '../domain/chat/content';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/cn';
 
@@ -39,7 +40,13 @@ type Props = {
   commands?: readonly BotCommand[];
   /** Spec 0007: a signing strip is open, and its Sign is the room's one primary control; Send steps down. */
   quietSend?: boolean;
+  /** M12g: the "+" menu before the field (Send PAS, Request PAS). None: no "+". */
+  plusMenu?: readonly PlusItem[];
+  /** M12g: inline content above the field (the amount row, a send's signing strip). */
+  panel?: ReactNode;
 };
+
+export type PlusItem = { label: string; icon: ReactNode; onSelect: () => void; testId: string };
 
 /**
  * The command menu over the composer (M10 step 3). An inline list, not a
@@ -98,6 +105,8 @@ export const Composer = ({
   sendButton = 'icon',
   commands = [],
   quietSend = false,
+  plusMenu = [],
+  panel = null,
 }: Props) => {
   const field = useRef<HTMLTextAreaElement>(null);
 
@@ -208,7 +217,24 @@ export const Composer = ({
           </Button>
         </div>
       ) : null}
+      {panel}
       <div className="flex items-end gap-2">
+        {plusMenu.length > 0 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="size-10 shrink-0 rounded-full font-normal" aria-label="More actions" data-testid="composer-plus">
+                <Plus className="size-5 text-fg-secondary" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="top" data-testid="composer-plus-menu">
+              {plusMenu.map(item => (
+                <DropdownMenuItem key={item.testId} onSelect={item.onSelect} data-testid={item.testId}>
+                  {item.icon} {item.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
         <Textarea
           ref={field}
           value={draft}

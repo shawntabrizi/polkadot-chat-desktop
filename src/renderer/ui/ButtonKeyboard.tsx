@@ -4,6 +4,7 @@
 // under the bubble, not a modal, and names the host (§11).
 
 import { ExternalLink, LoaderCircle, Wallet } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 import type { ChatButton, TxStatus } from '../domain/chat/content';
 import { Button } from '@/components/ui/button';
@@ -21,6 +22,10 @@ export type KeyboardActions = {
   active: { row: number; index: number; busy: boolean } | null;
   /** Spec 0007: the state of the transaction a `tx` button of this keyboard started. */
   tx?: { row: number; index: number; status: TxStatus } | null;
+  /** M12g: a button that is done ("Paid", "Declined"): this label, disabled. */
+  done?: { row: number; index: number; label: string } | null;
+  /** M12g: client chrome after the last button (a request's Decline); not a spec 0006 button. */
+  extra?: ReactNode;
 };
 
 export type ButtonPosition = { row: number; index: number };
@@ -50,6 +55,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
           const active = same(keyboard?.active ?? null, r, i) || same(confirming, r, i);
           const busy = keyboard?.active?.busy === true && same(keyboard.active, r, i);
           const txStatus = keyboard?.tx && same(keyboard.tx, r, i) ? keyboard.tx.status : null;
+          const done = keyboard?.done && same(keyboard.done, r, i) ? keyboard.done.label : null;
           const control = (
             <Button
               type="button"
@@ -57,7 +63,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
               variant={active && action.kind !== 'tx' ? 'default' : 'secondary'}
               size="sm"
               className="h-auto min-h-8 max-w-full min-w-0 grow cursor-pointer rounded-medium py-1.5 text-label-m disabled:cursor-not-allowed"
-              disabled={!runnable || !keyboard}
+              disabled={!runnable || !keyboard || done !== null}
               aria-pressed={active}
               aria-busy={busy}
               data-testid="keyboard-button"
@@ -70,7 +76,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
             >
               {busy ? <LoaderCircle className="size-3.5 animate-spin" aria-label="Waiting for the answer" /> : null}
               {action.kind === 'tx' && !busy ? <Wallet className="size-4" aria-hidden /> : null}
-              <span className="truncate">{button.label}</span>
+              <span className="truncate">{done ?? button.label}</span>
               {txView?.caption ? (
                 <span className="shrink-0 text-body-s text-fg-secondary" data-testid="tx-caption">
                   {txView.caption}
@@ -80,6 +86,8 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
               {txStatus && !busy ? <TxStatusIcon status={txStatus} /> : null}
             </Button>
           );
+          // Done: the state is the label; no tooltip, no press.
+          if (done !== null) return <div key={i} className="flex max-w-full min-w-0 grow" data-testid="keyboard-done">{control}</div>;
           if (runnable && !txView) return <div key={i} className="flex max-w-full min-w-0 grow">{control}</div>;
           if (runnable) {
             return (
@@ -103,6 +111,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
             </Tooltip>
           );
         })}
+        {r === rows.length - 1 ? (keyboard?.extra ?? null) : null}
       </div>
     ))}
   </div>

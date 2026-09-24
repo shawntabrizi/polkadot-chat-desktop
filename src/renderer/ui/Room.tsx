@@ -1,14 +1,29 @@
-import { Bell, BellOff } from 'lucide-react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ArrowDownLeft, ArrowUpRight, Bell, BellOff } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 
-import type { HexString } from '../app/bytes';
+import { type HexString, bytesToHex } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { BANNER_DELAY_MS, type ConnectionSnapshot, showsBanner } from '../app/connectionState';
 import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/database';
 import { ASSISTANT_COMMANDS, ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
+import {
+  type PaymentRequest,
+  cleanNote,
+  declineText,
+  pas,
+  payerState,
+  paymentLine,
+  paymentRequestOf,
+  requestPaymentNote,
+  requestProblem,
+  requesterState,
+  sendIntent,
+  sendNote,
+  sendPaymentRequest,
+} from '../domain/chain/payments';
 import type { TxRunner } from '../domain/chain/transactions';
-import { type TxStatus, isLiveFrame } from '../domain/chat/content';
+import { type TxReference, type TxStatus, isLiveFrame, requestIdOfNote } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { PeerTyping } from '../domain/chat/signals';
 import type { ChatManager } from '../domain/chat/manager';
@@ -20,7 +35,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
-import type { AssistantSettings } from '../../shared/desktop-api';
+import type { AssistantSettings, ChainTransfer } from '../../shared/desktop-api';
 import { type BalanceHint, decodeUint256, headerParts, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf, spendable } from '../../shared/balanceHint';
 import { CALL_KIND_REVIVE, type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
@@ -31,6 +46,7 @@ import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader, TypingLine } from './RoomHeader';
 import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
+import { AmountRow, type PaymentKind, RequestBody } from './Payments';
 import { type StripPhase, TxStrip } from './Transactions';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
@@ -53,6 +69,8 @@ type Props = ({ peer: HexString; manager: ChatManager } | { peer: AssistantPeerI
   transactions?: TxRunner | null;
   /** The identity: its account (the bot's balance hint) and username (the strip's "Signs as"). */
   self?: { accountId: Uint8Array; username: string } | null;
+  /** M12g: the genesis of the Asset Hub this app signs on; null hides Send and Request PAS. */
+  assetHubChainId?: string | null;
 };
 
 type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
@@ -68,8 +86,17 @@ const CALLBACK_WAIT_MS = 10_000;
 /** Any other press is highlighted this long. */
 const PRESS_FLASH_MS = 1_000;
 
-/** The one signing strip of the room (spec 0007 rate limit): which button, the intent, where it is. */
-type Strip = { messageId: string; row: number; index: number; bytes: Uint8Array; intent: TxIntent; state: StripPhase; outcome: string | null };
+/**
+ * The one signing strip of the room (spec 0007 rate limit): which button, the
+ * intent, where it is. `paymentNote`: the note of a request's payment (M12g).
+ */
+type Strip = { messageId: string; row: number; index: number; bytes: Uint8Array; intent: TxIntent; state: StripPhase; outcome: string | null; paymentNote: string | null };
+
+/** M12g: the strip of a "Send PAS", in the composer area (it answers no message). */
+type SendStrip = { intent: TxIntent; amount: bigint; note: string; state: StripPhase; outcome: string | null };
+
+/** What the chain said a reference's transaction moved, by hash and block. */
+const transferKey = (reference: TxReference): string => `${reference.hash.toLowerCase()}:${reference.block ?? ''}`;
 
 /**
  * Spec 0008 v2: reads `hint.selector(caller)` on the hint's contract at the
@@ -172,7 +199,7 @@ const NicknameEditor = ({ initial, onDone }: { initial: string; onDone: (value: 
 };
 
 export const Room = (props: Props) => {
-  const { peer, connection, scrollToMessageId = null, scrollRequest = 0, transactions = null, self = null } = props;
+  const { peer, connection, scrollToMessageId = null, scrollRequest = 0, transactions = null, self = null, assetHubChainId = null } = props;
   const manager = 'manager' in props ? props.manager : null;
   const assistant = 'assistant' in props ? props.assistant : null;
   const contact = useLiveQuery(async () => (manager ? db.contacts.get(peer as HexString) : undefined), [peer, manager]);
@@ -199,6 +226,12 @@ export const Room = (props: Props) => {
   // The `tx` button each keyboard started a transaction from (this session).
   const [txButtons, setTxButtons] = useState<ReadonlyMap<string, { row: number; index: number }>>(() => new Map());
   const [hintValue, setHintValue] = useState<bigint | null>(null);
+  // M12g: the amount row, a send's strip, and what the chain said about payments to us.
+  const [payment, setPayment] = useState<PaymentKind | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [sendStrip, setSendStrip] = useState<SendStrip | null>(null);
+  const [transfers, setTransfers] = useState<ReadonlyMap<string, readonly ChainTransfer[]>>(() => new Map());
+  const checking = useRef(new Set<string>());
 
   const activityStore = assistant ? { subscribe: assistant.onActivity, snapshot: assistant.activity } : noActivity;
   const activity = useSyncExternalStore(activityStore.subscribe, activityStore.snapshot);
@@ -294,7 +327,7 @@ export const Room = (props: Props) => {
     if (!action || action.kind === 'unsupported') return;
     setError(null);
     if (action.kind === 'tx') {
-      openStrip(row.messageId, r, i, action.intent);
+      openStrip(row.messageId, r, i, action.intent, paymentRequestOf(row));
       return;
     }
     const current: PressState = { messageId: row.messageId, row: r, index: i, busy: action.kind === 'callback', since: lastIncomingId };
@@ -317,14 +350,18 @@ export const Room = (props: Props) => {
   };
 
   // ── Spec 0007: the signing strip. One per room; a dry-run always comes first.
-  const openStrip = (messageId: string, r: number, i: number, bytes: Uint8Array) => {
-    if (strip?.state.phase === 'signing') {
+  const signingNow = strip?.state.phase === 'signing' || sendStrip?.state.phase === 'signing';
+  const openStrip = (messageId: string, r: number, i: number, bytes: Uint8Array, request: PaymentRequest | null) => {
+    if (signingNow) {
       setError('A transaction is being signed in this chat. Wait for it, then try again.');
       return;
     }
     const intent = decodeTxIntent(bytes);
     if (!intent) return;
-    const opened: Strip = { messageId, row: r, index: i, bytes, intent, state: { phase: 'checking' }, outcome: null };
+    const paymentNote = request && !request.own ? requestPaymentNote(request.messageId, request.note) : null;
+    const opened: Strip = { messageId, row: r, index: i, bytes, intent, state: { phase: 'checking' }, outcome: null, paymentNote };
+    // One strip per room: a send's strip closes.
+    setSendStrip(null);
     setStrip(opened);
     const update = (next: Partial<Strip>) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, ...next } : current));
     const chain = window.desktop?.chain;
@@ -334,11 +371,17 @@ export const Room = (props: Props) => {
     }
     // A call that pays into the bot's declared contract: the strip says what the balance becomes.
     const paid = balanceHint ? valueToHint(intent, balanceHint) : null;
-    Promise.all([chain.dryRun(bytes), paid !== null && balanceHint && self ? readHintValue(balanceHint, self.accountId).catch(() => null) : Promise.resolve(null)])
-      .then(([dryRun, current]) => {
+    Promise.all([
+      chain.dryRun(bytes),
+      paid !== null && balanceHint && self ? readHintValue(balanceHint, self.accountId).catch(() => null) : Promise.resolve(null),
+      // M12g: a request is paid only when its call pays the person who sent it.
+      paymentNote && request ? requestProblem(request, peer, chain.transferCall) : Promise.resolve(null),
+    ])
+      .then(([dryRun, current, problem]) => {
         // From the header's number (M12f: less what the bot has not charged yet), so the two agree.
         const outcome = paid !== null && balanceHint && current !== null ? `After this: ${hintLine(balanceHint, spendable(balanceHint, current) + paid)}` : null;
-        update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
+        if (problem) update({ state: { phase: 'refused', reason: problem, dryRun }, outcome });
+        else update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
       })
       .catch((cause: unknown) => update({ state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } }));
   };
@@ -350,8 +393,8 @@ export const Room = (props: Props) => {
     if (!dryRun.id) return;
     setStrip({ ...current, state: { phase: 'signing', dryRun } });
     const { display } = current.intent;
-    // "Top up (1 PAS)": what it was, and how much.
-    const note = display.amount ? `${display.title} (${display.amount}${display.asset ? ` ${display.asset}` : ''})` : display.title;
+    // "Top up (1 PAS)": what it was, and how much. A request's payment names the request (M12g).
+    const note = current.paymentNote ?? (display.amount ? `${display.title} (${display.amount}${display.asset ? ` ${display.asset}` : ''})` : display.title);
     try {
       await transactions.run({ peer: peer as HexString, dryRunId: dryRun.id, chainId: current.intent.chainId, note, intentMessageId: current.messageId });
       setTxButtons(map => new Map(map).set(current.messageId, { row: current.row, index: current.index }));
@@ -375,11 +418,156 @@ export const Room = (props: Props) => {
     const button = txButtons.get(row.messageId);
     const status = button ? txStatusOf(row.messageId) : null;
     const open = strip?.messageId === row.messageId && (strip.state.phase === 'checking' || strip.state.phase === 'signing');
-    return {
+    const keyboard = {
       press: (r: number, i: number) => void pressButton(row, r, i),
       active: open && strip ? { row: strip.row, index: strip.index, busy: true } : press?.messageId === row.messageId ? { row: press.row, index: press.index, busy: press.busy } : null,
       tx: button && status ? { ...button, status } : null,
     };
+    const request = manager ? requestsById.get(row.messageId) : undefined;
+    if (!request) return keyboard;
+    // M12g, the payer's side of a request: "Paid" or "Declined" once done (from the rows, so it survives a restart), else Decline beside Pay.
+    const payer = payerState(request, messages ?? [], Date.now());
+    const done = payer.state === 'paid' ? 'Paid' : payer.state === 'declined' ? 'Declined' : null;
+    return {
+      ...keyboard,
+      tx: payer.status ? { row: 0, index: 0, status: payer.status } : keyboard.tx,
+      done: done ? { row: 0, index: 0, label: done } : null,
+      extra:
+        payer.state === 'pending' && !open ? (
+          <Button type="button" variant="ghost" size="sm" className="h-auto min-h-8 cursor-pointer rounded-medium py-1.5 text-label-m font-normal" onClick={() => void decline(request)} data-testid="request-decline">
+            Decline
+          </Button>
+        ) : null,
+    };
+  };
+
+  const decline = async (request: PaymentRequest) => {
+    if (!manager) return;
+    setError(null);
+    if (strip?.messageId === request.messageId && strip.state.phase !== 'signing') setStrip(null);
+    try {
+      // Plain text, so a phone sees it too; the rows then say "declined" on both sides.
+      await manager.sendMessage(peer as HexString, { type: 'text', text: declineText(request.title) });
+    } catch (cause) {
+      setError(`${plainError(cause, 'The decline was not sent.')} Try again.`);
+    }
+  };
+
+  // ── M12g: requests and payments in this room.
+  const requestsById = useMemo(() => {
+    const found = new Map<string, PaymentRequest>();
+    for (const row of messages ?? []) {
+      const request = paymentRequestOf(row);
+      if (request) found.set(row.messageId, request);
+    }
+    return found;
+  }, [messages]);
+  const selfHex = self ? bytesToHex(self.accountId) : null;
+
+  // A peer's reference that claims to pay one of our requests: read what the
+  // chain moved in that extrinsic (once per hash and block). "Paid" rests on this.
+  useEffect(() => {
+    const chain = window.desktop?.chain;
+    if (!chain || !manager) return;
+    for (const row of messages ?? []) {
+      if (row.direction !== 'incoming' || row.content.type !== 'transactionReference') continue;
+      const reference = row.content.reference;
+      const requestId = requestIdOfNote(reference.note);
+      if (!requestId || !requestsById.get(requestId)?.own || reference.block === null) continue;
+      if (reference.status !== 'inBlock' && reference.status !== 'finalized') continue;
+      const key = transferKey(reference);
+      if (transfers.has(key) || checking.current.has(key)) continue;
+      checking.current.add(key);
+      chain.transfersOf(reference.hash, reference.block).then(
+        found => setTransfers(current => new Map(current).set(key, found)),
+        (cause: unknown) => console.warn('[room] payment check failed', cause),
+      ).finally(() => checking.current.delete(key));
+    }
+  }, [messages, requestsById, transfers, manager]);
+
+  const paymentViewFor = (row: MessageRow): { body?: React.ReactNode; referenceText?: string | null } => {
+    if (!manager) return {};
+    if (row.content.type === 'transactionReference') {
+      const reference = row.content.reference;
+      const requestId = requestIdOfNote(reference.note);
+      const requested = requestId ? (requestsById.get(requestId)?.amount ?? null) : null;
+      return { referenceText: paymentLine(reference, row.direction === 'outgoing', name, requested) };
+    }
+    const request = row.direction === 'outgoing' ? requestsById.get(row.messageId) : undefined;
+    if (!request || !selfHex) return {};
+    const state = requesterState(request, messages ?? [], reference => transfers.get(transferKey(reference)), { self: selfHex, peer }, Date.now());
+    return { body: <RequestBody request={request} state={state.state} checking={state.checking} block={state.paidBy?.block ?? null} /> };
+  };
+
+  const chainForPayments = manager && transactions && self && assetHubChainId && contact ? window.desktop?.chain : undefined;
+
+  const openPayment = (kind: PaymentKind) => {
+    setError(null);
+    setPayment(kind);
+  };
+
+  // "Send PAS" → Review: the local intent, then the same dry-run and strip as a `tx` button.
+  const reviewSend = async (amount: bigint, note: string) => {
+    const chain = chainForPayments;
+    if (!chain || !assetHubChainId) return;
+    if (signingNow) {
+      setError('A transaction is being signed in this chat. Wait for it, then try again.');
+      return;
+    }
+    setPaymentBusy(true);
+    setError(null);
+    try {
+      const bytes = await sendIntent(chain.transferCall, { peer, peerName: name, chainId: assetHubChainId, amount, note });
+      const intent = decodeTxIntent(bytes);
+      if (!intent) throw new Error('The transfer could not be built.');
+      const opened: SendStrip = { intent, amount, note: cleanNote(note), state: { phase: 'checking' }, outcome: null };
+      setStrip(null);
+      setPayment(null);
+      setSendStrip(opened);
+      const update = (next: Partial<SendStrip>) => setSendStrip(current => (current?.intent === intent ? { ...current, ...next } : current));
+      const [dryRun, balance] = await Promise.all([chain.dryRun(bytes), chain.balance().catch(() => null)]);
+      const outcome = dryRun.ok && dryRun.fee && balance ? `Balance after: ${pas(BigInt(balance.free) - amount - BigInt(dryRun.fee))} PAS` : null;
+      update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
+    } catch (cause) {
+      setSendStrip(current => (current ? { ...current, state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } } : current));
+      if (!sendStrip) setError(`${plainError(cause, 'The transfer could not be prepared.')} Try again.`);
+    } finally {
+      setPaymentBusy(false);
+    }
+  };
+
+  const signSend = async () => {
+    if (!sendStrip || sendStrip.state.phase !== 'ready' || !transactions) return;
+    const { dryRun } = sendStrip.state;
+    const current = sendStrip;
+    if (!dryRun.id) return;
+    setSendStrip({ ...current, state: { phase: 'signing', dryRun } });
+    try {
+      await transactions.run({ peer: peer as HexString, dryRunId: dryRun.id, chainId: current.intent.chainId, note: sendNote(current.amount, current.note), intentMessageId: null });
+      // The reference bubble takes over.
+      setSendStrip(s => (s?.intent === current.intent ? null : s));
+    } catch (cause) {
+      setSendStrip(s => (s?.intent === current.intent ? { ...s, state: { phase: 'refused', reason: plainError(cause, 'It was not signed.'), dryRun } } : s));
+    }
+  };
+
+  // "Request PAS" → Send request: a buttons message whose tx button pays us.
+  const sendRequest = async (amount: bigint, note: string) => {
+    const chain = chainForPayments;
+    if (!chain || !manager || !self || !assetHubChainId) return;
+    setPaymentBusy(true);
+    setError(null);
+    try {
+      await sendPaymentRequest(
+        { transferCall: chain.transferCall, sendButtons: manager.sendButtons },
+        { peer: peer as HexString, self: { accountHex: bytesToHex(self.accountId), username: self.username }, chainId: assetHubChainId, amount, note },
+      );
+      setPayment(null);
+    } catch (cause) {
+      setError(`${plainError(cause, 'The request was not sent.')} Try again.`);
+    } finally {
+      setPaymentBusy(false);
+    }
   };
 
   const unread = room?.unreadCount ?? 0;
@@ -496,6 +684,7 @@ export const Room = (props: Props) => {
         : {};
     }
     const keyboard = keyboardFor(row);
+    const payments = paymentViewFor(row);
     const below =
       strip && strip.messageId === row.messageId ? (
         <TxStrip
@@ -512,6 +701,7 @@ export const Room = (props: Props) => {
       ...(keyboard ? { keyboard } : {}),
       ...(below ? { below } : {}),
       ...(forward ? { forward } : {}),
+      ...payments,
       react: emoji => void toggleReaction(row, emoji),
       reply: () => setMode({ mode: 'reply', target: row }),
       edit: isEditable(row) ? () => startEdit(row) : undefined,
@@ -709,7 +899,36 @@ export const Room = (props: Props) => {
           onEditLast={lastOwnText ? () => startEdit(lastOwnText) : undefined}
           // Commands only for a new message: an edit or a reply is not one.
           commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
-          quietSend={strip !== null}
+          quietSend={strip !== null || sendStrip !== null}
+          plusMenu={
+            chainForPayments
+              ? [
+                  { label: 'Send PAS', icon: <ArrowUpRight />, onSelect: () => openPayment('send'), testId: 'plus-send-pas' },
+                  { label: 'Request PAS', icon: <ArrowDownLeft />, onSelect: () => openPayment('request'), testId: 'plus-request-pas' },
+                ]
+              : []
+          }
+          panel={
+            payment ? (
+              <AmountRow
+                key={payment}
+                kind={payment}
+                peerName={name}
+                busy={paymentBusy}
+                onSubmit={(amount, note) => void (payment === 'send' ? reviewSend(amount, note) : sendRequest(amount, note))}
+                onCancel={() => setPayment(null)}
+              />
+            ) : sendStrip ? (
+              <TxStrip
+                intent={sendStrip.intent}
+                state={sendStrip.state}
+                signerName={self?.username ?? 'this account'}
+                outcome={sendStrip.outcome}
+                onSign={() => void signSend()}
+                onCancel={() => setSendStrip(null)}
+              />
+            ) : null
+          }
         />
       )}
     </>

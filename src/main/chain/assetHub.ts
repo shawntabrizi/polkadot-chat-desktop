@@ -17,21 +17,21 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { assetHubPaseo } from '@polkadot-api/descriptors';
-import { compact } from '@polkadot-api/substrate-bindings';
+import { MultiAddress, assetHubPaseo } from '@polkadot-api/descriptors';
+import { AccountId, compact } from '@polkadot-api/substrate-bindings';
 import { ss58Address } from '@polkadot-labs/hdkd-helpers';
-import { type PolkadotClient, type TxEvent, createClient } from 'polkadot-api';
+import { type PolkadotClient, type TxEvent, createClient, getTypedCodecs } from 'polkadot-api';
 import { getTxCreator } from 'polkadot-api/tx-creator';
 import { getWsProvider } from 'polkadot-api/ws';
 import type { Subscription } from 'rxjs';
 
 import { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } from '../../shared/chainRead';
-import type { AccountBalance, BestBlock, TxDryRun, TxStatusEvent } from '../../shared/desktop-api';
+import type { AccountBalance, BestBlock, ChainTransfer, TxDryRun, TxStatusEvent } from '../../shared/desktop-api';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 import { CALL_KIND_REVIVE, type TxCall, type TxIntent, decodeTxIntent, formatUnits, intentProblem } from '../../shared/txIntent';
 import { metadataCache } from '../metadataCache';
 
-import { type TrackerChain, createTxTracker } from './txTracker';
+import { type TrackerChain, createTxTracker, extrinsicHash } from './txTracker';
 
 const typedApi = (client: PolkadotClient) => client.getTypedApi(assetHubPaseo);
 type Tx = ReturnType<ReturnType<typeof typedApi>['tx']['Revive']['map_account']>;
@@ -182,6 +182,45 @@ async function buildTx(chain: AssetHubChain, origin: string, intent: TxIntent, n
   return { tx, mapsAccount, returnData };
 }
 
+// ── Balances (M12g) ─────────────────────────────────────────────────────────
+
+/**
+ * Why the signer cannot pay `value` plus `fee` and keep the existential
+ * deposit (a keep-alive transfer must leave it); null when it can. The
+ * number is what could still be sent: the spendable balance less the fee
+ * and the deposit ("Not enough PAS: 0.4 available after fees").
+ */
+export const balanceProblem = (spendable: bigint, fee: bigint, value: bigint, existentialDeposit: bigint): string | null => {
+  if (value + fee + existentialDeposit <= spendable) return null;
+  const available = spendable - fee - existentialDeposit;
+  return `Not enough PAS: ${formatUnits(available > 0n ? available : 0n)} available after fees.`;
+};
+
+/** `twox128("System") ++ twox128("Events")`: the storage key of the block's events. */
+const SYSTEM_EVENTS_KEY = '0x26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7';
+
+/** The event codecs of the generated descriptors, built once. */
+let codecsOnce: ReturnType<typeof getTypedCodecs<typeof assetHubPaseo>> | null = null;
+const eventCodecs = () => (codecsOnce ??= getTypedCodecs(assetHubPaseo));
+
+/** The part of a decoded `System.Events` record this module reads. */
+export type ChainEvent = {
+  phase: { type: string; value?: unknown };
+  event: { type: string; value: { type: string; value: unknown } };
+};
+
+const accountHex = AccountId();
+
+/** The `Balances.Transfer` events of extrinsic `index`, accounts as 0x-hex. */
+export const balanceTransfers = (events: readonly ChainEvent[], index: number): ChainTransfer[] =>
+  events
+    .filter(record => record.phase.type === 'ApplyExtrinsic' && record.phase.value === index)
+    .filter(record => record.event.type === 'Balances' && record.event.value.type === 'Transfer')
+    .map(record => {
+      const { from, to, amount } = record.event.value.value as { from: string; to: string; amount: bigint };
+      return { from: hex(accountHex.enc(from)), to: hex(accountHex.enc(to)), amount: String(amount) };
+    });
+
 // ── The service: dry-run, sign, watch ───────────────────────────────────────
 
 export type TxService = {
@@ -200,6 +239,18 @@ export type TxService = {
   contractRead: (chainId: string, address: string, calldata: Uint8Array) => Promise<Uint8Array>;
   /** The signer's account at the best block, planck as decimal strings (M11b balance chip). */
   balance: () => Promise<AccountBalance>;
+  /**
+   * M12g: the SCALE call data of `Balances.transfer_keep_alive(to, amount)`
+   * on this chain (`to`: a 32-byte account). The renderer puts it in a
+   * `TxIntent`; the call is still dry-run before anything is signed.
+   */
+  transferCall: (to: Uint8Array, amount: bigint) => Promise<Uint8Array>;
+  /**
+   * M12g: the `Balances.Transfer` events of the extrinsic `hash` in block
+   * `block` of the best chain: what the chain says the transaction moved.
+   * Empty when the block does not hold it, or it moved nothing.
+   */
+  transfersOf: (hash: string, block: number) => Promise<ChainTransfer[]>;
   /** Every new best block of this chain (number), once each; returns the unsubscribe function. */
   onBestBlock: (listener: (block: BestBlock) => void) => () => void;
   /**
@@ -242,6 +293,16 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
   };
   const tracker = createTxTracker(trackerChainOf(chain), emit);
 
+  // A runtime constant: read once per connection.
+  let deposit: Promise<bigint> | null = null;
+  const existentialDeposit = (): Promise<bigint> => {
+    deposit ??= read(chain, 'existential deposit', () => chain.api.constants.Balances.ExistentialDeposit()).catch((cause: unknown) => {
+      deposit = null;
+      throw cause;
+    });
+    return deposit;
+  };
+
   const needsMapping = async (): Promise<boolean> => {
     if (mapped) return false;
     mapped = await isMapped(chain, origin);
@@ -269,15 +330,7 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     const built = await buildTx(chain, origin, intent, await needsMapping());
     if ('revert' in built) return refusal(`The test run failed: ${built.revert}.`, { value: String(value) });
     const { tx, mapsAccount, returnData } = built;
-    // The whole extrinsic (batch and all), as the signer's origin, at the best block.
-    const dry = await read(chain, 'dry-run', () =>
-      chain.api.apis.DryRunApi.dry_run_call({ type: 'system', value: { type: 'Signed', value: origin } } as never, tx.decodedCall as never, 5, AT_BEST),
-    );
     const base = { signer: origin, mapsAccount, returnData: returnData ? hex(returnData) : null, value: String(value) };
-    if (!dry.success) return refusal('The chain could not test this action.', base);
-    if (!dry.value.execution_result.success) {
-      return refusal(`The test run failed: ${dispatchErrorText(dry.value.execution_result.value.error as DispatchErrorLike)}.`, base);
-    }
     // The fee of this exact extrinsic, with a placeholder signature, at the best block.
     const fake = await tx.create(getTxCreator(signer.publicKey, 'Sr25519', () => new Uint8Array(64)), { customSignedExtensions: CUSTOM_EXTENSIONS } as never);
     // `create` returns the extrinsic with its length prefix; the typed API adds
@@ -285,10 +338,19 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     const inner = fake.slice(compact.enc(compact.dec(fake)).length);
     const info = await read(chain, 'fee', () => chain.api.apis.TransactionPaymentApi.query_info(inner, fake.length, AT_BEST));
     const fee = info.partial_fee;
+    // The balance before the chain's test (M12g): the chain would refuse an
+    // over-balance transfer too, but only as "Token.NotExpendable"; people get
+    // what they could send instead.
     const account = await read(chain, 'balance', () => chain.api.query.System.Account.getValue(origin, AT_BEST));
-    const spendable = account.data.free - account.data.frozen;
-    if (spendable < fee + value) {
-      return refusal(`Not enough PAS: you have ${formatUnits(spendable)}, this needs about ${formatUnits(fee + value)}.`, { ...base, fee: String(fee) });
+    const shortfall = balanceProblem(account.data.free - account.data.frozen, fee, value, await existentialDeposit());
+    if (shortfall) return refusal(shortfall, { ...base, fee: String(fee) });
+    // The whole extrinsic (batch and all), as the signer's origin, at the best block.
+    const dry = await read(chain, 'dry-run', () =>
+      chain.api.apis.DryRunApi.dry_run_call({ type: 'system', value: { type: 'Signed', value: origin } } as never, tx.decodedCall as never, 5, AT_BEST),
+    );
+    if (!dry.success) return refusal('The chain could not test this action.', { ...base, fee: String(fee) });
+    if (!dry.value.execution_result.success) {
+      return refusal(`The test run failed: ${dispatchErrorText(dry.value.execution_result.value.error as DispatchErrorLike)}.`, { ...base, fee: String(fee) });
     }
     const id = randomUUID();
     dryRuns.set(id, { intent, at: now() });
@@ -373,6 +435,29 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     };
   };
 
+  const transferCall = async (to: Uint8Array, amount: bigint): Promise<Uint8Array> => {
+    if (to.length !== 32) throw new Error('Invalid account.');
+    if (amount <= 0n) throw new Error('The amount must be more than 0.');
+    const tx = chain.api.tx.Balances.transfer_keep_alive({ dest: MultiAddress.Id(ss58Address(to, 42)), value: amount });
+    const data: unknown = await tx.getEncodedData();
+    // polkadot-api 3 returns bytes; an older `Binary` has `asBytes`.
+    return data instanceof Uint8Array ? data : (data as { asBytes: () => Uint8Array }).asBytes();
+  };
+
+  const transfersOf = async (hash: string, block: number): Promise<ChainTransfer[]> => {
+    const trackerChain = trackerChainOf(chain);
+    const blockHash = await read(chain, 'block hash', () => trackerChain.blockHashAt(block));
+    if (!blockHash) return [];
+    const extrinsics = await read(chain, 'block body', () => trackerChain.extrinsicsOf(blockHash));
+    const index = extrinsics.findIndex(extrinsic => extrinsicHash(extrinsic) === hash.toLowerCase());
+    if (index < 0) return [];
+    // Legacy `state_getStorage` serves any block, pinned or not (as the tracker's block reads).
+    const raw = await read(chain, 'events', () => chain.client._request<string | null, [string, string]>('state_getStorage', [SYSTEM_EVENTS_KEY, blockHash]));
+    if (!raw) return [];
+    const codecs = await eventCodecs();
+    return balanceTransfers(codecs.query.System.Events.value.dec(raw) as unknown as ChainEvent[], index);
+  };
+
   // One subscription to the chain's best blocks, shared by every listener.
   const blockListeners = new Set<(block: BestBlock) => void>();
   let lastBest = -1;
@@ -390,6 +475,8 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     dryRun,
     sign,
     balance,
+    transferCall,
+    transfersOf,
     onBestBlock: listener => {
       blockListeners.add(listener);
       return () => blockListeners.delete(listener);

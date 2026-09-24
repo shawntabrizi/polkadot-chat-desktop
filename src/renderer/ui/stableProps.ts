@@ -50,14 +50,16 @@ const shapeOf = (actions: BubbleActions): string =>
     retry: !!actions.retry,
     remove: actions.remove?.label ?? null,
     forward: !!actions.forward,
-    keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null } : null,
+    keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null, done: actions.keyboard.done ?? null } : null,
+    referenceText: actions.referenceText ?? null,
   });
 
 /**
  * Per row, the same actions object while what the bubble shows of it stays
  * the same. Its functions call the closures of the latest render, so a press
- * never runs against old room state. Actions with `below` (the signing
- * strip, a React element) are passed through as they are.
+ * never runs against old room state. Actions that carry React elements
+ * (`below`: the signing strip; M12g `body` and a keyboard's `extra`) are
+ * passed through as they are.
  */
 export const createActionCache = () => {
   const latest = new Map<string, BubbleActions>();
@@ -70,6 +72,7 @@ export const createActionCache = () => {
     ...(actions.edit ? { edit: () => current(messageId)?.edit?.() } : {}),
     ...(actions.retry ? { retry: () => current(messageId)?.retry?.() } : {}),
     ...(actions.remove ? { remove: { label: actions.remove.label, run: () => current(messageId)?.remove?.run() } } : {}),
+    ...(actions.referenceText !== undefined ? { referenceText: actions.referenceText } : {}),
     ...(actions.forward ? { forward: (target: Parameters<NonNullable<BubbleActions['forward']>>[0]) => current(messageId)?.forward?.(target) } : {}),
     ...(actions.keyboard
       ? {
@@ -77,6 +80,7 @@ export const createActionCache = () => {
             press: (row: number, index: number) => current(messageId)?.keyboard?.press(row, index),
             active: actions.keyboard.active,
             ...(actions.keyboard.tx !== undefined ? { tx: actions.keyboard.tx } : {}),
+            ...(actions.keyboard.done !== undefined ? { done: actions.keyboard.done } : {}),
           },
         }
       : {}),
@@ -90,7 +94,7 @@ export const createActionCache = () => {
         return null;
       }
       latest.set(messageId, actions);
-      if (actions.below) {
+      if (actions.below || actions.body || actions.keyboard?.extra) {
         wrappers.delete(messageId);
         return actions;
       }

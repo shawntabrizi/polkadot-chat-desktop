@@ -61,3 +61,21 @@ describe('createActionCache', () => {
     expect(cache.get('a', null)).toBeNull();
   });
 });
+
+describe('createActionCache and M12g payments', () => {
+  // The first screenshot run showed why: the cache dropped these fields, so a
+  // paid request never showed "Paid" and the payer never saw Decline.
+  it('passes a payment line, a done button, a body and a Decline through, and a change of state reaches the bubble', () => {
+    const cache = createActionCache();
+    const press = () => undefined;
+    const pending = cache.get('r', { keyboard: { press, active: null, done: null }, referenceText: 'Sent 1 PAS to bob.02 · in block #7' });
+    expect(pending?.referenceText).toBe('Sent 1 PAS to bob.02 · in block #7');
+    const paid = cache.get('r', { keyboard: { press, active: null, done: { row: 0, index: 0, label: 'Paid' } }, referenceText: 'Sent 1 PAS to bob.02 · in block #7' });
+    expect(paid).not.toBe(pending);
+    expect(paid?.keyboard?.done).toEqual({ row: 0, index: 0, label: 'Paid' });
+    const body = 'request bubble';
+    expect(cache.get('own', { body })?.body).toBe(body);
+    const extra = 'Decline';
+    expect(cache.get('in', { keyboard: { press, active: null, extra } })?.keyboard?.extra).toBe(extra);
+  });
+});

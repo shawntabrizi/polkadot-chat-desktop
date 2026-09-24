@@ -149,6 +149,10 @@ export type BubbleActions = {
   keyboard?: KeyboardActions;
   /** Inline content under the bubble: the spec 0007 signing strip of a pressed `tx` button. */
   below?: ReactNode;
+  /** M12g: the bubble's content in place of its text and keyboard (the requester's own request). */
+  body?: ReactNode;
+  /** M12g: a payment reference's line in place of the note ("Sent 1 PAS to bob.02 · in block #…"). */
+  referenceText?: string | null;
   /** M12e: send a copy of the text to another chat (the Forward submenu lists the chats). */
   forward?: (target: ForwardTarget) => void;
 };
@@ -255,7 +259,8 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
       );
     }
     if (deleting) return <p className={quiet}>Deleting…</p>;
-    if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} />;
+    if (actions?.body) return actions.body;
+    if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} line={actions?.referenceText ?? null} />;
     // One element from the first streamed word to the finished reply (M12d): completion must not re-create it.
     if (markdown) return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
     if (row.content.type === 'richText') {
@@ -276,7 +281,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
 
   // A oneShot keyboard is gone after its first press (spec 0006).
   const keyboardRows =
-    row.content.type === 'buttons' && !(row.content.oneShot && row.content.pressed) && row.content.rows.some(r => r.length > 0)
+    row.content.type === 'buttons' && !actions?.body && !(row.content.oneShot && row.content.pressed) && row.content.rows.some(r => r.length > 0)
       ? row.content.rows
       : null;
   // One place for the buttons: the placeholders and the keyboard of a

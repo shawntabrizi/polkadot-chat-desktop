@@ -495,9 +495,20 @@ export const previewOf = (content: MessageContent): string => {
   }
 };
 
+/**
+ * M12g: the payment of a request carries `req:<messageId>` first in its
+ * `note`, then the person's note (docs/decisions.md "## M12g"). The id of the
+ * request, or null for any other note.
+ */
+export const requestIdOfNote = (note: string): string | null => /^req:(\S+)/.exec(note)?.[1] ?? null;
+
+/** The note without a `req:<messageId>` marker: the words a person wrote. */
+export const noteWords = (note: string): string => note.replace(/^req:\S+ ?/, '').trim();
+
 /** "Top-up of 1 PAS · in block #123"; the note, or "Transaction" without one. */
 export const referenceLine = (reference: TxReference): string => {
-  const what = reference.note.trim() || 'Transaction';
+  // The payment of a request: the marker is for clients, not for people.
+  const what = (requestIdOfNote(reference.note) !== null ? noteWords(reference.note) || 'Payment' : reference.note.trim()) || 'Transaction';
   switch (reference.status) {
     case 'submitted':
       return `${what} · submitted`;

@@ -133,8 +133,9 @@ export const useCopied = (): [boolean, (text: string) => void] => {
  * the state icon (finality is a later tick, not a wait), then a small row of
  * local actions (client chrome, not spec 0006 buttons): the short hash in
  * mono with the full one in its tooltip, "Copy hash", "View on <explorer>".
+ * `line`: a payment's own words (M12g), in place of the note's line.
  */
-export const ReferenceBody = ({ reference, own }: { reference: TxReference; own: boolean }) => {
+export const ReferenceBody = ({ reference, own, line = null }: { reference: TxReference; own: boolean; line?: string | null }) => {
   const [copied, copy] = useCopied();
   const explorer = useExplorer();
   const muted = own ? 'text-fg-secondary-inverted' : 'text-fg-secondary';
@@ -142,7 +143,7 @@ export const ReferenceBody = ({ reference, own }: { reference: TxReference; own:
     <div className="flex flex-col gap-1" data-testid="tx-reference" data-status={reference.status}>
       <div className="flex items-center gap-2">
         <TxStatusIcon status={reference.status} className={reference.status === 'failed' ? undefined : muted} />
-        <p className={cn('min-w-0 text-body-m', reference.status === 'failed' && 'text-fg-error')}>{referenceLine(reference)}</p>
+        <p className={cn('min-w-0 text-body-m', reference.status === 'failed' && 'text-fg-error')}>{line ?? referenceLine(reference)}</p>
       </div>
       <div className={cn('-mx-2 flex flex-wrap items-center gap-x-1', muted)} data-testid="tx-actions">
         <Tooltip>

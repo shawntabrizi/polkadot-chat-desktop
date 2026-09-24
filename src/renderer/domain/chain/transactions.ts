@@ -39,8 +39,8 @@ export type TxRunRequest = {
   chainId: string;
   /** "Top up": the intent's title, the reference's note. */
   note: string;
-  /** The buttons message the intent came in. */
-  intentMessageId: string;
+  /** The buttons message the intent came in; null for a transfer this client started (M12g Send). */
+  intentMessageId: string | null;
 };
 
 export type TxRunner = {
