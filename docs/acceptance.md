@@ -2161,3 +2161,160 @@ I read the PNGs:
 ### git status --short
 
 This file is part of the commit, so the result is in the M12 hand-off report.
+
+## M12c (2026-09-23)
+
+All commands ran on this machine against devnet (People and Asset Hub Paseo) with the live pca bots. Headless: the Node e2e scripts use no Electron; `npm run smoke` and `npm run screenshots` ran with `PCD_HEADLESS=1` and throwaway `PCD_USER_DATA_DIR` profiles.
+
+### npm run check
+
+```
+ Test Files  57 passed (57)
+      Tests  469 passed (469)
+   Start at  21:08:13
+   Duration  16.45s (transform 2.28s, setup 986ms, import 9.41s, tests 24.96s, environment 3ms)
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (137 files)
+```
+
+New or changed specs that encode the budget: `manager.messaging.spec.ts` "submission budget (M12c)" (the store sees 1 request for "read, then reply within 5 s" and 1 for "read, no reply" only after 5 s; a known bot shows local working with no extra submission), `submissions.spec.ts` (two requests in one task → one statement; acknowledgements apart), `signals.spec.ts` (1 s start, 10 s refresh, 12 s until, 5 s seen window, local working), `transactions.spec.ts` (one reference per tx; status 0 only after 30 s; never status 2), `txTracker.spec.ts` (finalized only when the finalized block N holds the extrinsic; the M12 drip's real extrinsic hashes to its known hash), `messages.spec.ts` (`setReferenceState`, forward only), `lookup.spec.ts` (one retry after 5 s on a timeout only), `explorers.spec.ts`, `copyFlag.spec.ts` (Copied resets after 1.5 s).
+
+### npm run smoke
+
+```
+✓ built in 197ms
+SMOKE_OK
+```
+
+### npm run e2e:typing
+
+```
+identity reuse pcdecejakd.11 (/Users/shawntabrizi/Documents/GitHub/polkadot-chat-desktop/.agent-runs/identity-pcde2e/identity.json)
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+[ws] connecting
+[ws] connected
+best block #7055083 (runtime ready in 1.9s)
+PEER 0x66b78abdcb4c89d2817ce45f201677c08240fde23c50b9c94a6abb6912888a63 key_type=0
+PREFS sendTyping=false readReceipts=true (a fresh profile: the defaults)
+REQUEST_SENT attempt=1
+ACCEPTED devices=1
+BOTINFO name="Captain Dot" version=1
+WORKING_LOCAL at=0.0s state={"kind":"working","until":1790209654373,"local":true}
+QUESTION_SENT cea9943c-cfce-4567-a0af-a08f4b5f7105 QUESTION_SUBMISSIONS 1
+REPLY at=6.6s What do ye call a pirate who stacks blocks all day, ye ask? A real blockbuster, har har! 🏴‍☠️
+WORKING_CLEARED at=6.6s state=null
+SEEN_RECEIVED upTo=cea9943c-cfce-4567-a0af-a08f4b5f7105 at=6.6s
+READ_SUBMISSIONS 1 (inside the 5 s window: 0)
+COUNTS submissions=2 messages=1 acknowledgements=2 (this round)
+DIAGNOSTICS submissions=3 messages=1 acknowledgements=4 (whole run: request and accept included)
+BUDGET_OK
+```
+
+The bot sent no `typing` (no TYPING_RECEIVED line) and its `seen` arrived with its reply at 6.6 s: the new pca behaviour. The older-bot path (a received `typing` beside the local state) is covered by `signals.spec.ts`, not by this run.
+
+### npm run e2e:meter
+
+```
+DRIP_OK status=inBlock block=13624276 note="Dripped 1 PAS" hash=0x53ab6b28db19c81304375f5c790d14311a259c36c0e070c07a8111955b6e70d8 at=10.4s
+FOUND pcdmeter.01 0x9eb681bc39734224669e4e261c271d628e8d87e4c3cb25636c0e248267ea2967
+ACCEPTED pcdmeter at=13.5s
+HINT label="with Meter" contract=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 selector=0x70a08231 decimals=18 unit=PAS perReply=100000000000000000 chain=0xd6eec261…
+BALANCE_BEFORE with Meter: 4.2 PAS (~42 replies)
+DRYRUN ok=true fee=0.0014 PAS (14510503 planck) mapsAccount=false value=10000000000
+SIGNED hash=0xffcd07296957f95b000c990f13c7a395e4411fa833a42b36768f202f7fd060e0 at=20.1s
+TOPUP_OK status=inBlock block=13624282 row="Top up (1 PAS)" at=22.1s
+BALANCE with Meter: 5.2 PAS (~52 replies) (5200000000000000000 PAS units; before with Meter: 4.2 PAS (~42 replies))
+ANSWER 1 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate,
+BALANCE with Meter: 5.2 PAS (~52 replies) (no charge yet: pending in the bot's batch) at=53.4s
+ANSWER 2 A parachain is an independent blockchain that runs on the Polkadot network, sharing security with other parach
+BALANCE with Meter: 5.2 PAS (~52 replies) (no charge yet: pending in the bot's batch) at=83.0s
+ANSWER 3 Asset Hub is a Polkadot parachain that provides a common platform for creating, managing, and trading custom a
+BALANCE with Meter: 5.2 PAS (~52 replies) (no charge yet: pending in the bot's batch) at=112.7s
+ANSWER 4 A smart contract is a self-executing program stored on a blockchain that automatically enforces agreements and
+BALANCE with Meter: 4.7 PAS (~47 replies) (-0.5 PAS) reference="balance: 47000000000" inBlock at=121.2s
+ANSWER 5 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate,
+BALANCE with Meter: 4.7 PAS (~47 replies) (no charge yet: pending in the bot's batch) at=151.9s
+CHARGE_REFERENCES 1 (inBlock)
+METERED_OK 5 answers, 1 charge(s): 5.2 → 4.7 PAS
+TOPUP_REFERENCE finalized
+METER_OK
+exit=0
+```
+
+The batched meter: one charge of 5 replies (0.5 PAS) after the 4th answer (one reply was pending from an earlier run), one reference with status 1 only. The drip reference also came as status 1.
+
+### npm run e2e:flip
+
+First run: `FLIP_OK at=33.0s` (exit 0; a staked, b settled, winner b, `BALANCE_WIN … delta=0.4981 PAS ok=yes`). The second screenshot run (below) then left a stake of the app's identity pending in the contract. The next `e2e:flip` settled it through its "waiting from an earlier run" path but failed its balance check (`FLIP_BAD_BALANCE BALANCE_WIN before=33.4268 PAS after=33.4268 PAS delta=0`: for a stake from an earlier run, a's "before" balance is read after the payout; a script path from M11b, not the reference change). The run after that, from a clean contract:
+
+```
+STAKED a hash=0xe26f6d81d34e0ca6a83d42c2ce723e40ac875e1b381be87dc2856a57c5a98b61
+STAKED b hash=0xd5b506850acf0df8cae7bdbeb03330777ea22dca57056fbc078935951c72b02b (settles the round)
+SETTLED winner=pcdeceb.89 payout=1 PAS
+WINNER b pcdeceb.89: BALANCE_WIN before=38.4867 PAS after=38.9848 PAS delta=0.4981 PAS expected=(0.4, 0.5] ok=yes
+FLIP_OK at=33.2s
+exit=0
+```
+
+### npm run probe:statements
+
+pcdecejakd.11 → pcdeceb.89 on devnet People, 20 s per rate, 30 s drain after each. Propagation = time the receiver stored the row − the message's own timestamp (same machine).
+
+```
+[a] REQUEST_SENT id=b301eaa7-52ef-41a5-be7d-714468709a57 to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11 id=b301eaa7-52ef-41a5-be7d-714468709a57
+[a] CONTACT pcdeceb.89 devices=1
+BURST rate=0.5/s for 20 s at=10.5s
+[a] SENT rate=0.5 messages=10 statements=10 took=18510ms errors=""
+[b] RECEIVED rate=0.5 count=10 p50=330 p95=902 max=902
+BURST rate=1/s for 20 s at=59.0s
+[a] SENT rate=1 messages=20 statements=20 took=19508ms errors=""
+[b] RECEIVED rate=1 count=20 p50=327 p95=358 max=360
+BURST rate=2/s for 20 s at=108.5s
+[a] SENT rate=2 messages=40 statements=40 took=20008ms errors=""
+[b] RECEIVED rate=2 count=40 p50=323 p95=371 max=435
+BURST rate=4/s for 20 s at=158.5s
+[a] SENT rate=4 messages=80 statements=80 took=20258ms errors=""
+[b] RECEIVED rate=4 count=80 p50=328 p95=368 max=373
+PROBE_DONE at=210.3s
+exit=0
+```
+
+| rate (msg/s) | messages sent | statements submitted | received | p50 ms | p95 ms | max ms | submit errors |
+|---|---|---|---|---|---|---|---|
+| 0.5 | 10 | 10 | 10 | 330 | 902 | 902 | none |
+| 1 | 20 | 20 | 20 | 327 | 358 | 360 | none |
+| 2 | 40 | 40 | 40 | 323 | 371 | 435 | none |
+| 4 | 80 | 80 | 80 | 328 | 368 | 373 | none |
+
+Reading: one person at up to 4 statements per second met no rejection and no slowdown (p50 about 330 ms at every rate; the 902 ms at 0.5/s is the first message after the chat opened). The ceiling is above 4 per second for one sender; this probe did not find it. Each statement carried the un-ACKed batch, so at 4/s a statement held several messages.
+
+### Other checks run
+
+- Reference finality from the chain (`.agent-runs/m12c/track-check.mjs`: the main tracker against live Asset Hub, no signing): the M12 drip claimed at block 13622982 → `EVENT finalized block=13622982` at 0.6 s; a wrong hash claimed at the same block → no event; a status-0 hash (an extrinsic of the newest best block) → `EVENT inBlock block=13624232` at 7.8 s, then `EVENT finalized block=13624232` at 22.6 s; `TRACK_OK`. (The target was taken from best block 13624233 and found in 13624232: the search reads the best chain oldest first, and that extrinsic's bytes were in both.)
+- `npm run screenshots` (`PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdbenchcold`), first run: **SCREENSHOTS_OK**. M12c lines:
+
+```
+96.8s finalized: "Send to yourself (0.01 PAS) · finalized in block #13624400\n\n0xd738…1a48\nCopy hash\nView on Subscan"
+96.8s actions: "0xd738…1a48 Copy hash View on Subscan"
+183.4s diagnostics: "Submissions per message 2.00 (2 / 1) Delivery acknowledgements (not counted above) 3"
+288.9s finalized: "Send to yourself (0.01 PAS) · finalized in block #13624496\n\n0x3458…fca9\nCopy hash\nView on Subscan"
+288.9s actions: "0x3458…fca9 Copy hash View on Subscan"
+318.2s diagnostics: "Submissions per message — (0 / 0) Delivery acknowledgements (not counted above) 4"
+SCREENSHOTS_OK
+```
+
+  I read the PNGs: `room-tx-done.png` (day and night) shows the own reference "Send to yourself (0.01 PAS) · finalized in block #…" with the action row under it: the short hash in mono (`0xd738…1a48`), "Copy hash" and "View on Subscan" as quiet ghost buttons in the bubble's secondary colour; finality came from the chain, not from a message. `settings.png` (both) shows the Chat section with "Send typing indicators" off and its caption "Costs one network submission every 10 s while you type", and "Block explorer: Subscan" with its caption. The room list in the day `settings-diagnostics.png` shows "working…" on the bot row after a message to it (the local state). The counts are per window load: the theme switch reloads the page, so the night figures start again at zero.
+- A second screenshot run, made only to frame `settings-diagnostics.png` on the Diagnostics section, was **SCREENSHOTS_PARTIAL**: the room peer `pcdbenchcold` timed out on its accept (`E2E_TIMEOUT accept`, the old-request problem noted in M12), so every room-peer shot and the night flip shots were missed; its PNGs did not replace the first run's. `settings-diagnostics.png` (night) from it shows the Diagnostics section: "Submissions per message — (0 / 0)", "Delivery acknowledgements (not counted above) 1", and the caption (since changed from "Since the app started" to "Since this window loaded", which is what the counter measures).
+
+### Not run
+
+- The older-bot behaviour (a bot that still sends `typing` and a separate `seen`) was not run live: the running pca bots already had the new behaviour. `e2e:typing` accepts it (it logs `TYPING_RECEIVED` and requires only the local state and one `seen`), and `signals.spec.ts` covers the one-line rule.
+- The bot-down retry of `e2e:typing` (`BOT_DOWN_RETRY`) did not trigger: the bot answered at the first try.
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12c hand-off report.

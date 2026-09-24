@@ -280,7 +280,7 @@ for (const theme of THEMES) {
 // ── The seeded identity ──────────────────────────────────────────────────
 
 if (!identitySource || !existsSync(identitySource)) {
-  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
+  for (const theme of THEMES) for (const name of ['chats', 'room', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'settings-diagnostics', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results']) missing.push(`${theme}/${name}.png (PCD_SCREENSHOT_IDENTITY not set)`);
 } else {
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-seeded-'));
@@ -603,6 +603,12 @@ app.whenReady().then(() => {
         log('in block:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
         if (!(await app.waitFor(`${last}.dataset.status === 'finalized'`, 120_000))) throw new Error(`not finalized in 120 s: ${await app.evaluate(`${last}.innerText`)}`);
         log('finalized:', JSON.stringify(await app.evaluate(`${last}.innerText`)));
+        // M12c step 10: the local action row (short hash, Copy hash, View on <explorer>).
+        const actions = `${last}.querySelector('[data-testid=tx-actions]')`;
+        if (!(await app.evaluate(`!!(${actions}?.querySelector('[data-testid=tx-hash]') && ${actions}?.querySelector('[data-testid=tx-explorer]'))`))) {
+          throw new Error('the reference bubble has no action row');
+        }
+        log('actions:', JSON.stringify(await app.evaluate(`${actions}.innerText.replace(/\\s+/g, ' ')`)));
         if (!(await app.waitFor(app.exists('[data-testid=bot-balance]'), 60_000))) throw new Error('no balance line (spec 0008 hint) in the header');
         log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=bot-balance]').textContent`)));
         // Centred: at the very end the composer's edge clips the last bubble.
@@ -989,6 +995,15 @@ app.whenReady().then(() => {
         await app.click('[data-testid=engine-detect]');
         if (!(await app.waitFor(app.exists('[data-testid=engine-status]'), 30_000))) throw new Error('engine detection did not answer');
         await app.evaluate(`document.querySelector('[data-testid=send-key-select]').closest('section').scrollIntoView({ block: 'start' }); true`);
+      });
+
+      // M12c: Diagnostics with the submissions per message of this page load
+      // (settings.png shows the Chat section: the typing switch, off, with its
+      // cost, and the block explorer).
+      await shot('settings-diagnostics', async () => {
+        if (!(await app.waitFor(app.exists('[data-testid=submissions-per-message]'), 20_000))) throw new Error('no Diagnostics section');
+        log('diagnostics:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=diagnostics]').innerText.replace(/\\s+/g, ' ')`)));
+        await app.evaluate(`document.querySelector('[data-testid=diagnostics]').closest('section').scrollIntoView({ block: 'center' }); true`);
       });
 
       await shot('keyboard', async () => {

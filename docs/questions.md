@@ -99,3 +99,13 @@ Write the question, what you did meanwhile, and the date.
 - **`docs/spec/kinds.md` and `docs/spec/README.md`** still say 246/247/248 are "M12" and 0009 is a draft. I may not edit `docs/spec/*.md`. Please mark them implemented (desktop M12, pca `desktop/rfc-0003`).
 - **Reactions by several members.** The client stores a reaction as `me` or `peer`; in a group two members with the same emoji show as one. Is a per-account reaction list (a schema change for all rooms) wanted in v1?
 - **`tx` buttons in groups.** Not pressable in v1 (see docs/decisions.md). Should a bot in a group send `tx` buttons at all, or only in 1:1 chats?
+
+## M12c (2026-09-23)
+
+- **Status 0, then the end state?** Spec 0007 rule 3 says one reference per transaction, status 0 "only if no block includes the transaction within 30 s". I send status 0 at 30 s and the end state (1 or 3) when it comes, as pca's meter does, so a slow transaction costs two references. Should status 0 be the only reference in that case (the peer then follows the chain), or is the pair intended?
+- **Acknowledgements are half the cost.** Every batch a client reads is answered with a session response statement, so a back-and-forth costs about one request plus one acknowledgement per message (the e2e run shows 2 acknowledgements next to 2 submissions for one question and its reply). The ratio in Settings leaves them out, as the milestone's arithmetic does, and shows them on their own line. Should the budget count them, and is a protocol change (for example an ACK that rides the next request) on the roadmap?
+- **Everyone's typing is now off.** The new setting uses a new key, so users who had the M9 switch on (the default) are off after this update. I read the owner's "cut now" that way. Correct?
+- **`seen` rides any content, not only a message.** A reaction, an edit or a button press inside the 5 s window also takes the pending `seen` along (it is a submission anyway). The spec says "a real message". Fine to read it as any content?
+- **Polkadot.js Apps and accounts.** It has no page for one account, so the Pocket's "View on Polkadot.js Apps" is disabled with a reason. Should it open something else (for example the chain state page), or is disabled right?
+- **The Pocket's Copy button** has the same "Copied" that never resets. It was not in the owner's report; fix it the same way in a later milestone?
+- **Step 10 is only in docs/decisions.md.** I could not append it to `docs/milestones/M12c.md` (AGENTS.md forbids edits there and the edit was refused). Please add it there if the milestone file should be complete.

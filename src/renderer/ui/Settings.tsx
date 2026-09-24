@@ -242,7 +242,7 @@ const DiagnosticsSection = ({ submissions }: { submissions: NonNullable<Props['s
           <dd className="text-body-s text-fg-secondary tabular-nums">{counts.acknowledgements}</dd>
         </div>
       </dl>
-      <p className="text-body-s text-fg-tertiary">Since the app started. Every submission is checked and passed on by every network node.</p>
+      <p className="text-body-s text-fg-tertiary">Since this window loaded. Every submission is checked and passed on by every network node.</p>
     </Section>
   );
 };
