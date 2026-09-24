@@ -75,4 +75,26 @@ describe('streamChat', () => {
     await expect(streamChat({ messages, onDelta: () => undefined, key: '', fetch: impl })).rejects.toThrow(/No API key/);
     expect(calls).toHaveLength(0);
   });
+
+  // M13: a tool call arrives as argument pieces. They must never reach the
+  // bubble (that is how the owner saw half a JSON keyboard), and the pieces
+  // must join into one whole call.
+  it('joins streamed tool-call pieces into one call and keeps them out of the reply text', async () => {
+    const tool = (piece: Record<string, unknown>) => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [piece] } }] })}\n\n`;
+    const { impl, calls } = fakeFetch([
+      sse('Pick one.'),
+      tool({ index: 0, id: 'call_1', type: 'function', function: { name: 'send_buttons', arguments: '' } }),
+      tool({ index: 0, function: { arguments: '{"rows":[[{"label":"A",' } }),
+      tool({ index: 0, function: { arguments: '"action":{"command":"a"}}]]}' } }),
+      'data: [DONE]\n\n',
+    ]);
+    const deltas: string[] = [];
+    let found: { name: string; arguments: string }[] = [];
+    const tools = [{ type: 'function' as const, function: { name: 'send_buttons', description: 'd', parameters: {} } }];
+    const reply = await streamChat({ messages, onDelta: text => deltas.push(text), key: 'k', fetch: impl, tools, onToolCalls: list => (found = list) });
+    expect(reply).toBe('Pick one.');
+    expect(deltas).toEqual(['Pick one.']);
+    expect(found).toEqual([{ name: 'send_buttons', arguments: '{"rows":[[{"label":"A","action":{"command":"a"}}]]}' }]);
+    expect(JSON.parse(String(calls[0]?.init.body)).tools).toEqual(tools);
+  });
 });

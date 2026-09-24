@@ -12,6 +12,8 @@ import type {
   AssistantSettings,
 } from '../../../shared/desktop-api';
 
+import { directiveFromToolCalls } from '../../../shared/directives';
+
 import { ASSISTANT_COMMANDS, ASSISTANT_PEER, CONTEXT_TURNS, SYSTEM_PROMPT, TEST_PROMPT, askOnce, buildContext, createAssistantChat, replyContent } from './assistant';
 
 /** A stand-in for `window.desktop.assistant`: records requests, lets the test emit events. */
@@ -433,6 +435,38 @@ describe('Assistant buttons (spec 0006 fenced block)', () => {
       { role: 'assistant', content: 'Which network?' },
       { role: 'user', content: 'paseo' },
     ]);
+    chat.dispose();
+  });
+});
+
+describe('structured directives (M13)', () => {
+  // The owner saw half-streamed buttons JSON. A tool call never streams as
+  // text; it must still give exactly the keyboard the fenced block gives, or
+  // the same model would render differently depending on the engine.
+  it('the same JSON through the tool path and the fenced path yields identical MessageContent', () => {
+    const json = {
+      rows: [
+        [{ label: 'Yes', action: { command: 'yes' } }, { label: 'No', action: { command: 'no' } }],
+        [{ label: 'Docs', action: { url: 'https://docs.polkadot.com' } }, { label: 'More', action: { callback: 'page-2' } }],
+      ],
+      oneShot: true,
+    };
+    const text = 'Do you want to continue?';
+    const { directive } = directiveFromToolCalls([{ name: 'send_buttons', arguments: JSON.stringify(json) }], ['buttons']);
+    const viaTool = replyContent(text, directive);
+    const viaFence = replyContent(`${text}\n\n\`\`\`buttons\n${JSON.stringify(json)}\n\`\`\``);
+    expect(viaTool).toEqual(viaFence);
+    expect(viaTool.type).toBe('buttons');
+  });
+
+  it('a done event with a directive becomes a keyboard, even when the model wrote no text', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('give me buttons');
+    fake.done('reply-1', { directive: { rows: [[{ label: 'A', action: { command: 'a' } }]], oneShot: false } });
+    await vi.waitFor(async () => expect((await db.messages.get('reply-1'))?.content.type).toBe('buttons'));
+    const row = await db.messages.get('reply-1');
+    expect(row?.content).toMatchObject({ type: 'buttons', text: '' });
     chat.dispose();
   });
 });

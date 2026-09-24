@@ -5,6 +5,7 @@
  */
 
 import type { AssistantEngineId } from '../../../shared/desktop-api';
+import type { Directive, DirectiveKind } from '../../../shared/directives';
 import type { ToolPolicy } from '../toolPolicy';
 
 export type EngineId = AssistantEngineId;
@@ -39,13 +40,26 @@ export type EngineRunInput = {
   workspace: string;
   /** What tools a CLI engine may use. Default: none. */
   policy: ToolPolicy;
+  /**
+   * M13: the structured directives this turn may produce. An engine with
+   * tool calling (the proxy) gets them as tools; the others ignore this and
+   * keep the fenced block in the text.
+   */
+  directives?: readonly DirectiveKind[];
   /** Proxy only: the model name and the proxy. */
   model?: string;
   baseUrl?: string;
   key?: string;
 };
 
-export type EngineRunResult = { text: string; sessionId?: string };
+export type EngineRunResult = {
+  text: string;
+  sessionId?: string;
+  /** M13: the directive the turn's tool calls produced (the fenced block's JSON); absent for text-only engines. */
+  directive?: Directive | null;
+  /** Tool calls that broke the rules and were dropped (for the log). */
+  directiveInvalid?: string[];
+};
 
 export type Engine = {
   id: EngineId;

@@ -2,7 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
 import { isHeadless } from './headless';
-import { registerIpc } from './ipc';
+import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
 import { loadWindowBounds, rememberWindowBounds } from './windowState';
@@ -112,6 +112,9 @@ app.on('activate', () => {
     });
   }
 });
+
+// M13: the published agent's process ends with the app.
+app.on('before-quit', () => shutdownAgent());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

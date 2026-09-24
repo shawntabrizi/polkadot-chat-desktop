@@ -35,7 +35,13 @@ const requireEncryption = (): void => {
   }
 };
 
-export const saveIdentity = ({ mnemonic, username, accountHex, profile }: StoredIdentity): void => {
+/**
+ * Writes an identity file at `target`, the mnemonic encrypted with
+ * `safeStorage`. M13: the published agent's identity uses the same format in
+ * its own file (`agent/store.ts`), so its keys are stored exactly like the
+ * person's and never mixed with them.
+ */
+export const saveIdentityAt = (target: string, { mnemonic, username, accountHex, profile }: StoredIdentity): void => {
   requireEncryption();
   const file: IdentityFile = {
     version: 1,
@@ -44,12 +50,13 @@ export const saveIdentity = ({ mnemonic, username, accountHex, profile }: Stored
     profile,
     mnemonicEncrypted: safeStorage.encryptString(mnemonic).toString('base64'),
   };
-  const target = identityPath();
   const tmp = `${target}.tmp`;
   // Write then rename: a crash mid-write must not leave a half file where the only copy of the key was.
   writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, target);
 };
+
+export const saveIdentity = (identity: StoredIdentity): void => saveIdentityAt(identityPath(), identity);
 
 const parseFile = (raw: unknown): IdentityFile => {
   const value = raw as Partial<IdentityFile> | null;
@@ -65,15 +72,17 @@ const parseFile = (raw: unknown): IdentityFile => {
   return value as IdentityFile;
 };
 
-/** `null` when this machine has no identity yet. */
-export const loadIdentity = (): StoredIdentity | null => {
-  const path = identityPath();
+/** The identity file at `path`, decrypted; `null` when there is none. */
+export const loadIdentityAt = (path: string): StoredIdentity | null => {
   if (!existsSync(path)) return null;
   const file = parseFile(JSON.parse(readFileSync(path, 'utf8')));
   requireEncryption();
   const mnemonic = safeStorage.decryptString(Buffer.from(file.mnemonicEncrypted, 'base64'));
   return { username: file.username, accountHex: file.accountHex, profile: file.profile, mnemonic };
 };
+
+/** `null` when this machine has no identity yet. */
+export const loadIdentity = (): StoredIdentity | null => loadIdentityAt(identityPath());
 
 const backupPath = (): string => `${identityPath()}.bak`;
 

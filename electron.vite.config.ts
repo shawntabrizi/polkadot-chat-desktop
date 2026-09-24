@@ -6,7 +6,8 @@ import { defineConfig } from 'electron-vite';
 export default defineConfig({
   main: {
     build: {
-      lib: { entry: resolve(import.meta.dirname, 'src/main/index.ts') },
+      // M13: agent-host.js is the entry of the published agent's utility process.
+      lib: { entry: { index: resolve(import.meta.dirname, 'src/main/index.ts'), 'agent-host': resolve(import.meta.dirname, 'src/main/agent/host.ts') } },
     },
   },
   preload: {

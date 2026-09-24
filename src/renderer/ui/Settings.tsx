@@ -28,6 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
+import { AgentSettings } from './AgentSettings';
 import { PeerAvatar } from './Avatar';
 import { type DemoRuntime, DemoSettings, useDemoBots } from './DemoBots';
 import { useChatActions } from './chatActions';
@@ -616,6 +617,17 @@ const DemoSection = ({ profileId, runtime }: { profileId: NetworkProfileId; runt
   );
 };
 
+/** M13: publish the Assistant as an on-chain peer; only inside the desktop app. */
+const AgentSection = ({ profileId }: { profileId: NetworkProfileId }) => {
+  const desktop = window.desktop;
+  if (!desktop?.agent) return null;
+  return (
+    <Section title="Agent">
+      <AgentSettings api={desktop.agent} identityApi={desktop.identity} profileId={profileId} />
+    </Section>
+  );
+};
+
 /** Settings fill the right pane: sections as containers on the page surface. */
 export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
@@ -632,6 +644,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
           <p className="text-body-m text-fg-secondary">Available only inside Polkadot Chat Desktop.</p>
         </Section>
       )}
+      <AgentSection profileId={profileId} />
       <DemoSection profileId={profileId} runtime={demoRuntime} />
       <KeyboardSection />
       {submissions ? <DiagnosticsSection submissions={submissions} /> : null}

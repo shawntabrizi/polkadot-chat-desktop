@@ -4,115 +4,32 @@ import { DEFAULT_NETWORK_PROFILE, NETWORK_PROFILES, type NetworkProfileId } from
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-import type { CreateIdentityResponse, DesktopIdentityApi, UsernameAvailability } from '../../shared/desktop-api';
+import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
 
 import { Logo } from './Logo';
 import { plainError } from './format';
+import { MAX_LENGTH, cleanDigits, cleanUsername, useUsernameClaim } from './usernameClaim';
 
 type Props = {
   identityApi: DesktopIdentityApi;
   onSignedUp: (result: CreateIdentityResponse) => void;
 };
 
-/** The mobile app's rule: lowercase letters only, 6 to 29 of them. */
-const USERNAME = /^[a-z]{6,29}$/;
-const MAX_LENGTH = 29;
-const CHECK_DELAY_MS = 300;
-const CACHE_MS = 60_000;
-
 const TERMS_URL = 'https://www.polkadotcommunity.foundation/appterms';
 const PRIVACY_URL = 'https://www.polkadotcommunity.foundation/privacy';
-
-type Availability =
-  | { state: 'idle' }
-  | { state: 'checking' }
-  | { state: 'known'; answer: UsernameAvailability }
-  | { state: 'unknown'; reason: string };
-
-// Answers per network and name, kept 60 s so retyping a name does not ask again.
-const cache = new Map<string, { at: number; answer: UsernameAvailability }>();
-
-const checkCached = async (identityApi: DesktopIdentityApi, username: string, profile: NetworkProfileId): Promise<UsernameAvailability> => {
-  const key = `${profile}:${username}`;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.answer;
-  const answer = await identityApi.available(username, profile);
-  cache.set(key, { at: Date.now(), answer });
-  return answer;
-};
-
-const twoDigits = (n: number): string => String(n).padStart(2, '0');
-
-// The mobile app filters the field to letters and lowercases it.
-const cleanUsername = (raw: string): string => raw.toLowerCase().replace(/[^a-z]/g, '').slice(0, MAX_LENGTH);
-const cleanDigits = (raw: string): string => raw.replace(/\D/g, '').slice(0, 2);
 
 /** A centred card on the page surface: the one screen before any chat exists. */
 export const SignUp = ({ identityApi, onSignedUp }: Props) => {
   const [username, setUsername] = useState('');
-  // The number after the dot: the backend's first offer, which the user may edit.
-  const [digits, setDigits] = useState('');
   const [profile, setProfile] = useState<NetworkProfileId>(DEFAULT_NETWORK_PROFILE);
-  const [availability, setAvailability] = useState<Availability>({ state: 'idle' });
   const [progress, setProgress] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const valid = USERNAME.test(username);
-
-  // Check when the user pauses typing; a newer keystroke cancels the older check.
-  useEffect(() => {
-    let active = true;
-    const timer = setTimeout(() => {
-      if (!valid) {
-        setAvailability({ state: 'idle' });
-        return;
-      }
-      setAvailability({ state: 'checking' });
-      checkCached(identityApi, username, profile)
-        .then(answer => {
-          if (!active) return;
-          setAvailability({ state: 'known', answer });
-          // Digits the new answer still offers stay; otherwise the first offer fills in.
-          const first = answer.availableDigits[0];
-          setDigits(current =>
-            /^\d{2}$/.test(current) && answer.availableDigits.includes(Number(current)) ? current : first === undefined ? '' : twoDigits(first),
-          );
-        })
-        .catch((cause: unknown) => {
-          if (active) setAvailability({ state: 'unknown', reason: plainError(cause, 'no answer came back') });
-        });
-    }, CHECK_DELAY_MS);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [identityApi, username, profile, valid]);
+  const { digits, setDigits, nameTaken, showDigits, digitsTaken, invalid, ready, nameLine } = useUsernameClaim(identityApi, username, profile);
 
   useEffect(() => identityApi.onProgress(line => setProgress(lines => (lines.at(-1) === line ? lines : [...lines, line]))), [identityApi]);
 
-  const answer = availability.state === 'known' ? availability.answer : null;
-  const nameTaken = answer != null && (answer.status === 'TAKEN' || answer.availableDigits.length === 0);
-  // The ".NN" suffix shows only once the name is valid, checked and free.
-  const showDigits = valid && answer != null && !nameTaken;
-  const digitsTaken = showDigits && !(/^\d{2}$/.test(digits) && answer.availableDigits.includes(Number(digits)));
-  const invalid = nameTaken || digitsTaken;
-  const canSubmit = valid && !nameTaken && !digitsTaken && availability.state !== 'checking' && !busy;
-
-  const nameLine = (() => {
-    if (!valid) return { text: 'Minimum 6 characters', tone: 'text-fg-tertiary' };
-    switch (availability.state) {
-      case 'idle':
-      case 'checking':
-        return { text: 'Checking…', tone: 'text-fg-tertiary' };
-      case 'unknown':
-        return { text: `Could not check the name: ${availability.reason}. Try again in a moment.`, tone: 'text-fg-error' };
-      case 'known':
-        if (nameTaken) return { text: 'Taken. Try another.', tone: 'text-fg-error' };
-        if (digitsTaken) return { text: 'Digits taken. Try again.', tone: 'text-fg-error' };
-        return { text: "It's yours!", tone: 'text-fg-success' };
-    }
-  })();
+  const canSubmit = ready && !busy;
 
   const submit = () => {
     setBusy(true);

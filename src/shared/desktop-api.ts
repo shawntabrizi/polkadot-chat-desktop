@@ -2,6 +2,7 @@
 // renderer also runs without Electron (vitest, a plain browser).
 
 import type { DemoBot } from './demoBots';
+import type { Directive } from './directives';
 import type { NetworkProfileId } from './network';
 
 /** Every IPC channel name, shared by main and preload. */
@@ -44,6 +45,13 @@ export const IPC = {
   diagnosticsGet: 'diagnostics:get',
   diagnosticsChanged: 'diagnostics:changed',
   demoBots: 'demo:bots',
+  agentStatus: 'agent:status',
+  agentClaim: 'agent:claim',
+  agentProgress: 'agent:progress',
+  agentUpdate: 'agent:update',
+  agentSetContacts: 'agent:setContacts',
+  agentKill: 'agent:kill',
+  agentChanged: 'agent:changed',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -242,7 +250,15 @@ export type AssistantDelta = { conversationId: string; messageId: string; text: 
  * text: a CLI may stream narration before its answer). `sessionId`: keep it
  * for the next `send` to this engine.
  */
-export type AssistantDone = { conversationId: string; messageId: string; engine: AssistantEngineId; text?: string; sessionId?: string };
+export type AssistantDone = {
+  conversationId: string;
+  messageId: string;
+  engine: AssistantEngineId;
+  text?: string;
+  sessionId?: string;
+  /** M13: buttons the engine sent as a `send_buttons` tool call (the fenced block's JSON). */
+  directive?: Directive;
+};
 export type AssistantError = { conversationId: string; messageId: string; message: string };
 /** Progress of a running reply: a tool the engine uses, or "thinking". */
 export type AssistantActivity = {
@@ -319,6 +335,48 @@ export type DesktopDemoApi = {
   bots: (profile: NetworkProfileId) => Promise<DemoBot[]>;
 };
 
+/** M13: one line of the Settings › Agent log (the last 100 events). */
+export type AgentLogEntry = { at: number; kind: 'info' | 'in' | 'out' | 'refused' | 'error'; text: string };
+
+/** Who may talk to the published agent. */
+export type AgentAudience = 'contacts' | 'anyone';
+
+/** M13 Settings › Agent: the published agent as the renderer sees it (never a key). */
+export type AgentStatus = {
+  /** The agent's own identity; null until a username is claimed. */
+  identity: IdentitySummary | null;
+  /** "Publish my agent" is on. */
+  enabled: boolean;
+  audience: AgentAudience;
+  dailyCap: number;
+  cooldownSeconds: number;
+  state: 'stopped' | 'starting' | 'running' | 'failed';
+  /** Replies left today under the daily cap. */
+  repliesLeft: number;
+  /** Replies and bot-core submissions since the app started, per peer too (0x-less hex keys). */
+  stats: { replies: number; submissions: number; perPeer: Record<string, { replies: number; submissions: number }> };
+  log: AgentLogEntry[];
+};
+
+/** A username claim for the agent: the same rules as sign-up. */
+export type ClaimAgentRequest = { username: string; digits: string | null; profile: NetworkProfileId };
+
+export type AgentSettingsUpdate = { enabled?: boolean; audience?: AgentAudience; dailyCap?: number; cooldownSeconds?: number };
+
+export type DesktopAgentApi = {
+  status: () => Promise<AgentStatus>;
+  /** Registers the agent's own username (a second identity of this app, its own keys) and turns it on. */
+  claim: (request: ClaimAgentRequest) => Promise<CreateIdentityResponse>;
+  update: (change: AgentSettingsUpdate) => Promise<AgentStatus>;
+  /** The person's contacts (0x-hex accounts): the allowlist of "My contacts only". */
+  setContacts: (accounts: string[]) => void;
+  /** The kill switch: turns the toggle off, stops accepting and aborts running turns. */
+  kill: () => Promise<AgentStatus>;
+  onChanged: (listener: (status: AgentStatus) => void) => () => void;
+  /** Progress lines of a running `claim`. */
+  onProgress: (listener: (line: string) => void) => () => void;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
@@ -327,6 +385,7 @@ export type DesktopApi = {
   app: DesktopAppApi;
   diagnostics: DesktopDiagnosticsApi;
   demo: DesktopDemoApi;
+  agent: DesktopAgentApi;
 };
 
 declare global {

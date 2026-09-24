@@ -116,6 +116,13 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const [searchFocus, setSearchFocus] = useState(0);
   const pendingIncoming = usePendingIncoming();
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
+  const blockedRows = useLiveQuery(() => db.blocked.toArray(), []);
+  // M13: "My contacts only" of the published agent is this list (blocked peers left out).
+  useEffect(() => {
+    if (!contacts || !blockedRows) return;
+    const blocked = new Set(blockedRows.map(row => row.accountId));
+    window.desktop?.agent?.setContacts(contacts.filter(contact => !blocked.has(contact.accountId)).map(contact => contact.accountId));
+  }, [contacts, blockedRows]);
   const order = useChatOrder();
   const desktopApp = window.desktop?.app ?? null;
 

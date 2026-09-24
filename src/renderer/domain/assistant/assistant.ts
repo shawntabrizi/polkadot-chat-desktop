@@ -17,21 +17,16 @@ import { type AssistantPeerId, type MessageRow, db } from '../../app/database';
 import { readSetting, writeSetting } from '../../app/settings';
 import { type BotCommand, type MessageContent, keyboardOf, previewOf } from '../chat/content';
 import { addMessage, listMessages, setMessageStatus, tombstoneMessage } from '../chat/messages';
-import { extractButtonsBlock, toButtonWire } from '../../../shared/buttonsBlock';
+import { SYSTEM_PROMPT } from '../../../shared/assistantPrompt';
+import { type ButtonsBlock, extractButtonsBlock, toButtonWire, validateButtons } from '../../../shared/buttonsBlock';
+import type { Directive } from '../../../shared/directives';
 import type { AssistantChatMessage, AssistantEngineId, DesktopAssistantApi } from '../../../shared/desktop-api';
 
 import { type ReplyStream, createReplyStream } from './replyStream';
 
 export const ASSISTANT_PEER: AssistantPeerId = 'local:assistant';
 export const ASSISTANT_USERNAME = 'Assistant';
-export const SYSTEM_PROMPT =
-  'You are the Assistant inside Polkadot Chat, a desktop chat app on Polkadot: people and bots have usernames on the People chain, ' +
-  'every chat is end-to-end encrypted, and you run locally on this computer as a built-in contact. Answer briefly in markdown. ' +
-  'This client renders a trailing fenced ```buttons block in your reply as REAL clickable buttons under your message. ' +
-  'When the user asks for buttons, or should pick from a few choices, you MUST end the reply with exactly one such block: ' +
-  '```buttons\n{"rows":[[{"label":"Yes","action":{"command":"yes"}},{"label":"No","action":{"command":"no"}}]]}\n``` ' +
-  'A pressed command button sends its command text back to you as the user\'s next message, so you will know which one was chosen. ' +
-  'Only "command" and "url" (https) actions work here; at most 8 rows of 4 buttons, labels up to 40 characters. Put nothing after the block.';
+export { SYSTEM_PROMPT };
 
 /**
  * A finished reply: a ```buttons block (spec 0006, the lenient extraction pca
@@ -40,12 +35,27 @@ export const SYSTEM_PROMPT =
  * breaks the rules is stripped and logged, never shown as JSON. The
  * Assistant has no peer to receive a `callback`, so a callback button shows
  * disabled.
+ * M13: `directive` is the same JSON when it came as a `send_buttons` tool
+ * call (the proxy engine). It is checked by the same `validateButtons` and
+ * built by the same code, so both paths give the same content; a block the
+ * model still wrote in its text is stripped, and the directive wins.
  */
-export const replyContent = (text: string): MessageContent => {
+export const replyContent = (text: string, directive?: Directive | null): MessageContent => {
   const block = extractButtonsBlock(text);
+  if (block && block.invalid.length > 0) console.warn('[assistant] dropped an invalid buttons block: %s', block.invalid.join('; '));
+  const body = block ? block.text : text;
+  if (directive) {
+    const buttons = validateButtons(directive);
+    if (buttons) return buttonsContent({ text: body, ...buttons });
+    console.warn('[assistant] dropped an invalid send_buttons directive');
+    return { type: 'text', text: body };
+  }
   if (!block) return { type: 'text', text };
-  if (block.invalid.length > 0) console.warn('[assistant] dropped an invalid buttons block: %s', block.invalid.join('; '));
   if (!block.rows) return { type: 'text', text: block.text };
+  return buttonsContent({ text: block.text, rows: block.rows, oneShot: block.oneShot });
+};
+
+const buttonsContent = (block: ButtonsBlock): MessageContent => {
   const rows = keyboardOf(block.rows.map(row => row.map(toButtonWire))).map(row =>
     row.map(button => (button.action.kind === 'callback' ? { ...button, action: { kind: 'unsupported' as const } } : button)),
   );
@@ -161,7 +171,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   // Reply text so far, per reply id. The bubble paints it from `stream`;
   // Dexie is written from here at most every PERSIST_MS, one write at a time
   // (`queue`), with the latest text.
-  const replies = new Map<string, { text: string; timestamp: number }>();
+  const replies = new Map<string, { text: string; timestamp: number; directive?: Directive | null }>();
   const stream = createReplyStream();
   const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const cancelPersist = (messageId: string) => {
@@ -183,7 +193,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
     const reply = replies.get(messageId);
     if (!reply) return;
     // Buttons only once the reply is whole: a half-streamed block is text.
-    const content: MessageContent = status === 'received' ? replyContent(reply.text) : { type: 'text', text: reply.text };
+    const content: MessageContent = status === 'received' ? replyContent(reply.text, reply.directive) : { type: 'text', text: reply.text };
     // A reply deleted in the room stays deleted, whatever still arrives for it.
     if ((await db.messages.get(messageId))?.content.type === 'deleted') return;
     const updated = await db.messages.update(messageId, { content, status });
@@ -204,7 +214,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
 
   const track = (messageId: string, after: number) => {
     if (!replies.has(messageId)) replies.set(messageId, { text: '', timestamp: Math.max(now(), after + 1) });
-    return replies.get(messageId) as { text: string; timestamp: number };
+    return replies.get(messageId) as { text: string; timestamp: number; directive?: Directive | null };
   };
 
   // A reply that was streaming when the app last closed will never finish.
@@ -256,7 +266,9 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
       // A CLI's closing text is the answer; what streamed before it may
       // include narration between tool calls.
       if (event.text !== undefined) reply.text = event.text;
-      if (!reply.text.trim()) reply.text = '(no answer)';
+      // M13: buttons that came as a tool call (never streamed as text).
+      if (event.directive) reply.directive = event.directive;
+      if (!reply.text.trim() && !reply.directive) reply.text = '(no answer)';
       await writeReply(event.messageId, 'received');
       replies.delete(event.messageId);
       ended.add(event.messageId);

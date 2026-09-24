@@ -94,3 +94,75 @@ export const formatUnits = (planck: bigint, decimals = PAS_DECIMALS, digits = 4)
   if (whole === 0n && fraction === '' && abs > 0n) return `${negative ? '-' : ''}<0.${'0'.repeat(digits - 1)}1`;
   return `${negative ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
 };
+
+// Ported from .refs/polkadot-chat-agents/bot-core/lib/buttons-block.mjs
+// `toTxIntent` (branch desktop/rfc-0003, commit 675f948) on 2026-09-24;
+// changes: TypeScript types, an absent `to` or gas field is `undefined` (this
+// file's codec shape) instead of `null`. The rules are unchanged: keep the
+// two in step. M13: the `propose_transaction` tool (shared/directives.ts)
+// checks its arguments with it before the agent sends the button.
+const isRecord = (value: unknown): value is Record<string, unknown> => value != null && typeof value === 'object' && !Array.isArray(value);
+const hexBytes = (value: unknown, { length = null, max = Infinity }: { length?: number | null; max?: number } = {}): Uint8Array | null => {
+  if (typeof value !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(value)) return null;
+  const bytes = Uint8Array.from(value.slice(2).match(/../g) ?? [], h => parseInt(h, 16));
+  if ((length != null && bytes.length !== length) || bytes.length > max) return null;
+  return bytes;
+};
+/** A decimal string or a non-negative safe integer → a bigint below 2^bits, or null. */
+const uint = (value: unknown, bits: number): bigint | null => {
+  let big: bigint | null = null;
+  if (typeof value === 'string' && /^\d{1,40}$/.test(value)) big = BigInt(value);
+  else if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) big = BigInt(value);
+  return big != null && big < 1n << BigInt(bits) ? big : null;
+};
+const optionalUint = (value: unknown, bits: number): { ok: boolean; value: bigint | undefined } => {
+  if (value === undefined || value === null) return { ok: true, value: undefined };
+  const parsed = uint(value, bits);
+  return { ok: parsed != null, value: parsed ?? undefined };
+};
+const shortString = (value: unknown, max: number, { empty = true } = {}): value is string =>
+  typeof value === 'string' && (empty || value.length > 0) && [...value].length <= max;
+
+/** Spec 0007 `TxIntent` from a brain's JSON (`chainId`, `calls`, `display`, `expiresAt`), or null. */
+export const txIntentFromJson = (tx: unknown): TxIntent | null => {
+  if (!isRecord(tx)) return null;
+  const known = new Set(['chainId', 'calls', 'display', 'expiresAt', 'dryRunRequired', 'version']);
+  if (Object.keys(tx).some(k => !known.has(k))) return null;
+  if (tx.version !== undefined && tx.version !== 1) return null;
+  if (tx.dryRunRequired !== undefined && tx.dryRunRequired !== true) return null;
+  if (!hexBytes(tx.chainId, { length: 32 })) return null;
+  const expiresAt = uint(tx.expiresAt, 64);
+  if (expiresAt == null || expiresAt === 0n) return null;
+  if (!Array.isArray(tx.calls) || tx.calls.length === 0 || tx.calls.length > MAX_TX_CALLS) return null;
+  const calls: TxCall[] = [];
+  for (const call of tx.calls as unknown[]) {
+    if (!isRecord(call) || (call.kind !== 0 && call.kind !== 1)) return null;
+    const to = call.to == null ? null : hexBytes(call.to, { length: 20 });
+    if (call.to != null && !to) return null;
+    if (call.kind === 1 && !to) return null;
+    const data = hexBytes(call.data, { max: MAX_CALL_DATA });
+    const value = call.value === undefined ? 0n : uint(call.value, 128);
+    if (!data || value == null) return null;
+    const gas = [optionalUint(call.gasRefTime, 64), optionalUint(call.gasProofSize, 64), optionalUint(call.storageDepositLimit, 128)] as const;
+    if (gas.some(g => !g.ok)) return null;
+    if (call.kind === 0 && gas.some(g => g.value !== undefined)) return null;
+    calls.push({ kind: call.kind, to: to ?? undefined, data, value, gasRefTime: gas[0].value, gasProofSize: gas[1].value, storageDepositLimit: gas[2].value });
+  }
+  const d = tx.display;
+  if (!isRecord(d) || !shortString(d.title, MAX_TITLE, { empty: false })) return null;
+  if (d.description !== undefined && !shortString(d.description, MAX_DESCRIPTION)) return null;
+  for (const key of ['amount', 'asset'] as const) if (d[key] != null && !shortString(d[key], 64, { empty: false })) return null;
+  return {
+    version: TX_INTENT_VERSION,
+    chainId: (tx.chainId as string).toLowerCase(),
+    calls,
+    display: {
+      title: d.title,
+      description: typeof d.description === 'string' ? d.description : '',
+      amount: typeof d.amount === 'string' ? d.amount : undefined,
+      asset: typeof d.asset === 'string' ? d.asset : undefined,
+    },
+    dryRunRequired: true,
+    expiresAt,
+  };
+};

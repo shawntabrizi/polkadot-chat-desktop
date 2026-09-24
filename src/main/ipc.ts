@@ -12,6 +12,8 @@ import { type BrowserWindow, Notification, app, ipcMain, shell } from 'electron'
 
 import {
   type AccountBalance,
+  type AgentSettingsUpdate,
+  type ClaimAgentRequest,
   type AssistantActivity,
   type AssistantChatMessage,
   type AssistantDone,
@@ -31,9 +33,11 @@ import {
   type TxStatusEvent,
   type UsernameAvailability,
 } from '../shared/desktop-api';
+import { withToolsHint } from '../shared/assistantPrompt';
 import { isNetworkProfileId } from '../shared/network';
 import { openableUrl } from '../shared/openUrl';
 
+import { type AgentService, createAgentService } from './agent/service';
 import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
@@ -216,6 +220,32 @@ const parseCreateRequest = (value: unknown): CreateIdentityRequest => {
   return { username: request.username, digits: request.digits, profile: request.profile };
 };
 
+const parseAgentUpdate = (value: unknown): AgentSettingsUpdate => {
+  const update = value as Record<string, unknown> | null;
+  const whole = (entry: unknown, max: number): number | undefined => {
+    if (entry === undefined) return undefined;
+    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0 || entry > max) throw new Error(`Enter a whole number from 0 to ${max}.`);
+    return entry;
+  };
+  if (update?.enabled !== undefined && typeof update.enabled !== 'boolean') throw new Error('Invalid switch.');
+  if (update?.audience !== undefined && update.audience !== 'contacts' && update.audience !== 'anyone') throw new Error('Unknown audience.');
+  const dailyCap = whole(update?.dailyCap, 10_000);
+  const cooldownSeconds = whole(update?.cooldownSeconds, 600);
+  return {
+    ...(update?.enabled !== undefined ? { enabled: update.enabled as boolean } : {}),
+    ...(update?.audience !== undefined ? { audience: update.audience as AgentSettingsUpdate['audience'] } : {}),
+    ...(dailyCap !== undefined ? { dailyCap } : {}),
+    ...(cooldownSeconds !== undefined ? { cooldownSeconds } : {}),
+  };
+};
+
+/**
+ * M13: the published agent, one per app run. Created by `registerIpc`; the
+ * app's `before-quit` stops its process through `shutdownAgent`.
+ */
+let agentService: AgentService | null = null;
+export const shutdownAgent = (): void => agentService?.shutdown();
+
 export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   ipcMain.handle(IPC.identityGet, (): IdentitySummary | null => {
     const identity = loadIdentity();
@@ -346,7 +376,10 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
       if (!event.sender.isDestroyed()) event.sender.send(channel, payload);
     };
     const history = messages.slice(0, -1).filter((message): message is Turn => message.role !== 'system');
-    const systemPrompt = messages.find(message => message.role === 'system')?.content ?? '';
+    // M13: the proxy gets the buttons as a tool, so the fenced-block wording goes.
+    const tools = engine.id === 'proxy';
+    const prompt = messages.find(message => message.role === 'system')?.content ?? '';
+    const systemPrompt = tools ? withToolsHint(prompt) : prompt;
     Promise.resolve()
       .then(() =>
         engine.run({
@@ -354,6 +387,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
           history,
           systemPrompt,
           ...(sessionId && engine.id !== 'proxy' ? { sessionId } : {}),
+          ...(tools ? { directives: ['buttons'] as const } : {}),
           signal: controller.signal,
           onDelta: text => emit(IPC.assistantDelta, { conversationId, messageId, text }),
           onEvent: engineEvent => {
@@ -376,7 +410,9 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
           engine: engine.id,
           ...(engine.id !== 'proxy' ? { text: result.text } : {}),
           ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          ...(result.directive ? { directive: result.directive } : {}),
         };
+        if (result.directiveInvalid?.length) console.warn('[assistant] dropped tool calls: %s', result.directiveInvalid.join('; '));
         emit(IPC.assistantDone, done);
       })
       .catch((cause: unknown) => {
@@ -425,6 +461,27 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (!isNetworkProfileId(profile)) throw new Error('Unknown network.');
     return [...(await demoManifest())[profile]];
   });
+
+  // M13: Settings › Agent. The agent's mnemonic stays here, as the person's does.
+  const agent = createAgentService(status => {
+    const win = getWindow();
+    if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.agentChanged, status);
+  });
+  agentService = agent;
+  ipcMain.handle(IPC.agentStatus, () => agent.status());
+  ipcMain.handle(IPC.agentClaim, (event, value: unknown) => {
+    const request: ClaimAgentRequest = parseCreateRequest(value);
+    return agent.claim(request, line => {
+      if (!event.sender.isDestroyed()) event.sender.send(IPC.agentProgress, line);
+    });
+  });
+  ipcMain.handle(IPC.agentUpdate, (_event, value: unknown) => agent.update(parseAgentUpdate(value)));
+  ipcMain.handle(IPC.agentSetContacts, (_event, value: unknown): void => {
+    if (!Array.isArray(value) || value.length > 10_000 || value.some(entry => typeof entry !== 'string' || !ACCOUNT.test(entry))) return;
+    agent.setContacts(value as string[]);
+  });
+  ipcMain.handle(IPC.agentKill, () => agent.kill());
+  agent.resume();
 
   ipcMain.handle(IPC.appSetBadge, (_event, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.min(Math.floor(count), 9999) : 0;

@@ -2991,6 +2991,9 @@ The before run missed `berlin-day/group-create`, `room-group`, `group-members` (
 Other after runs, not the acceptance run:
 - Run 1: SCREENSHOTS_PARTIAL in 80.2 s. Only `settings-diagnostics` missed: my check wanted the ratio 2.00, and the real pirate request had added a submission. The check now wants a count with messages > 0; `--only settings-diagnostics` then passed in 3.6 s (`Submissions per message 2.00 (6 / 3) Delivery acknowledgements (not counted above) 4`).
 - Run 2: SCREENSHOTS_PARTIAL in 282.6 s. The devnet was slow: the Faucet drip showed no outcome in 120 s, our stake took 23 s to a block, and the second player's stake failed on chain after a passing dry-run (`STAKE_FAILED Revive.StorageDepositLimitExhausted` in flip-peer.log). That left our stake waiting, and the next flip run's dry-run said "already staked". The script now fails at once on `STAKE_FAILED` and settles a stale round first (`--only room-flip,room-flip-done`: "our earlier stake still waits; the second player settles it", then SCREENSHOTS_OK in 47.7 s). See docs/questions.md "## M12h".
+## M13 (2026-09-24)
+
+Publish the local agent as an on-chain peer (bot-core 675f948 in a utility process, the brain in main); structured directives by tool calling.
 
 ### npm run check
 
@@ -3119,3 +3122,108 @@ This file is part of the commit, so the result is in the M12h hand-off report.
 `bash docs/milestones/M12h.check.sh` failed on main: it sets no `PCD_SCREENSHOT_IDENTITY`, so the main worker missed every shot. The main worker now defaults to `.agent-runs/identity-pcde2e/identity.json` (flip and group already defaulted to pcdbenchzzlx/pcdeceb and pcdbenchqmwk/pcdbenchfina); the variables stay as overrides and are listed at the top of `scripts/screenshots.mjs`.
 
 `env -i HOME=$HOME PATH=$PATH npm run screenshots` in the worktree: exit 0, 72 PNGs, `SCREENSHOTS_OK in 66.5 s` (67 s wall).
+ Test Files  74 passed (74)
+      Tests  606 passed (606)
+check:tokens: clean (158 files)
+```
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<scratch dir> npm run smoke
+
+```
+✓ built in 186ms
+SMOKE_OK
+```
+
+### npm run e2e:tools
+
+```
+
+> polkadot-chat-desktop@0.1.0 e2e:tools
+> node scripts/e2e-tools.mjs
+
+0.0s fake server http://127.0.0.1:59560
+0.5s built
+0.7s seeded pcdecejakd.11
+1.8s asked
+4.0s TOOLS_OFFERED yes (requests=1, tools=send_buttons)
+4.0s TOOLS_PROMPT_WITHOUT_FENCE yes
+4.0s TOOLS_KEYBOARD Red, Blue
+4.0s TOOLS_JSON_SEEN 0
+TOOLS_OK
+```
+
+The first run of this script (not above) connected to port 9337, where the M12h agent's app was listening, and drove that app (questions.md "## M13"). The script now picks a free port and checks it before launch.
+
+### npm run e2e:agent (fake OpenAI-style engine, the default; devnet, sender pcdeceb)
+
+```
+
+> polkadot-chat-desktop@0.1.0 e2e:agent
+> node scripts/e2e-agent.mjs
+
+0.8s built
+1.3s claim pcdagentikkh on devnet (engine: fake OpenAI server)
+23.0s AGENT_PUBLISHED pcdagentikkh.76 confirmed=true
+24.0s AGENT_RUNNING
+24.0s SENDER pcdeceb.89
+27.6s REQUEST_SENT (no text)
+40.6s ACCEPTED devices=1
+40.6s BOTINFO kind=1 name=pcdagentikkh.76 commands=help,about,stop
+41.6s GREETED "Hello! I am a test agent. Ask me anything."
+50.1s ANSWER "Pick a colour." keyboard=[Red, Blue] submissions=1 replies=1
+50.1s ANSWER_KEYBOARD
+58.6s PRESS_ANSWERED "You picked red." submissions=1 replies=1
+58.6s TOTALS replies=3 submissions=4 (the accept and the greeting included) typing=0
+58.6s BUDGET_OK one submission per reply
+AGENT_OK
+```
+
+Earlier runs, kept for what they found:
+- Run 2: `AGENT_TIMEOUT accept` with `agent log: error BOT_OPENER_DECODE_FAILED: Unknown cipher`: Electron's BoringSSL has no chacha20-poly1305 (decisions.md "## M13"). Fixed with the shim in the utility process entry.
+- Run 3: `GREETED "Connecting you to the agent…"`: a utility process drops an empty `BOT_ACK_TEXT`. Fixed (`PCD_EMPTY_ENV`); the script now fails on that text.
+
+### node scripts/e2e-agent.mjs --real-proxy (information, not the acceptance: the LLM proxy's default model)
+
+Run A (before the tool-argument shaping): the model called `send_buttons` with bare-string buttons; the brain dropped it (`agent log: info dropped: send_buttons: arguments break the buttons rules`) and the answer came as text only: `AGENT_FAIL the answer has no keyboard`. The same run's answer cost 2 submissions (the seen went alone after 5 s).
+
+Run B: `AGENT_TIMEOUT answer` after `BOT_STATEMENT_INGRESS_HEARTBEAT_SUBMIT_FAILED`, `BOT_OUTBOUND_SUBMIT_FAILED` and `BOT_SEEN_FAILED`: `statement_submit rejected: noAllowance` for the new agent account (questions.md).
+
+Run C (after the shaping):
+
+```
+0.8s built
+1.3s claim pcdagentwblb on devnet (engine: LLM proxy)
+18.8s AGENT_PUBLISHED pcdagentwblb.36 confirmed=true
+19.8s AGENT_RUNNING
+19.8s SENDER pcdeceb.89
+23.1s REQUEST_SENT (no text)
+33.1s ACCEPTED devices=1
+33.1s BOTINFO kind=1 name=pcdagentwblb.36 commands=help,about,stop
+40.1s GREETED "Hey — I'm **pcdagentwblb.36**, a bot running locally on this computer, right ins"
+56.6s ANSWER "Colours are just wavelengths to me — but I do have a favouri" keyboard=[Polkadot pink, Deep space blue, Terminal green, Sunset orange] submissions=2 replies=1
+56.6s ANSWER_KEYBOARD
+73.2s PRESS_ANSWERED "**Polkadot pink** — `#E6007A`. Good pick, and not just becau" submissions=2 replies=1
+73.2s TOTALS replies=3 submissions=7 (the accept and the greeting included) typing=0
+AGENT_FAIL budget: the answer cost 2 submissions for 1 replies
+```
+
+With a real engine (about 10 s per answer) the tool path works (a four-button keyboard, the press answered), and each reply costs 2 submissions: bot-core sends the seen alone when no reply comes within 5 s (questions.md "## M13").
+
+### PCD_SCREENSHOT_PORT=9451 npm run screenshots -- --only settings-agent (after the rebase onto M12h's rewritten script; main worker pcde2e, agent identity pcdbenchcold)
+
+```
+2.4s [main] fixture written
+5.9s [main] settings agent: "Give the Assistant its own username, so a phone user or any peer can chat with it while this app runs. It answers with the engine chosen under Assistant, with its tools off. Publish my agent Published. It answers while this app runs. pcdbenchcold.22 Share this name: people find your agent by it. It "
+7.1s [main] saved settings-agent
+SCREENSHOTS_OK in 7.2 s
+```
+
+Files: `.agent-runs/screens/berlin-day/settings-agent.png`, `.agent-runs/screens/berlin-night/settings-agent.png`.
+
+### git status --short
+
+Clean after the commit (checked before the push).
+
+### Not run
+
+- `npm run package` / the packaged app with the agent (not in M13's acceptance; questions.md).

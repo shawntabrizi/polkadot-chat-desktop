@@ -72,6 +72,10 @@
 //   send-pas room-request room-request-paid   M12g payments (fixture; paid
 //                   is checked on the chain from .agent-runs/pay-last.json)
 //   demo-onboarding settings-demo   M12i demo bots (fixture requests)
+//   settings-agent  M13 Settings › Agent, published for real on devnet with
+//                   PCD_SCREENSHOT_AGENT_IDENTITY (a path, default
+//                   .agent-runs/identity-pcdbenchcold/identity.json) as the
+//                   agent's own identity: the switch on, the username, the log
 //
 // Every variable is an optional override; with none set the workers use the
 // defaults above (the identities live in .agent-runs/identity-<name>/):
@@ -81,6 +85,7 @@
 //   PCD_SCREENSHOT_GROUP_IDENTITY  group worker, a name (pcdbenchqmwk)
 //   PCD_SCREENSHOT_GROUP_WITH      group member, a name (pcdbenchfina)
 //   PCD_SCREENSHOT_ENGINE          the Assistant's engine in the profile (claude)
+//   PCD_SCREENSHOT_AGENT_IDENTITY  settings-agent, a path to the agent's identity.json (pcdbenchcold)
 //   PCD_SCREENSHOT_PORT            first CDP port (9335; the workers use it and the three after it)
 //
 //   npm run screenshots
@@ -113,6 +118,8 @@ const flipIdentity = process.env.PCD_SCREENSHOT_FLIP_IDENTITY ?? 'pcdbenchzzlx';
 const flipWith = process.env.PCD_SCREENSHOT_FLIP_WITH ?? 'pcdeceb';
 const groupIdentity = process.env.PCD_SCREENSHOT_GROUP_IDENTITY ?? 'pcdbenchqmwk';
 const groupWith = process.env.PCD_SCREENSHOT_GROUP_WITH ?? 'pcdbenchfina';
+// M13 settings-agent: a test identity published as the agent's own (never the seeded person's).
+const agentIdentitySource = process.env.PCD_SCREENSHOT_AGENT_IDENTITY ?? join(root, '.agent-runs', 'identity-pcdbenchcold', 'identity.json');
 const BOT = 'pcdpeer.47';
 const FLIP_BOT = 'pcdflip';
 const GROUP_BOT = 'pcdguide.70';
@@ -125,7 +132,7 @@ const WORKER_SHOTS = {
   main: [
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
-    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'demo-onboarding', 'settings-demo',
+    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'settings-agent', 'demo-onboarding', 'settings-demo',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
@@ -331,19 +338,16 @@ const openRow = async (app, name, title = name) => {
 const identityFile = name => join(root, '.agent-runs', `identity-${name}`, 'identity.json');
 
 /**
- * A throwaway profile holding `source` (a plain identity.json from the Node
- * scripts). A tiny Electron script encrypts its mnemonic with safeStorage, as
- * the app would have. Same app name as a dev run (src/main/index.ts), so
- * safeStorage uses the same keychain entry; only the profile is written.
+ * Writes `target` in `profile` from `source` (a plain identity.json), the
+ * mnemonic encrypted with safeStorage by a tiny Electron script. M13: also
+ * the agent's own identity file (`agent/identity.json`).
  */
-const seededProfile = async source => {
-  const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-'));
+const seedIdentityFile = async (profile, source, target) => {
   const seedScript = join(profile, 'seed.mjs');
   writeFileSync(
     seedScript,
     `import { app, safeStorage } from 'electron';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 app.setName('polkadot-chat-desktop');
 app.setPath('userData', process.env.SEED_PROFILE);
 if (process.env.PCD_HEADLESS === '1') app.dock?.hide();
@@ -351,20 +355,31 @@ app.whenReady().then(() => {
   const src = JSON.parse(readFileSync(process.env.SEED_SOURCE, 'utf8'));
   const file = { version: 1, username: src.username, accountHex: src.accountHex, profile: src.profile,
     mnemonicEncrypted: safeStorage.encryptString(src.mnemonic).toString('base64') };
-  writeFileSync(join(process.env.SEED_PROFILE, 'identity.json'), JSON.stringify(file, null, 2) + '\\n', { mode: 0o600 });
+  writeFileSync(process.env.SEED_TARGET, JSON.stringify(file, null, 2) + '\\n', { mode: 0o600 });
   app.exit(0);
 });
 `,
   );
   const status = await new Promise(done => {
     const child = spawn(electronBin, [seedScript], {
-      env: { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile, SEED_PROFILE: profile, SEED_SOURCE: resolve(source) },
+      env: { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile, SEED_PROFILE: profile, SEED_SOURCE: resolve(source), SEED_TARGET: target },
       stdio: 'ignore',
     });
     child.once('exit', done);
   });
   rmSync(seedScript);
-  if (status !== 0 || !existsSync(join(profile, 'identity.json'))) throw new Error(`seeding ${source} failed`);
+  if (status !== 0 || !existsSync(target)) throw new Error(`seeding ${source} failed`);
+};
+
+/**
+ * A throwaway profile holding `source` (a plain identity.json from the Node
+ * scripts). A tiny Electron script encrypts its mnemonic with safeStorage, as
+ * the app would have. Same app name as a dev run (src/main/index.ts), so
+ * safeStorage uses the same keychain entry; only the profile is written.
+ */
+const seededProfile = async source => {
+  const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-'));
+  await seedIdentityFile(profile, source, join(profile, 'identity.json'));
   // The Assistant's engine, as Settings would write it (tools off).
   writeFileSync(
     join(profile, 'assistant.json'),
@@ -725,6 +740,7 @@ const mainWorker = async () => {
     await app.reload(app.exists('[data-testid=chat-row-assistant]'));
     log('fixture written');
     await mainShots(app, log, pay);
+    if (wanted('settings-agent')) await agentShots(app, log, profile);
   } catch (error) {
     missing.push(`main worker: ${error.message}`);
     log('stopped:', error.message);
@@ -1102,6 +1118,28 @@ const paymentShots = async (app, log, pay) => {
       throw new Error(`the request did not turn paid: ${JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=payment-request-state]')?.innerText ?? 'no request bubble'`))}`);
     }
     log('paid:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=payment-request]').innerText.replace(/\\s+/g, ' ')`)));
+  });
+  await app.esc();
+};
+
+/**
+ * M13 settings-agent: the agent published for real on devnet, with a test
+ * identity (PCD_SCREENSHOT_AGENT_IDENTITY, default pcdbenchcold) as its own,
+ * audience "My contacts only"; the shot waits until bot-core runs and its
+ * lines are in the log.
+ */
+const agentShots = async (app, log, profile) => {
+  await app.shot('settings-agent', async () => {
+    if (!existsSync(agentIdentitySource)) throw new Error(`no agent test identity at ${agentIdentitySource}`);
+    mkdirSync(join(profile, 'agent'), { recursive: true, mode: 0o700 });
+    if (!(await app.evaluate('window.desktop.agent.status().then(s => !!s.identity)'))) await seedIdentityFile(profile, agentIdentitySource, join(profile, 'agent', 'identity.json'));
+    await app.evaluate(`window.desktop.agent.update({ enabled: true, audience: 'contacts' }).then(() => true)`);
+    await app.click('[aria-label=Settings]');
+    if (!(await app.waitFor(`${app.exists('[data-testid=agent-settings]')} && ${app.exists('[data-testid=agent-username]')}`, 20_000))) throw new Error('no published agent in Settings');
+    if (!(await app.waitFor(`window.desktop.agent.status().then(s => s.state === 'running' && s.log.length >= 2)`, 90_000))) throw new Error('the agent did not start');
+    await sleep(3000);
+    await app.evaluate(`document.querySelector('[data-testid=agent-settings]').closest('section').scrollIntoView({ block: 'start' }); true`);
+    log('settings agent:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=agent-settings]').innerText.replace(/\\s+/g, ' ').slice(0, 300)`)));
   });
   await app.esc();
 };

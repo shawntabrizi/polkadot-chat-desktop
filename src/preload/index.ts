@@ -79,6 +79,17 @@ const api: DesktopApi = {
   demo: {
     bots: profile => ipcRenderer.invoke(IPC.demoBots, profile),
   },
+  agent: {
+    status: () => ipcRenderer.invoke(IPC.agentStatus),
+    claim: request => ipcRenderer.invoke(IPC.agentClaim, request),
+    update: change => ipcRenderer.invoke(IPC.agentUpdate, change),
+    setContacts: accounts => {
+      void ipcRenderer.invoke(IPC.agentSetContacts, accounts);
+    },
+    kill: () => ipcRenderer.invoke(IPC.agentKill),
+    onChanged: listen(IPC.agentChanged),
+    onProgress: listen(IPC.agentProgress),
+  },
 };
 
 contextBridge.exposeInMainWorld('desktop', api);
