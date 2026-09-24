@@ -14,4 +14,6 @@
 | 248 | `groupLeave` | implemented (M12) | none | 0009 |
 | 249 | `groupControl` (welcome, joinRequest, joinDecision, history, keyRequest) | draft (0011, M16) | none | 0011 |
 
+| 250 | `attachment` | draft (0012, M15) | the base spec's unsupported bubble | 0012 |
+
 Provisional range extended to 250–254 on 2026-09-24 (240–249 full).

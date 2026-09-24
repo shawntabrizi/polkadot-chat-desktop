@@ -169,3 +169,4 @@ Write the question, what you did meanwhile, and the date.
 - **A directive with no text.** The agent sends "Choose one:" as the buttons message's text when the model wrote none; the Assistant room shows the keyboard under an empty text. Wanted, or a different word?
 - **Packaging not checked.** bot-core runs from `node_modules` inside the app (utility process, ESM, its own wasm dependency). `npm run package` and the packaged app were not run for M13 (not in the acceptance list); an asar path problem is possible.
 - **/about names the engine** ("I answer with auto/deepseek-v4.1-flash while that app runs"). Fine to show the model name to strangers?
+- **Attachments (spec 0012):** phone interop for 1:1 images works only through HOP today. Reviewer recommends both paths (0012 + HOP fallback). Decide (docs/review/0012-attachments.md). Also: who authorizes Bulletin storage for non-persons beyond devnet.
