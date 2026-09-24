@@ -59,6 +59,9 @@ export const encodeTxIntent = (intent: TxIntent): Uint8Array => TxIntentCodec.en
 
 const chars = (text: string): number => [...text].length;
 
+/** Spec 0007: `expiresAt` 0 never expires (2026-09-24); else the intent is dead at and after it. */
+export const expiresAtPassed = (expiresAt: bigint | number, now: number): boolean => Number(expiresAt) !== 0 && Number(expiresAt) <= now;
+
 /**
  * Why this client refuses to run the intent, in words for the strip; null
  * when it may be dry-run. Spec 0007 client rule 1 plus the format limits.
@@ -68,7 +71,7 @@ export const intentProblem = (intent: TxIntent, { chainIds, now }: { chainIds: r
   if (intent.version !== TX_INTENT_VERSION) return 'This action uses a newer format than this app knows.';
   if (!intent.dryRunRequired) return 'This action does not allow a test run first, so this app will not sign it.';
   if (!chainIds.some(id => id.toLowerCase() === intent.chainId.toLowerCase())) return 'This action is for a network this app is not connected to.';
-  if (Number(intent.expiresAt) <= now) return 'This action has expired. Ask for a new one.';
+  if (expiresAtPassed(intent.expiresAt, now)) return 'This action has expired. Ask for a new one.';
   if (intent.calls.length === 0 || intent.calls.length > MAX_TX_CALLS) return `This action must have 1 to ${MAX_TX_CALLS} calls.`;
   for (const call of intent.calls) {
     if (call.kind !== CALL_KIND_RAW && call.kind !== CALL_KIND_REVIVE) return 'This action has a call type this app does not know.';
@@ -131,8 +134,9 @@ export const txIntentFromJson = (tx: unknown): TxIntent | null => {
   if (tx.version !== undefined && tx.version !== 1) return null;
   if (tx.dryRunRequired !== undefined && tx.dryRunRequired !== true) return null;
   if (!hexBytes(tx.chainId, { length: 32 })) return null;
-  const expiresAt = uint(tx.expiresAt, 64);
-  if (expiresAt == null || expiresAt === 0n) return null;
+  // Spec 0007 (2026-09-24): 0 never expires, and a block that leaves it out gets 0.
+  const expiresAt = tx.expiresAt === undefined ? 0n : uint(tx.expiresAt, 64);
+  if (expiresAt == null) return null;
   if (!Array.isArray(tx.calls) || tx.calls.length === 0 || tx.calls.length > MAX_TX_CALLS) return null;
   const calls: TxCall[] = [];
   for (const call of tx.calls as unknown[]) {

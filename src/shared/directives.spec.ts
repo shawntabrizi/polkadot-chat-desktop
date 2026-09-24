@@ -116,3 +116,29 @@ describe('the directive tools (M13)', () => {
     expect(directiveFromToolCalls([buttonsCall({ rows })], ['buttons']).directive?.rows).toEqual(rows);
   });
 });
+
+// Spec 0007 "Non-expiring intents" (2026-09-24): `expiresAt` 0 never expires.
+describe('a tx intent that never expires', () => {
+  // A top-up's bytes cannot go stale; the button must still sign days later.
+  it('accepts expiresAt 0 from the tool and the fenced block, and a fenced block without it gets 0', () => {
+    expect(txIntentFromJson({ ...tx, expiresAt: 0 })?.expiresAt).toBe(0n);
+    const noExpiry: Record<string, unknown> = { ...tx };
+    delete noExpiry.expiresAt;
+    expect(txIntentFromJson(noExpiry)?.expiresAt).toBe(0n);
+    const call: ToolCall = { name: TX_TOOL, arguments: JSON.stringify({ label: 'Top up 1 PAS', ...tx, expiresAt: 0 }) };
+    expect(directiveFromToolCalls([call], ['tx']).invalid).toEqual([]);
+    const [, txTool] = directiveTools(['buttons', 'tx']);
+    expect((txTool?.function.parameters as { properties: { expiresAt: { minimum: number } } }).properties.expiresAt.minimum).toBe(0);
+    // Still refused: a negative or non-integer expiry.
+    expect(txIntentFromJson({ ...tx, expiresAt: -1 })).toBeNull();
+    expect(txIntentFromJson({ ...tx, expiresAt: 1.5 })).toBeNull();
+  });
+
+  // Known gap, kept loud: the vendored bot-core (675f948) encodes the agent's
+  // block and still drops an intent with expiresAt 0. When a new bot-core is
+  // vendored with the spec change, this fails: then assert it is accepted.
+  it("is still dropped by the vendored bot-core's parser", () => {
+    const { directive } = directiveFromToolCalls([{ name: TX_TOOL, arguments: JSON.stringify({ label: 'Top up 1 PAS', ...tx, expiresAt: 0 }) }], ['tx']);
+    expect(botCoreExtract(withDirectiveBlock('Top up?', directive))?.invalid.length).toBeGreaterThan(0);
+  });
+});

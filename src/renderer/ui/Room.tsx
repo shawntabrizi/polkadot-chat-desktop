@@ -60,6 +60,7 @@ import { AmountRow, type PaymentKind, RequestBody } from './Payments';
 import { type StripPhase, TxStrip } from './Transactions';
 import { engineLabel, toolsLine } from './engines';
 import { plainError } from './format';
+import { askAgainText, intentExpired } from './txButton';
 import { useBestBlock } from './useChain';
 import { useLiveQuery } from './useLiveQuery';
 
@@ -395,7 +396,8 @@ export const Room = (props: Props) => {
       return;
     }
     const intent = decodeTxIntent(bytes);
-    if (!intent) return;
+    // Spec 0007 rule 1: an expired offer is never dry-run or signed (its button is disabled; this covers a race).
+    if (!intent || intentExpired(intent, Date.now())) return;
     const paymentNote = request && !request.own ? requestPaymentNote(request.messageId, request.note) : null;
     const opened: Strip = { messageId, row: r, index: i, bytes, intent, state: { phase: 'checking' }, outcome: null, paymentNote };
     // One strip per room: a send's strip (and its amount row) closes.
@@ -469,6 +471,7 @@ export const Room = (props: Props) => {
       press: (r: number, i: number) => void pressButton(row, r, i),
       active: open && strip ? { row: strip.row, index: strip.index, busy: true } : press?.messageId === row.messageId ? { row: press.row, index: press.index, busy: press.busy } : null,
       tx: button && status ? { ...button, status } : null,
+      ...(manager ? { askAgain: (r: number, i: number) => void askAgain(row, r, i) } : {}),
     };
     const request = manager ? requestsById.get(row.messageId) : undefined;
     if (!request) return keyboard;
@@ -486,6 +489,20 @@ export const Room = (props: Props) => {
           </Button>
         ) : null,
     };
+  };
+
+  // An expired offer: ask the bot for a new one with its own command, else in plain words.
+  const askAgain = async (row: MessageRow, r: number, i: number) => {
+    if (!manager || row.content.type !== 'buttons') return;
+    const button = row.content.rows[r]?.[i];
+    if (!button || button.action.kind !== 'tx') return;
+    setError(null);
+    const text = askAgainText(button.label, decodeTxIntent(button.action.intent)?.display ?? null, botInfo?.commands ?? []);
+    try {
+      await manager.sendMessage(peer as HexString, { type: 'text', text });
+    } catch (cause) {
+      setError(`${plainError(cause, 'The message was not sent.')} Try again.`);
+    }
   };
 
   const decline = async (request: PaymentRequest) => {

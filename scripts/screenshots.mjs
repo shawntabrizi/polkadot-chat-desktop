@@ -75,6 +75,9 @@
 //   room-tx-last    the Meter room's last message is a tx button: pressed, the
 //                   strip docks above the composer and the message stays in
 //                   view (owner bug 2026-09-24; real dry-run, never signed)
+//   room-tx-expired the Meter room's expired "Top up 1 PAS" offer (fixture):
+//                   the "· expired" chip, its tooltip hovered (when it ended,
+//                   what to do) and "Ask for a new one" beside it (2026-09-24)
 //   send-pas room-request room-request-paid   M12g payments (fixture; paid
 //                   is checked on the chain from .agent-runs/pay-last.json)
 //   demo-onboarding settings-demo   M12i demo bots (fixture requests)
@@ -173,7 +176,7 @@ const WORKER_SHOTS = {
   main: [
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
-    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
+    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-tx-expired', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
@@ -735,7 +738,7 @@ const ASKER = { requestId: 'fixture-request-incoming', account: account('d7'), u
  * `txIntent`: a real transfer of 0.01 PAS from the seeded identity to
  * itself, so the dry-run of room-tx passes (never signed).
  */
-const mainFixture = ({ txIntent, pay, self }) => {
+const mainFixture = ({ txIntent, expiredIntent, pay, self }) => {
   const h = HELPER;
   const t = step => h.at + step * 60_000;
   const tx = byte => `0x${byte.repeat(32)}`;
@@ -797,7 +800,7 @@ const mainFixture = ({ txIntent, pay, self }) => {
     ],
     rooms: [
       ...m.contacts.map(c => ({ ...roomRow(c, c.text, c.at, { ...(c.archived ? { archived: true } : {}), ...(c.pinnedAt ? { pinnedAt: c.pinnedAt } : {}) }), unreadCount: c.unread ?? 0 })),
-      roomRow(METER, 'What is a parachain?', METER.at + 1),
+      roomRow(METER, 'What is a parachain?', METER.at + 2),
       roomRow(h, TX_NOTE, t(11), { muted: true }),
       roomRow(pay.ask, pay.ask.text, pay.ask.at + 1),
       ...(pay.paid ? [roomRow(pay.paid, 'Paid', pay.paid.at + 60_000)] : []),
@@ -807,9 +810,17 @@ const mainFixture = ({ txIntent, pay, self }) => {
     messages: [
       ...m.contacts.map(c => messageRow(`fixture-${c.username}`, c, c.at, 'incoming', { type: 'text', text: c.text })),
       { messageId: `bot-greeting:${METER.account}`, peerAccountId: METER.account, timestamp: METER.at, direction: 'system', status: 'received', content: { type: 'botGreeting', text: METER.info.greeting }, reactions: [], editedAt: null },
-      messageRow('fixture-meter-question', METER, METER.at + 1, 'outgoing', { type: 'text', text: 'What is a parachain?' }),
+      // room-tx-expired: an offer whose expiresAt passed hours ago (2026-09-24).
+      messageRow('fixture-meter-expired', METER, METER.at + 1, 'incoming', {
+        type: 'buttons',
+        text: 'Your balance with Meter is low. Top up to keep chatting.',
+        rows: [[{ label: 'Top up 1 PAS', action: { kind: 'tx', intent: bytes(expiredIntent) } }]],
+        oneShot: false,
+        pressed: null,
+      }),
+      messageRow('fixture-meter-question', METER, METER.at + 2, 'outgoing', { type: 'text', text: 'What is a parachain?' }),
       // room-tx-last: the room's last message is a tx button (the owner's case, 2026-09-24).
-      messageRow('fixture-meter-tx', METER, METER.at + 2, 'incoming', {
+      messageRow('fixture-meter-tx', METER, METER.at + 3, 'incoming', {
         type: 'buttons',
         text: 'Try the signing strip: a test transfer of 0.01 PAS to yourself.',
         rows: [[{ label: 'Send 0.01 PAS to yourself', action: { kind: 'tx', intent: bytes(txIntent) } }]],
@@ -1001,6 +1012,20 @@ const attachmentFixture = async () => {
 };
 
 /** The intent of the fixture tx button: 0.01 PAS from `selfHex` to itself, with call data the app builds. */
+/** The Meter's "Top up 1 PAS" as it offered it 3 h ago, expired 2 h ago. Never pressed (disabled), so the call data is a placeholder. */
+const expiredTopUpIntent = async () => {
+  const { encodeTxIntent } = await loadTs('src/shared/txIntent.ts');
+  const contract = Uint8Array.from(METER_HINT.contract.slice(2).match(/../g), h => parseInt(h, 16));
+  return encodeTxIntent({
+    version: 1,
+    chainId: GENESIS,
+    calls: [{ kind: 1, to: contract, data: new Uint8Array([0x5b, 0x1c, 0x0f, 0x2a]), value: 10_000_000_000n, gasRefTime: undefined, gasProofSize: undefined, storageDepositLimit: undefined }],
+    display: { title: 'Top up', description: 'Adds 1 PAS to your balance with Meter', amount: '1', asset: 'PAS' },
+    dryRunRequired: true,
+    expiresAt: BigInt(Date.now() - 2 * 3_600_000),
+  });
+};
+
 const selfTransferIntent = async (app, selfHex) => {
   const callData = await app.evaluate(`window.desktop.chain.transferCall(${JSON.stringify(selfHex)}, '100000000').then(bytes => Array.from(bytes))`);
   const { encodeTxIntent } = await loadTs('src/shared/txIntent.ts');
@@ -1053,7 +1078,7 @@ const mainWorker = async () => {
     const pay = await paymentFixture(source.accountHex);
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = ['room-tx', 'room-tx-last', 'room-meter'].some(wanted) ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
-    await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
+    await writeRows(app, mainFixture({ txIntent, expiredIntent: await expiredTopUpIntent(), pay, self: { account: source.accountHex, username: source.username } }));
     await writeRows(app, await daoFixture({ account: source.accountHex, username: source.username }));
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
@@ -1664,6 +1689,31 @@ const manageShots = async (app, log) => {
     else if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== METER.username) missing.push('room-tx-last Esc check (Esc closed the room, not the strip)');
     else log('Esc closed the strip; the room stayed open');
   }
+
+  await app.shot(
+    'room-tx-expired',
+    async () => {
+      if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== METER.username) await openRow(app, METER.username);
+      const expired = `document.querySelector('[data-message-id="fixture-meter-expired"] [data-testid=keyboard-expired]')`;
+      if (!(await app.waitFor(`${expired} != null`, 10_000))) throw new Error('no expired chip on the Meter offer');
+      const chip = `${expired}.querySelector('[data-action=tx]')`;
+      if (!(await app.evaluate(`${chip}.disabled && ${chip}.textContent.includes('Top up 1 PAS · expired')`))) throw new Error('the expired chip is not a disabled "· expired" button');
+      if (!(await app.evaluate(`!!${expired}.querySelector('[data-testid=tx-ask-again]')`))) throw new Error('no "Ask for a new one" beside the chip');
+      await app.evaluate(`document.querySelector('[data-message-id="fixture-meter-expired"]').scrollIntoView({ block: 'center' }); true`);
+      await app.settle();
+      const tooltip = `[...document.querySelectorAll('[data-slot=tooltip-content],[role=tooltip]')].some(t => t.textContent.startsWith('This offer expired on '))`;
+      let shown = false;
+      for (let attempt = 0; attempt < 3 && !shown; attempt++) {
+        await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+        await app.hoverAt(`${expired}.querySelector('[data-testid=keyboard-disabled]')`);
+        shown = await app.waitFor(tooltip, 3_000);
+      }
+      if (!shown) throw new Error('no "This offer expired on …" tooltip on hover');
+      await sleep(400);
+      log('expired:', JSON.stringify(await app.evaluate(`${expired}.innerText.replace(/\\s+/g, ' ')`)));
+    },
+    { hover: true },
+  );
 };
 
 /**

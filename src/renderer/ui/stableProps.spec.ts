@@ -72,6 +72,20 @@ describe('createActionCache', () => {
     expect(cache.get('a', { pin: { pinned: true, run: () => undefined } })?.pin?.pinned).toBe(true);
   });
 
+  // 2026-09-24: an expired tx button's "Ask for a new one". The first
+  // screenshot run showed why: the cache dropped it, so the action never showed.
+  it('keeps the ask-again action of an expired tx button and calls the latest closure', () => {
+    const cache = createActionCache();
+    const press = () => undefined;
+    const calls: string[] = [];
+    const plain = cache.get('a', { keyboard: { press, active: null } });
+    expect(plain?.keyboard?.askAgain).toBeUndefined();
+    const offered = cache.get('a', { keyboard: { press, active: null, askAgain: () => calls.push('old') } });
+    expect(offered).not.toBe(plain);
+    cache.get('a', { keyboard: { press, active: null, askAgain: (row, index) => calls.push(`new ${row}:${index}`) } })?.keyboard?.askAgain?.(0, 1);
+    expect(calls).toEqual(['new 0:1']);
+  });
+
   // M14: the proposal card's countdown changes every second; a cached status would freeze it.
   it('passes a status block through as it is', () => {
     const cache = createActionCache();

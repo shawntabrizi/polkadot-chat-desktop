@@ -50,7 +50,7 @@ const shapeOf = (actions: BubbleActions): string =>
     retry: !!actions.retry,
     remove: actions.remove?.label ?? null,
     forward: !!actions.forward,
-    keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null, done: actions.keyboard.done ?? null } : null,
+    keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null, done: actions.keyboard.done ?? null, askAgain: !!actions.keyboard.askAgain } : null,
     referenceText: actions.referenceText ?? null,
     pin: actions.pin?.pinned ?? null,
   });
@@ -84,6 +84,8 @@ export const createActionCache = () => {
             active: actions.keyboard.active,
             ...(actions.keyboard.tx !== undefined ? { tx: actions.keyboard.tx } : {}),
             ...(actions.keyboard.done !== undefined ? { done: actions.keyboard.done } : {}),
+            // 2026-09-24: an expired tx button's "Ask for a new one"; without this it never reached the keyboard.
+            ...(actions.keyboard.askAgain ? { askAgain: (row: number, index: number) => current(messageId)?.keyboard?.askAgain?.(row, index) } : {}),
           },
         }
       : {}),

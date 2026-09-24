@@ -103,7 +103,7 @@ const TX_PARAMETERS = {
       required: ['title'],
       additionalProperties: false,
     },
-    expiresAt: { type: 'integer', minimum: 1, description: 'Unix time in milliseconds after which the button is disabled.' },
+    expiresAt: { type: 'integer', minimum: 0, description: 'Unix time in milliseconds after which the button is disabled; 0 = never expires (a fixed call that cannot go stale).' },
   },
   required: ['label', 'chainId', 'calls', 'display', 'expiresAt'],
   additionalProperties: false,

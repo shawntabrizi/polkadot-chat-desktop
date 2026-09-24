@@ -4,7 +4,7 @@
 // under the bubble, not a modal, and names the host (§11).
 
 import { ExternalLink, LoaderCircle, Wallet } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 
 import type { ChatButton, TxStatus } from '../domain/chat/content';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { openableUrl } from '../../shared/openUrl';
 
 import { TxStatusIcon } from './Transactions';
-import { txButtonView } from './txButton';
+import { expiredLabel, txButtonView, watchExpiry } from './txButton';
 
 /** Where a press goes; absent, every button shows disabled. */
 export type KeyboardActions = {
@@ -26,6 +26,8 @@ export type KeyboardActions = {
   done?: { row: number; index: number; label: string } | null;
   /** M12g: client chrome after the last button (a request's Decline); not a spec 0006 button. */
   extra?: ReactNode;
+  /** An expired `tx` button: ask its sender for a new one (client chrome beside the chip). */
+  askAgain?: (row: number, index: number) => void;
 };
 
 export type ButtonPosition = { row: number; index: number };
@@ -43,79 +45,121 @@ export const DISABLED_ACTION_TEXT = 'This client cannot run this action yet';
 
 const same = (a: ButtonPosition | null, row: number, index: number): boolean => a !== null && a.row === row && a.index === index;
 
-export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) => (
-  <div className="flex flex-col gap-1.5 pt-1" data-testid="keyboard">
-    {rows.map((row, r) => (
-      <div key={r} className="flex flex-wrap gap-1.5">
-        {row.map((button, i) => {
-          const { action } = button;
-          // Spec 0007 (owner requirement): a tx button says it signs, shows the amount, and expires.
-          const txView = action.kind === 'tx' ? txButtonView(action.intent, Date.now(), button.label) : null;
-          const runnable = action.kind !== 'unsupported' && txView?.expired !== true;
-          const active = same(keyboard?.active ?? null, r, i) || same(confirming, r, i);
-          const busy = keyboard?.active?.busy === true && same(keyboard.active, r, i);
-          const txStatus = keyboard?.tx && same(keyboard.tx, r, i) ? keyboard.tx.status : null;
-          const done = keyboard?.done && same(keyboard.done, r, i) ? keyboard.done.label : null;
-          const control = (
-            <Button
-              type="button"
-              // A tx button stays secondary: while its strip is open, Sign is the one primary control.
-              variant={active && action.kind !== 'tx' ? 'default' : 'secondary'}
-              size="sm"
-              className="h-auto min-h-8 max-w-full min-w-0 grow cursor-pointer rounded-medium py-1.5 text-label-m disabled:cursor-not-allowed"
-              disabled={!runnable || !keyboard || done !== null}
-              aria-pressed={active}
-              aria-busy={busy}
-              data-testid="keyboard-button"
-              data-action={action.kind}
-              onClick={() => {
-                if (!keyboard) return;
-                if (action.kind === 'url') onAskUrl({ row: r, index: i }, action.url);
-                else if (action.kind !== 'unsupported') keyboard.press(r, i);
-              }}
-            >
-              {busy ? <LoaderCircle className="size-3.5 animate-spin" aria-label="Waiting for the answer" /> : null}
-              {action.kind === 'tx' && !busy ? <Wallet className="size-4" aria-hidden /> : null}
-              <span className="truncate">{done ?? button.label}</span>
-              {txView?.caption ? (
-                <span className="shrink-0 text-body-s text-fg-secondary" data-testid="tx-caption">
-                  {txView.caption}
-                </span>
-              ) : null}
-              {action.kind === 'url' ? <ExternalLink className="size-3.5" aria-hidden /> : null}
-              {txStatus && !busy ? <TxStatusIcon status={txStatus} /> : null}
-            </Button>
-          );
-          // Done: the state is the label; no tooltip, no press.
-          if (done !== null) return <div key={i} className="flex max-w-full min-w-0 grow" data-testid="keyboard-done">{control}</div>;
-          if (runnable && !txView) return <div key={i} className="flex max-w-full min-w-0 grow">{control}</div>;
-          if (runnable) {
+/**
+ * The clock of a keyboard: it moves when the earliest `tx` expiry in view
+ * passes, so an offer turns expired while the room is open.
+ */
+const useExpiryClock = (rows: readonly ChatButton[][]): number => {
+  const [now, setNow] = useState(() => Date.now());
+  const expiries = rows.flatMap(row => row.flatMap(button => (button.action.kind === 'tx' ? [txButtonView(button.action.intent, now)?.expiresAt ?? 0] : [])));
+  const key = expiries.join(',');
+  useEffect(() => watchExpiry(key === '' ? [] : key.split(',').map(Number), now, () => setNow(Date.now())), [key, now]);
+  return now;
+};
+
+export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) => {
+  const now = useExpiryClock(rows);
+  return (
+    <div className="flex flex-col gap-1.5 pt-1" data-testid="keyboard">
+      {rows.map((row, r) => (
+        <div key={r} className="flex flex-wrap gap-1.5">
+          {row.map((button, i) => {
+            const { action } = button;
+            // Spec 0007 (owner requirement): a tx button says it signs, shows the amount, and expires.
+            const txView = action.kind === 'tx' ? txButtonView(action.intent, now, button.label) : null;
+            const runnable = action.kind !== 'unsupported' && txView?.expired !== true;
+            const active = same(keyboard?.active ?? null, r, i) || same(confirming, r, i);
+            const busy = keyboard?.active?.busy === true && same(keyboard.active, r, i);
+            const txStatus = keyboard?.tx && same(keyboard.tx, r, i) ? keyboard.tx.status : null;
+            const done = keyboard?.done && same(keyboard.done, r, i) ? keyboard.done.label : null;
+            const control = (
+              <Button
+                type="button"
+                // A tx button stays secondary: while its strip is open, Sign is the one primary control.
+                variant={active && action.kind !== 'tx' ? 'default' : 'secondary'}
+                size="sm"
+                className="h-auto min-h-8 max-w-full min-w-0 grow cursor-pointer rounded-medium py-1.5 text-label-m disabled:cursor-not-allowed"
+                disabled={!runnable || !keyboard || done !== null}
+                aria-pressed={active}
+                aria-busy={busy}
+                data-testid="keyboard-button"
+                data-action={action.kind}
+                onClick={() => {
+                  if (!keyboard) return;
+                  if (action.kind === 'url') onAskUrl({ row: r, index: i }, action.url);
+                  else if (action.kind !== 'unsupported') keyboard.press(r, i);
+                }}
+              >
+                {busy ? <LoaderCircle className="size-3.5 animate-spin" aria-label="Waiting for the answer" /> : null}
+                {action.kind === 'tx' && !busy ? <Wallet className="size-4" aria-hidden /> : null}
+                <span className="truncate">{done ?? (txView?.expired ? expiredLabel(button.label) : button.label)}</span>
+                {txView?.caption && !txView.expired ? (
+                  <span className="shrink-0 text-body-s text-fg-secondary" data-testid="tx-caption">
+                    {txView.caption}
+                  </span>
+                ) : null}
+                {action.kind === 'url' ? <ExternalLink className="size-3.5" aria-hidden /> : null}
+                {txStatus && !busy ? <TxStatusIcon status={txStatus} /> : null}
+              </Button>
+            );
+            // Done: the state is the label; no tooltip, no press.
+            if (done !== null) return <div key={i} className="flex max-w-full min-w-0 grow" data-testid="keyboard-done">{control}</div>;
+            // Spec 0007 rule 6: an expired offer never opens the strip. The chip says so, the tooltip says when, and the ghost action asks for a new one.
+            if (txView?.expired) {
+              return (
+                <div key={i} className="flex max-w-full min-w-0 grow items-center gap-1" data-testid="keyboard-expired">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className="flex max-w-full min-w-0 grow cursor-not-allowed" data-testid="keyboard-disabled">
+                        {control}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{txView.tooltip}</TooltipContent>
+                  </Tooltip>
+                  {keyboard?.askAgain ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto min-h-8 shrink-0 cursor-pointer rounded-medium py-1.5 text-label-m font-normal"
+                      onClick={() => keyboard.askAgain?.(r, i)}
+                      data-testid="tx-ask-again"
+                    >
+                      Ask for a new one
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            }
+            if (runnable && !txView) return <div key={i} className="flex max-w-full min-w-0 grow">{control}</div>;
+            if (runnable) {
+              return (
+                <Tooltip key={i}>
+                  <TooltipTrigger asChild>
+                    <div className="flex max-w-full min-w-0 grow">{control}</div>
+                  </TooltipTrigger>
+                  <TooltipContent>{txView?.tooltip}</TooltipContent>
+                </Tooltip>
+              );
+            }
+            // A disabled button takes no pointer events: the wrapper holds the tooltip.
             return (
               <Tooltip key={i}>
                 <TooltipTrigger asChild>
-                  <div className="flex max-w-full min-w-0 grow">{control}</div>
+                  <span tabIndex={0} className="flex max-w-full min-w-0 grow cursor-not-allowed" data-testid="keyboard-disabled">
+                    {control}
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent>{txView?.tooltip}</TooltipContent>
+                <TooltipContent>{txView?.tooltip ?? DISABLED_ACTION_TEXT}</TooltipContent>
               </Tooltip>
             );
-          }
-          // A disabled button takes no pointer events: the wrapper holds the tooltip.
-          return (
-            <Tooltip key={i}>
-              <TooltipTrigger asChild>
-                <span tabIndex={0} className="flex max-w-full min-w-0 grow cursor-not-allowed" data-testid="keyboard-disabled">
-                  {control}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{txView?.tooltip ?? DISABLED_ACTION_TEXT}</TooltipContent>
-            </Tooltip>
-          );
-        })}
-        {r === rows.length - 1 ? (keyboard?.extra ?? null) : null}
-      </div>
-    ))}
-  </div>
-);
+          })}
+          {r === rows.length - 1 ? (keyboard?.extra ?? null) : null}
+        </div>
+      ))}
+    </div>
+  );
+};
 
 /** "Open <host>?" with Open / Cancel, under the bubble. Never opens by itself. */
 export const UrlConfirmStrip = ({ url, onOpen, onCancel }: { url: string; onOpen: () => void; onCancel: () => void }) => {

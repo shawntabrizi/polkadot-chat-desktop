@@ -41,6 +41,7 @@ import { Checkbox } from './controls';
 import { plainError } from './format';
 import { ProposalStatus, useNow } from './ProposalCard';
 import { type StripPhase, TxStrip } from './Transactions';
+import { intentExpired } from './txButton';
 import { useLiveQuery } from './useLiveQuery';
 
 import { type TxIntent, decodeTxIntent } from '../../shared/txIntent';
@@ -575,7 +576,8 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
       return;
     }
     const intent = decodeTxIntent(bytes);
-    if (!intent) return;
+    // Spec 0007 rule 1: an expired offer is never dry-run or signed (its button is disabled; this covers a race).
+    if (!intent || intentExpired(intent, Date.now())) return;
     setError(null);
     setStrip({ messageId, row: r, index: i, intent, state: { phase: 'checking' } });
     const update = (state: StripPhase) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, state } : current));

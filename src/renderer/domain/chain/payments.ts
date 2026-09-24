@@ -20,7 +20,7 @@
 
 import type { MessageRow } from '../../app/database';
 import type { ChainTransfer } from '../../../shared/desktop-api';
-import { CALL_KIND_RAW, MAX_TITLE, PAS_DECIMALS, TX_INTENT_VERSION, decodeTxIntent, encodeTxIntent, formatUnits } from '../../../shared/txIntent';
+import { CALL_KIND_RAW, MAX_TITLE, PAS_DECIMALS, TX_INTENT_VERSION, decodeTxIntent, encodeTxIntent, expiresAtPassed, formatUnits } from '../../../shared/txIntent';
 import { MAX_REFERENCE_NOTE, type TxReference, type TxStatus, noteWords, referenceLine, requestIdOfNote } from '../chat/content';
 import type { ButtonWire } from '../chat/identityEvents';
 
@@ -207,7 +207,7 @@ export const requesterState = (
   if (paidBy) return { state: 'paid', checking: false, paidBy };
   const checking = claims.some(reference => lookup(reference) === undefined);
   if (declinedAfter(request, rows, 'incoming')) return { state: 'declined', checking, paidBy: null };
-  return { state: now >= request.expiresAt ? 'expired' : 'pending', checking, paidBy: null };
+  return { state: expiresAtPassed(request.expiresAt, now) ? 'expired' : 'pending', checking, paidBy: null };
 };
 
 /** The payer's side of a request: its own reference for it (by the intent id or the note), and a decline it sent. */
@@ -223,7 +223,7 @@ export const payerState = (request: PaymentRequest, rows: readonly MessageRow[],
   const status = own?.content.type === 'transactionReference' ? own.content.reference.status : null;
   if (status && settled(status)) return { state: 'paid', status };
   if (declinedAfter(request, rows, 'outgoing')) return { state: 'declined', status };
-  return { state: now >= request.expiresAt ? 'expired' : 'pending', status };
+  return { state: expiresAtPassed(request.expiresAt, now) ? 'expired' : 'pending', status };
 };
 
 // ── What the bubbles say ────────────────────────────────────────────────────
