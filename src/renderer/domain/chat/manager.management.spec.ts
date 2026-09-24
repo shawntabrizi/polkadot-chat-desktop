@@ -22,7 +22,7 @@ import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, IdentityChannelEvent } from './identityEvents';
-import { blockPeer, unblockPeer } from './chatActions';
+import { blockPeer, markChatDeleted, unblockPeer } from './chatActions';
 import { listMessages } from './messages';
 import { type ChatManager, createChatManager } from './manager';
 import { createPeerRoster } from './peerRoster';
@@ -243,5 +243,132 @@ describe('chat management: forward and delete', () => {
     await transport.send({ tag: 'text', value: 'still there?' }, Date.now() + 1000);
     const room = await waitFor(() => db.rooms.get(peerKey));
     expect(room.unreadCount).toBe(1);
+  });
+});
+
+/**
+ * The owner's bug (2026-09-24): a deleted chat came back after a restart.
+ * The peer's statements stay in the store, and a new manager reads them
+ * again with no rows left to dedup against. The delete mark must hold across
+ * the restart, and only something the peer says after the delete may bring
+ * the room back.
+ */
+describe('chat management: a deleted chat stays deleted across a restart', () => {
+  const restart = async (store: Store, web: TestPeer, bot: TestPeer): Promise<ChatManager> => {
+    manager?.dispose();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    return manager;
+  };
+
+  const deleteWithHistory = async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await transport.send({ tag: 'text', value: 'said before the delete' });
+    await waitFor(async () => (await listMessages(peerKey)).find(row => row.content.type === 'text' && row.content.text === 'said before the delete'));
+    const deletedAt = Date.now();
+    await manager.deleteChat(peerKey, deletedAt);
+    expect(await db.rooms.get(peerKey)).toBeUndefined();
+    return { store, web, bot, peerKey, deletedAt };
+  };
+
+  it('a new manager on the same database does not rebuild the room from the statements it reads again', async () => {
+    const { store, web, bot, peerKey } = await deleteWithHistory();
+    await restart(store, web, bot);
+    // The session and the identity channel replay the old message and the accept here.
+    await settle();
+    await settle();
+    await settle();
+    expect(await db.rooms.get(peerKey)).toBeUndefined();
+    expect(await listMessages(peerKey)).toEqual([]);
+    // The delete keeps the contact (M12e): only the room stays gone.
+    expect(await db.contacts.get(peerKey)).toBeDefined();
+  });
+
+  it('an older message read after the delete does not bring the room back', async () => {
+    const { store, web, bot, peerKey, deletedAt } = await deleteWithHistory();
+    await restart(store, web, bot);
+    await transport!.send({ tag: 'text', value: 'written before the delete, arrives late' }, deletedAt - 1_000);
+    await settle();
+    await settle();
+    expect(await db.rooms.get(peerKey)).toBeUndefined();
+    expect(await listMessages(peerKey)).toEqual([]);
+  });
+
+  it('a newer message brings the room back with that message only, and a later restart adds nothing old', async () => {
+    const { store, web, bot, peerKey, deletedAt } = await deleteWithHistory();
+    await restart(store, web, bot);
+    await transport!.send({ tag: 'text', value: 'hello again' }, deletedAt + 1_000);
+    const room = await waitFor(() => db.rooms.get(peerKey));
+    expect(room.unreadCount).toBe(1);
+    const texts = async () => (await listMessages(peerKey)).map(row => (row.content.type === 'text' ? row.content.text : row.content.type));
+    expect(await texts()).toEqual(['hello again']);
+
+    await restart(store, web, bot);
+    await settle();
+    await settle();
+    await settle();
+    expect(await texts()).toEqual(['hello again']);
+  });
+
+  it('a quit during the Undo time does not lose the delete: the mark is on disk and the next start finishes it', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await transport.send({ tag: 'text', value: 'said before the delete' });
+    await waitFor(async () => (await listMessages(peerKey)).length > 1);
+    // The press writes the mark; the commit (6 s later) never runs: the app quits.
+    await markChatDeleted(peerKey, Date.now());
+
+    await restart(store, web, bot);
+    await waitFor(async () => (await db.rooms.get(peerKey)) === undefined);
+    expect(await listMessages(peerKey)).toEqual([]);
+    expect(await db.contacts.get(peerKey)).toBeDefined();
+  });
+
+  it('Undo takes the mark back, so the next start keeps the chat', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    const unmark = await markChatDeleted(peerKey, Date.now());
+    await unmark();
+
+    await restart(store, web, bot);
+    await settle();
+    await settle();
+    expect(await db.rooms.get(peerKey)).toBeDefined();
+    expect(await db.deletedChats.get(peerKey)).toBeUndefined();
+  });
+
+  it('a withdrawn request with no room marks the peer, so nothing the peer said before it can open a chat later', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    const peerKey = bytesToHex(bot.identity.identityAccountId) as HexString;
+    await db.requests.put({
+      requestId: 'r-1',
+      direction: 'outgoing',
+      peerAccountId: peerKey,
+      peerUsername: 'bot',
+      peerChatPublicKey: bot.identity.identityChatPublicKey,
+      welcomeMessage: null,
+      senderDevice: null,
+      status: 'pending',
+      timestamp: Date.now(),
+      createdAt: Date.now(),
+    });
+    const at = Date.now();
+    await manager.withdrawRequest(peerKey);
+    expect((await db.deletedChats.get(peerKey))?.deletedAt).toBeGreaterThanOrEqual(at);
   });
 });

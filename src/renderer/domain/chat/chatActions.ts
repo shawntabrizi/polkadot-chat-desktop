@@ -6,7 +6,7 @@
  */
 
 import type { HexString } from '../../app/bytes';
-import { type BlockedRow, type MessageRow, type PeerId, appDatabase, db, groupIdOf, isGroupPeer } from '../../app/database';
+import { type BlockedRow, type DeletedChatRow, type MessageRow, type PeerId, appDatabase, db, groupIdOf, isGroupPeer } from '../../app/database';
 
 import { buttonsFallbackText } from '../../../shared/buttonsBlock';
 
@@ -44,7 +44,9 @@ const refreshRoom = async (peer: PeerId, extra: { unreadCount?: number; markedUn
  * (with the session): if the peer writes again, the room comes back.
  */
 export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
-  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups, db.attachments, db.keys], async () => {
+  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups, db.attachments, db.keys, db.deletedChats], async () => {
+    // The peer's statements are read again at the next start: this mark keeps them out.
+    await db.deletedChats.put({ peerId: peer, deletedAt: at });
     const group = isGroupPeer(peer);
     const rows = group ? db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, Infinity]) : messagesUpTo(peer, at);
     await dropAttachments(await rows.primaryKeys());
@@ -56,7 +58,7 @@ export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
       // M16b: its epoch keys live in `keys`; a deleted group keeps none.
       await db.keys.where('groupId').equals(groupIdOf(peer)).delete();
     }
-    else await withdrawRequestLocally(peer as HexString);
+    else await withdrawRequestLocally(peer as HexString, at);
     if (group || (await listMessages(peer)).length === 0) await db.rooms.delete(peer);
     else await refreshRoom(peer);
   });
@@ -69,13 +71,68 @@ export const clearHistoryLocally = (peer: PeerId, at: number): Promise<void> =>
     await refreshRoom(peer, { unreadCount: 0, markedUnread: false });
   });
 
-/** A withdrawn request is gone from this device; it expires in the store on its own. */
-export const withdrawRequestLocally = async (peer: HexString): Promise<number> =>
-  db.requests
+/**
+ * A withdrawn request is gone from this device; it expires in the store on its own.
+ * With no room for the peer, the withdraw is marked like a delete, so what
+ * the peer said before it cannot make a chat at the next start.
+ */
+export const withdrawRequestLocally = async (peer: HexString, at: number = Date.now()): Promise<number> => {
+  const removed = await db.requests
     .where('peerAccountId')
     .equals(peer)
     .filter(row => row.direction === 'outgoing' && row.status === 'pending')
     .delete();
+  if (removed > 0 && !(await db.rooms.get(peer))) await db.deletedChats.put({ peerId: peer, deletedAt: at });
+  return removed;
+};
+
+/**
+ * The mark of a delete or withdraw, written at the press, before its Undo
+ * time: the commit waits in memory, and an app that quits during those 6 s
+ * lost it (docs/decisions.md "Deleted chats stay deleted"). The next start
+ * finishes what the mark names (`unfinishedDeletes`). Resolves to the undo,
+ * which puts back the mark that was there before (an older delete's floor).
+ */
+export const markChatDeleted = async (peer: PeerId, at: number): Promise<() => Promise<void>> => {
+  const previous = await db.deletedChats.get(peer);
+  await db.deletedChats.put({ peerId: peer, deletedAt: at });
+  return async () => {
+    if (previous) await db.deletedChats.put(previous);
+    else await db.deletedChats.delete(peer);
+  };
+};
+
+/**
+ * Marks whose delete never ran: rows from before the mark are still here, or
+ * a pending outgoing request from before it. A finished delete leaves none
+ * (a room that came back holds only newer rows), so this is empty then.
+ */
+export const unfinishedDeletes = async (): Promise<DeletedChatRow[]> => {
+  const unfinished: DeletedChatRow[] = [];
+  for (const mark of await db.deletedChats.toArray()) {
+    const rows = await messagesUpTo(mark.peerId, mark.deletedAt).count();
+    const requests = isGroupPeer(mark.peerId)
+      ? 0
+      : await db.requests
+          .where('peerAccountId')
+          .equals(mark.peerId)
+          .filter(row => row.direction === 'outgoing' && row.status === 'pending' && row.timestamp <= mark.deletedAt)
+          .count();
+    if (rows > 0 || requests > 0) unfinished.push(mark);
+  }
+  return unfinished;
+};
+
+/**
+ * Content from `peer` sent at `timestamp` may make or fill its room: always,
+ * unless the chat was deleted here at or after that time. A newer message
+ * brings the room back. The mark stays as a floor: the peer's older
+ * statements are read again at every start, also after the room is back.
+ */
+export const admitAfterDelete = async (peer: PeerId, timestamp: number): Promise<boolean> => {
+  const mark = await db.deletedChats.get(peer);
+  return !mark || timestamp > mark.deletedAt;
+};
 
 /** Archive (and unpin: an archived chat is not at the top) or bring back. */
 export const setArchived = (peer: PeerId, archived: boolean): Promise<number> =>

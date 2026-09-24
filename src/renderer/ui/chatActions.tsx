@@ -16,6 +16,7 @@ import {
   blockPeer,
   clearHistoryLocally,
   forwardText,
+  markChatDeleted,
   setArchived,
   setMarkedUnread,
   setPinned,
@@ -39,10 +40,27 @@ export const usePending = (): ReadonlySet<string> => useSyncExternalStore(pendin
 
 const failed = (what: string) => (cause: unknown) => toast(`${plainError(cause, what)} Try again.`);
 
-/** A local delete with Undo: the rows stay until the toast ends (design system §10). */
-const later = (key: string, title: string, description: string, commit: () => Promise<unknown>) => {
-  const { undo } = pendingActions.schedule(key, commit);
-  toast(title, { description, duration: UNDO_MS, action: { label: 'Undo', onClick: undo } });
+/**
+ * A local delete with Undo: the rows stay until the toast ends (design system §10).
+ * `mark` (delete, withdraw) goes to disk at once, so a quit during the Undo
+ * time does not lose the action: the next start finishes it.
+ */
+const later = (key: string, title: string, description: string, commit: () => Promise<unknown>, mark?: { peer: PeerId; at: number }) => {
+  const marked = mark ? markChatDeleted(mark.peer, mark.at) : null;
+  marked?.catch(failed('The delete may not survive a restart.'));
+  // Once the commit runs, Undo does nothing (undo.ts), and the mark must stay.
+  let committing = false;
+  const { undo } = pendingActions.schedule(key, async () => {
+    committing = true;
+    await marked;
+    await commit();
+  });
+  const undoAll = () => {
+    if (committing) return;
+    undo();
+    void marked?.then(unmark => unmark()).catch(failed('The undo did not take.'));
+  };
+  toast(title, { description, duration: UNDO_MS, action: { label: 'Undo', onClick: undoAll } });
 };
 
 /** The Assistant as the first Forward target (M12f): ask it about a message. */
@@ -59,11 +77,12 @@ export const useChatActionsValue = (manager: ChatManager | null, targets: readon
         const at = Date.now();
         const group = isGroupPeer(peer);
         const title = group ? (options.member ? `You left ${name} and deleted the chat` : `${name} deleted`) : `Chat with ${name} deleted`;
-        later(deleteKey(peer), title, group ? 'Only on this device.' : `Only on this device. ${name} keeps their copy.`, () => manager.deleteChat(peer as ChatTargetId, at));
+        later(deleteKey(peer), title, group ? 'Only on this device.' : `Only on this device. ${name} keeps their copy.`, () => manager.deleteChat(peer as ChatTargetId, at), { peer, at });
       },
       withdraw: (peer, name) => {
         if (!manager) return;
-        later(withdrawKey(peer), `Request to ${name} withdrawn`, 'It expires on the network. Send a new request to chat.', () => manager.withdrawRequest(peer));
+        const at = Date.now();
+        later(withdrawKey(peer), `Request to ${name} withdrawn`, 'It expires on the network. Send a new request to chat.', () => manager.withdrawRequest(peer, at), { peer, at });
       },
       clear: (peer, name) => {
         const at = Date.now();

@@ -8,6 +8,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
+import { markChatDeleted } from '../domain/chat/chatActions';
 import type { ChatManager } from '../domain/chat/manager';
 import { UNDO_MS, deleteKey, pendingActions } from '../domain/chat/undo';
 import {
@@ -298,11 +299,25 @@ export const DemoSettings = ({ profileId, bots, runtime }: ListProps) => {
   const removeAll = () => {
     if (!runtime || removable.length === 0) return;
     const at = Date.now();
-    const undos = removable.map(({ peer }) => pendingActions.schedule(deleteKey(peer), () => runtime.manager.deleteChat(peer, at)).undo);
+    // The marks go to disk at once, so a quit during the Undo time does not lose the removal.
+    const marks = removable.map(({ peer }) => markChatDeleted(peer, at));
+    let committing = false;
+    const undos = removable.map(({ peer }, index) =>
+      pendingActions.schedule(deleteKey(peer), async () => {
+        committing = true;
+        await marks[index];
+        await runtime.manager.deleteChat(peer, at);
+      }).undo,
+    );
+    const undoAll = () => {
+      if (committing) return;
+      undos.forEach(undo => undo());
+      marks.forEach(mark => void mark.then(unmark => unmark()).catch((cause: unknown) => console.warn('[demo] undo of the mark failed', cause)));
+    };
     toast(removable.length === 1 ? 'Demo chat removed' : `${removable.length} demo chats removed`, {
       description: 'Only on this device. Start them again at any time.',
       duration: UNDO_MS,
-      action: { label: 'Undo', onClick: () => undos.forEach(undo => undo()) },
+      action: { label: 'Undo', onClick: undoAll },
     });
   };
 

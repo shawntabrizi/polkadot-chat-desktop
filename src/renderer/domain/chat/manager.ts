@@ -38,7 +38,7 @@ import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
 import { withAttachmentKeys } from './attachmentKeyStore';
-import { deleteChatLocally, isBlocked, withdrawRequestLocally } from './chatActions';
+import { admitAfterDelete, deleteChatLocally, isBlocked, unfinishedDeletes, withdrawRequestLocally } from './chatActions';
 import {
   type AttachmentItem,
   type BotInfo,
@@ -141,7 +141,7 @@ export type ChatManager = {
    * nothing more is submitted for it; the request statement expires in the
    * store. A later accept is not seen: a new chat needs a new request.
    */
-  withdrawRequest: (peer: HexString) => Promise<void>;
+  withdrawRequest: (peer: HexString, at?: number) => Promise<void>;
   /**
    * M12e "Delete chat", after its Undo time: a group is left first (if still
    * a member) and then removed; a pending outgoing request is withdrawn; the
@@ -272,6 +272,21 @@ export type ChatManager = {
   dispose: VoidFunction;
 };
 
+/** The group a pairwise content is about, if any. */
+const groupIdOfEffect = (effect: IncomingEffect): string | null => {
+  switch (effect.kind) {
+    case 'groupInfo':
+      return effect.info.groupId;
+    case 'groupLeave':
+    case 'groupMessage':
+      return effect.groupId;
+    case 'groupControl':
+      return effect.control.value.groupId;
+    default:
+      return null;
+  }
+};
+
 const systemRow = (peer: ChatTargetId, messageId: string, timestamp: number, content: MessageContent): MessageRow => ({
   messageId,
   peerAccountId: peer,
@@ -346,6 +361,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     // M12e: a blocked peer's content is dropped here, before any row or notification.
     if (await isBlocked(peer)) return;
     const effect = fromWire(message.content);
+    // A deleted chat: what was said before the delete is read again from the
+    // store at each start and must not bring the room back (docs/decisions.md
+    // "Deleted chats stay deleted"). A group's content is checked by its room.
+    const groupId = groupIdOfEffect(effect);
+    if (!(await admitAfterDelete(groupId === null ? peer : groupPeerOf(groupId), message.timestamp))) return;
     switch (effect.kind) {
       case 'message':
         // Any real message from the peer ends its typing hint.
@@ -685,6 +705,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
           await addPeerDevice(peer, event.device);
           return;
         }
+        // An accept read again after the chat was deleted (every start does) is old news.
+        if (!(await admitAfterDelete(peer, event.acceptedAt))) {
+          await addPeerDevice(peer, event.device);
+          return;
+        }
         if (request.status === 'pending') await setRequestStatus(request.requestId, 'accepted');
         const seed = { accountId: peer, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
         await establishContact(seed, event.device, request.requestId, event.acceptedAt);
@@ -793,7 +818,26 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     channels.clear();
   };
 
+  const deleteChat: ChatManager['deleteChat'] = async (peer, at) => {
+    if (isGroupPeer(peer)) {
+      const group = await getGroup(groupIdOf(peer));
+      if (group?.self === 'member') await leaveGroup(group.id);
+    } else if (!(await getContact(peer))) {
+      channels.get(peer)?.dispose();
+      channels.delete(peer);
+    }
+    await deleteChatLocally(peer, at);
+  };
+
   await startTransport();
+  // A delete or withdraw whose Undo time was cut short by a quit: its mark is
+  // on disk, its commit was only in memory. It runs now, at the press's time.
+  guard(
+    unfinishedDeletes().then(async marks => {
+      for (const mark of marks) await deleteChat(mark.peerId as ChatTargetId, mark.deletedAt);
+    }),
+    'unfinished deletes',
+  );
 
   let wasDisconnected = false;
   const stopStatus =
@@ -1029,24 +1073,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     sendMessage,
     sendAttachment,
 
-    withdrawRequest: async peer => {
-      await withdrawRequestLocally(peer);
+    withdrawRequest: async (peer, at) => {
+      await withdrawRequestLocally(peer, at);
       // A contact keeps its channel: it carries the roster too.
       if (await getContact(peer)) return;
       channels.get(peer)?.dispose();
       channels.delete(peer);
     },
 
-    deleteChat: async (peer, at) => {
-      if (isGroupPeer(peer)) {
-        const group = await getGroup(groupIdOf(peer));
-        if (group?.self === 'member') await leaveGroup(group.id);
-      } else if (!(await getContact(peer))) {
-        channels.get(peer)?.dispose();
-        channels.delete(peer);
-      }
-      await deleteChatLocally(peer, at);
-    },
+    deleteChat,
 
     pressButton: async (peer, messageId, row, index) => {
       const target = await getMessage(messageId);

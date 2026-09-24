@@ -107,6 +107,14 @@ export type ContactRow = {
  */
 export type BlockedRow = { accountId: HexString; username: string; blockedAt: number };
 
+/**
+ * A chat deleted on this device (2026-09-24): the peer's statements stay in
+ * the store and are read again at every start, so without this mark the room
+ * came back. Content from the chat not newer than `deletedAt` is dropped; a
+ * newer message brings the room back and removes the mark. Local only.
+ */
+export type DeletedChatRow = { peerId: PeerId; deletedAt: number };
+
 export type RequestDirection = 'incoming' | 'outgoing';
 export type RequestStatus = 'pending' | 'accepted' | 'declined';
 
@@ -430,6 +438,9 @@ dexie.version(10).stores({
   keys: 'id, groupId',
   groupJoins: 'groupId',
 });
+dexie.version(11).stores({
+  deletedChats: 'peerId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -453,6 +464,7 @@ export const db: {
   /** M15c: the attachment rows of the same `keys` table (ids `att:…`, no `groupId`). */
   attachmentKeys: Table<AttachmentKeyRow, string>;
   groupJoins: Table<GroupJoinRow, string>;
+  deletedChats: Table<DeletedChatRow, PeerId>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -471,4 +483,5 @@ export const db: {
   keys: dexie.table('keys'),
   attachmentKeys: dexie.table('keys'),
   groupJoins: dexie.table('groupJoins'),
+  deletedChats: dexie.table('deletedChats'),
 };

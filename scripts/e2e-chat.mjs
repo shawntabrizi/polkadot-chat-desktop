@@ -36,6 +36,13 @@
 // "working" starts a 20 s agent turn: `typing{working}` every 4 s, as a pca
 // bot sends while it works, then `typing{stopped}`.
 // With --seen or --typing the script runs until it is stopped (at most 15 min).
+// --delete-chat (2026-09-24, "Deleted chats stay deleted"): after the reply,
+// presses Delete chat (M12e) and "quits" before its 6 s Undo ends: the mark is
+// written, the commit never runs. It disposes the manager and starts a new one
+// on the same database and connection, as an app restart does, twice. Each
+// time the room must be gone while the new sessions read the peer's
+// statements again (DELETE_PERSISTS). Then sends `ping <nonce>`; the answer
+// must bring the room back with no row from before the delete (DELETE_REVIVES).
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -71,6 +78,7 @@ const peerUsername = args.find((arg, i) => !arg.startsWith('--') && !flagValues.
 const profile = flag('profile') ?? 'devnet';
 const identityName = flag('identity') ?? 'pcde2e';
 const deleteRun = args.includes('--delete');
+const deleteChatRun = args.includes('--delete-chat');
 const liveFrameRun = args.includes('--live-frame');
 const buttonsRun = args.includes('--buttons');
 const seenRun = args.includes('--seen');
@@ -78,7 +86,7 @@ const typingRun = args.includes('--typing');
 const botInfoRun = args.includes('--botinfo');
 const txRun = args.includes('--tx');
 if (!peerUsername) {
-  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--live-frame] [--buttons] [--botinfo] [--tx] [--seen] [--typing]');
+  console.error('usage: npm run e2e:chat -- <peerUsername> [--profile devnet|paseo] [--identity <name>] [--delete] [--delete-chat] [--live-frame] [--buttons] [--botinfo] [--tx] [--seen] [--typing]');
   process.exit(2);
 }
 if (profile !== 'devnet' && profile !== 'paseo') {
@@ -220,13 +228,15 @@ await seedSelfIdentity(
 const [identity, deviceKeys] = await Promise.all([readUserIdentity(), getDeviceKeys()]);
 if (!identity) finish(1, 'SEED_FAIL no identity row after seeding');
 
-manager = await createChatManager({
-  identity,
-  deviceKeys,
-  statementStore: connection.adapter,
-  lookup: createIdentityLookup(connection),
-  onConnectionStatus: connection.onStatus,
-});
+const startManager = () =>
+  createChatManager({
+    identity,
+    deviceKeys,
+    statementStore: connection.adapter,
+    lookup: createIdentityLookup(connection),
+    onConnectionStatus: connection.onStatus,
+  });
+manager = await startManager();
 
 if (await db.contacts.get(peerAccountHex)) {
   console.log('CONTACT_EXISTS');
@@ -306,6 +316,46 @@ if (deleteRun) {
   const quoted = textOf(answer).includes(doomedText);
   console.log(`REPLY_QUOTES_DELETED ${quoted ? 'yes' : 'no'}`);
   if (quoted) finish(1, 'DELETE_FAIL the reply after the deletion quotes the deleted text');
+}
+
+if (deleteChatRun) {
+  const { markChatDeleted } = await load('src/renderer/domain/chat/chatActions.ts');
+  const rowsOf = async () => (await db.messages.toArray()).filter((row) => row.peerAccountId === peerAccountHex);
+  const REREAD_MS = 20_000;
+  /** A restart: new sessions and identity channels read the peer's statements from the store again. */
+  const restartAndCheck = async (label) => {
+    manager.dispose();
+    manager = await startManager();
+    console.log(`MANAGER_RESTARTED ${label}`);
+    // The start finishes an interrupted delete; after that the room must stay gone.
+    await waitFor(async () => !(await db.rooms.get(peerAccountHex)), 10_000);
+    const back = await waitFor(() => db.rooms.get(peerAccountHex), REREAD_MS);
+    const rows = await rowsOf();
+    if (back) finish(1, `DELETE_PERSISTS no (${label}): the room is there after the restart with ${rows.length} rows (${rows.map(textOf).join(' | ').slice(0, 160)})`);
+    console.log(`DELETE_PERSISTS yes (${label}: no room ${REREAD_MS / 1000}s after the restart, rows=${rows.length})`);
+  };
+
+  // The owner's case: delete, then quit before the 6 s Undo ends. The press writes the
+  // mark (chatActions.tsx); the commit, only in memory, never runs.
+  const deletedAt = Date.now();
+  await markChatDeleted(peerAccountHex, deletedAt);
+  console.log(`CHAT_DELETE_PRESSED rows=${(await rowsOf()).length} (quit before the commit)`);
+  await restartAndCheck('quit during Undo');
+  // Once more, from the committed state: only the re-read statements are left to test.
+  await restartAndCheck('after the commit');
+
+  const again = `ping ${randomBytes(3).toString('hex')}`;
+  try {
+    await manager.sendMessage(peerAccountHex, { type: 'text', text: again });
+  } catch (error) {
+    finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const answer = await waitFor(async () => (await rowsOf()).find((row) => row.direction === 'incoming' && row.timestamp > deletedAt));
+  if (!answer) finish(4, 'E2E_TIMEOUT reply after the delete');
+  const room = await db.rooms.get(peerAccountHex);
+  const old = (await rowsOf()).filter((row) => row.timestamp <= deletedAt);
+  if (!room || old.length > 0) finish(1, `DELETE_REVIVES no: room=${room ? 'yes' : 'no'} rowsFromBeforeTheDelete=${old.length}`);
+  console.log(`DELETE_REVIVES yes (room back, rows=${(await rowsOf()).length}, none from before the delete; reply: ${textOf(answer).slice(0, 60)})`);
 }
 
 if (liveFrameRun) {
