@@ -115,3 +115,7 @@ RFC 0007 `tx` action (model: EIP-5792 `wallet_sendCalls` with display metadata, 
 ### Host parsing leniency (revision 2026-09-24)
 
 The fenced block is a host convention for text-only models, not wire format. A small model (owner's report: Claude Haiku in a pca bot) wrote a bare ``` fence, a flat array of buttons instead of `{"rows": [[…]]}`, and a line after the block; the strict parser refused all three and the user saw raw JSON. Hosts SHOULD accept: a fence tagged `buttons`, `json` or untagged whose JSON is either the rows object or a flat array of buttons (one row); the block anywhere in the reply, with text before and after it kept; and SHOULD strip a block that still fails to parse, logging it, rather than show JSON to a person. Stricter models still get the canonical form in the hint. Structured directives through tool calling (roadmap, M13) make this moot for engines that support them.
+
+### Over-limit keyboards (2026-09-24)
+
+A received `buttons` whose rows, buttons per row, or label length exceed the limits is treated as undecodable: the client shows the base spec's unsupported message and never renders a partial keyboard. Hosts (pca, desktop) agree on this rule.
