@@ -35,7 +35,7 @@ chain transaction, no fee, no new contract, no runtime change.
   bots (`src/renderer/domain/identity/search.ts`).
 - A bot is marked as a bot only after the chat starts (`botInfo`, 0008).
   Before that, a bot and a person look the same.
-- The demo mode (docs/decisions.md "## M12i") ships a list of seven
+- The demo mode (docs/decisions.md "## M12i") ships a list of six
   usernames in the app, with an optional manifest URL. That is a central
   list owned by whoever builds the app; it cannot grow with the network.
 - The roadmap asks for a bot directory, a bot marker and a person-vs-bot
@@ -318,7 +318,7 @@ identity), and sr25519 verification (they sign with sr25519 already).
 
 ### Migration from the built-in manifest
 
-1. M17 (both repos): the seven fleet bots get `tagline`, `tags`, `pricing`
+1. M17 (both repos): the six demo fleet bots get `tagline`, `tags`, `pricing`
    and one operator claim signed by a fleet operator identity; they publish
    cards. The desktop gains the Bots tab reading the topic.
 2. The desktop deletes `BUILT_IN_DEMO_BOTS`, `src/main/demoManifest.ts`,
@@ -343,7 +343,7 @@ identity), and sr25519 verification (they sign with sr25519 already).
 | DotNS `chat.bots` (optional) | 0 | none | 1 Asset Hub tx per change (fee unverified) |
 
 For comparison: a pca bot's heartbeat is 720 submissions per day. The whole
-seven-bot fleet adds 7 submissions per day.
+six-bot demo fleet adds 6 submissions per day.
 
 The rule "a new kind MUST NOT add submissions unless it replaces a user
 action" is met in spirit, not in letter: the card adds one submission per
@@ -399,8 +399,8 @@ file). The owner should confirm this.
 - Client checks: a card whose username belongs to another account is
   dropped; an expired or future `issuedAt` is dropped; a bad operator
   signature drops the claim, not the card; newest per signer wins.
-- e2e (M17): the seven fleet bots publish; a fresh client with no manifest
-  lists all seven within 60 s, starts a chat with one, and the chat works.
+- e2e (M17): the six demo fleet bots publish; a fresh client with no manifest
+  lists all six within 60 s, starts a chat with one, and the chat works.
 
 ## Compatibility
 
