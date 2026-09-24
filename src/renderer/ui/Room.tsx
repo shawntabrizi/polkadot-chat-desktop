@@ -24,7 +24,7 @@ import {
   sendNote,
   sendPaymentRequest,
 } from '../domain/chain/payments';
-import type { TxRunner } from '../domain/chain/transactions';
+import { type TxRunner, referenceNote } from '../domain/chain/transactions';
 import { type TxReference, type TxStatus, isLiveFrame, requestIdOfNote } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import type { PeerTyping } from '../domain/chat/signals';
@@ -425,9 +425,8 @@ export const Room = (props: Props) => {
     const current = strip;
     if (!dryRun.id) return;
     setStrip({ ...current, state: { phase: 'signing', dryRun } });
-    const { display } = current.intent;
     // "Top up (1 PAS)": what it was, and how much. A request's payment names the request (M12g).
-    const note = current.paymentNote ?? (display.amount ? `${display.title} (${display.amount}${display.asset ? ` ${display.asset}` : ''})` : display.title);
+    const note = current.paymentNote ?? referenceNote(current.intent.display);
     try {
       await transactions.run({ peer: peer as HexString, dryRunId: dryRun.id, chainId: current.intent.chainId, note, intentMessageId: current.messageId });
       setTxButtons(map => new Map(map).set(current.messageId, { row: current.row, index: current.index }));

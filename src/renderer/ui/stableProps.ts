@@ -52,14 +52,15 @@ const shapeOf = (actions: BubbleActions): string =>
     forward: !!actions.forward,
     keyboard: actions.keyboard ? { active: actions.keyboard.active, tx: actions.keyboard.tx ?? null, done: actions.keyboard.done ?? null } : null,
     referenceText: actions.referenceText ?? null,
+    pin: actions.pin?.pinned ?? null,
   });
 
 /**
  * Per row, the same actions object while what the bubble shows of it stays
  * the same. Its functions call the closures of the latest render, so a press
  * never runs against old room state. Actions that carry React elements
- * (`below`: the signing strip; M12g `body` and a keyboard's `extra`) are
- * passed through as they are.
+ * (`below`: the signing strip; M12g `body` and a keyboard's `extra`; M14
+ * `status`) are passed through as they are.
  */
 export const createActionCache = () => {
   const latest = new Map<string, BubbleActions>();
@@ -73,6 +74,8 @@ export const createActionCache = () => {
     ...(actions.retry ? { retry: () => current(messageId)?.retry?.() } : {}),
     ...(actions.remove ? { remove: { label: actions.remove.label, run: () => current(messageId)?.remove?.run() } } : {}),
     ...(actions.referenceText !== undefined ? { referenceText: actions.referenceText } : {}),
+    // M14 fix: without this the M16b Pin / Unpin item never reached the menu.
+    ...(actions.pin ? { pin: { pinned: actions.pin.pinned, run: () => current(messageId)?.pin?.run() } } : {}),
     ...(actions.forward ? { forward: (target: Parameters<NonNullable<BubbleActions['forward']>>[0]) => current(messageId)?.forward?.(target) } : {}),
     ...(actions.keyboard
       ? {
@@ -94,7 +97,7 @@ export const createActionCache = () => {
         return null;
       }
       latest.set(messageId, actions);
-      if (actions.below || actions.body || actions.keyboard?.extra) {
+      if (actions.below || actions.body || actions.status || actions.keyboard?.extra) {
         wrappers.delete(messageId);
         return actions;
       }

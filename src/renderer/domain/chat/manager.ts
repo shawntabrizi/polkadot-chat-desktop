@@ -213,15 +213,16 @@ export type ChatManager = {
    * and keep one row for it that moves through the states. Since M12c the
    * caller sends one state per transaction (in block or failed; submitted
    * only when no block took it in 30 s); later states change the row only
-   * (`recordReference`). Never waits for finality.
+   * (`recordReference`). Never waits for finality. `peer` may be a group
+   * (M14): the reference then rides our next carrier on its topic.
    */
-  sendReference: (peer: HexString, reference: TxReference) => Promise<void>;
+  sendReference: (peer: ChatTargetId, reference: TxReference) => Promise<void>;
   /**
    * Spec 0007, local only: the row of our own transaction for `peer` takes
    * this state (a new row if there is none, not yet sent). Nothing goes on
    * the wire.
    */
-  recordReference: (peer: HexString, reference: TxReference) => Promise<void>;
+  recordReference: (peer: ChatTargetId, reference: TxReference) => Promise<void>;
   /**
    * Spec 0009: a new group with us as admin; `members` are the others. Sends
    * the roster (v1) to each member we have a chat with, and a chat request
@@ -555,7 +556,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         return;
       case 'transactionReference':
         typing.messageFrom(room, message.timestamp);
-        await applyReference(room, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference);
+        // The member who signed it is named on the bubble, as on any group message (M14).
+        await applyReference(room, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference, { senderAccountId: sender });
         referenceArrived(effect.reference);
         return;
       // No read receipts in groups (v1); calls, rosters and nested group kinds are not group content.
@@ -916,8 +918,20 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     await saveOwnGroupInfo(info, [...new Set([...kept, ...invites])], now);
   };
 
+  /**
+   * Review M16b ruling 6: a message we send to a contact made only by a join
+   * request (`joinedVia`) says we know them now, so their later `welcome`s
+   * are no longer a stranger's invites.
+   */
+  const trustByMessage = async (peer: ChatTargetId): Promise<void> => {
+    if (isGroupPeer(peer)) return;
+    const contact = await getContact(peer);
+    if (contact?.joinedVia) await db.contacts.update(peer, { joinedVia: undefined });
+  };
+
   const sendMessage: ChatManager['sendMessage'] = async (peer, content, options = {}) => {
     const ids = { messageId: randomId(), timestamp: Date.now() };
+    await trustByMessage(peer);
     await addMessage({
       messageId: ids.messageId,
       peerAccountId: peer,
@@ -949,6 +963,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const sendAttachment: ChatManager['sendAttachment'] = async (peer, content, upload) => {
     const ids = { messageId: randomId(), timestamp: Date.now() };
     const row: MessageContent = { type: 'attachment', items: content.items, caption: content.caption };
+    await trustByMessage(peer);
     await addMessage({ messageId: ids.messageId, peerAccountId: peer, timestamp: ids.timestamp, direction: 'outgoing', status: 'sending', content: row, reactions: [], editedAt: null });
     await settlePendingSeen(peer, ids.messageId);
     typingSender.sent(peer);

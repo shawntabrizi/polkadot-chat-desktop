@@ -1,6 +1,7 @@
 /**
- * M16b (spec 0011 ruling 9): `polkadotapp://g#…` group invite links open in
- * this app. macOS hands a clicked link to the app that registered the scheme
+ * Spec 0011 ruling 9 (amended, M14): `polkadot-chat://g#…` group invite
+ * links open in this app (the M16b form `polkadotapp://g#…` too, for one
+ * release, when it comes from our own window). macOS hands a clicked link to the app that registered the scheme
  * (`open-url`); a link clicked in a message or pressed as a button comes
  * from our own window. Either way the renderer gets it over IPC and shows
  * the join view; the link never leaves the app.
@@ -13,7 +14,7 @@
 import { type BrowserWindow, app } from 'electron';
 
 import { IPC } from '../shared/desktop-api';
-import { isGroupInviteUrl } from '../shared/openUrl';
+import { INVITE_SCHEME, isGroupInviteUrl } from '../shared/openUrl';
 
 let pending: string | null = null;
 let getWindow: () => BrowserWindow | null = () => null;
@@ -43,7 +44,7 @@ export const installInviteLinks = (options: { headless: boolean }): void => {
     event.preventDefault();
     openInviteLink(url);
   });
-  if (app.isPackaged && !options.headless) app.setAsDefaultProtocolClient('polkadotapp');
+  if (app.isPackaged && !options.headless) app.setAsDefaultProtocolClient(INVITE_SCHEME);
 };
 
 export const setInviteLinkWindow = (next: () => BrowserWindow | null): void => {

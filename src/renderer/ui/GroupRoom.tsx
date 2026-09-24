@@ -6,13 +6,14 @@
 // Undoable").
 
 import { Bell, BellOff, ChevronDown, Pin, UserPlus, Users, X } from 'lucide-react';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import type { HexString } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { type ContactRow, type GroupRow, type MessageRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
-import type { BotCommand } from '../domain/chat/content';
+import { type TxRunner, referenceNote } from '../domain/chain/transactions';
+import type { BotCommand, TxStatus } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import { PERMISSIONS, ROLES } from '../domain/chat/groupCodec';
 import { getGroup, memberName } from '../domain/chat/groups';
@@ -20,6 +21,7 @@ import { can, heirOf, isV2, memberOf, slowModeWait, slowModeWords } from '../dom
 import type { ChatManager } from '../domain/chat/manager';
 import { forwardText } from '../domain/chat/chatActions';
 import { listMessages, setRoomMuted } from '../domain/chat/messages';
+import { phaseLine, proposalViews } from '../domain/chat/proposals';
 import { clearKey } from '../domain/chat/undo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,7 +39,11 @@ import { RoomHeader } from './RoomHeader';
 import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
 import { Checkbox } from './controls';
 import { plainError } from './format';
+import { ProposalStatus, useNow } from './ProposalCard';
+import { type StripPhase, TxStrip } from './Transactions';
 import { useLiveQuery } from './useLiveQuery';
+
+import { type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
 /** Remove, Leave and Delete act at once and can be undone this long. */
 const UNDO_MS = 6000;
@@ -324,7 +330,22 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
  * same), newest first. A click jumps to the message and moves on to the next
  * pin, as Telegram's bar does. Inline at the top of the room, never an overlay.
  */
-const PinBar = ({ pinned, rows, canUnpin, onJump, onUnpin }: { pinned: readonly string[]; rows: readonly MessageRow[]; canUnpin: boolean; onJump: (messageId: string) => void; onUnpin: (messageId: string) => void }) => {
+const PinBar = ({
+  pinned,
+  rows,
+  canUnpin,
+  onJump,
+  onUnpin,
+  previewOf,
+}: {
+  pinned: readonly string[];
+  rows: readonly MessageRow[];
+  canUnpin: boolean;
+  onJump: (messageId: string) => void;
+  onUnpin: (messageId: string) => void;
+  /** M14: a proposal pin says its state ("… · Voting closes in 1 min 5 s"). */
+  previewOf: (row: MessageRow) => string;
+}) => {
   const [at, setAt] = useState(0);
   if (pinned.length === 0) return null;
   const newestFirst = [...pinned].reverse();
@@ -345,7 +366,7 @@ const PinBar = ({ pinned, rows, canUnpin, onJump, onUnpin }: { pinned: readonly 
         <span className="min-w-0 flex-1">
           <span className="block text-label-m text-fg-primary">{newestFirst.length > 1 ? `Pinned message ${index + 1} of ${newestFirst.length}` : 'Pinned message'}</span>
           <span className="block truncate text-body-s text-fg-secondary" data-testid="pin-text">
-            {row ? messagePreview(row) : 'A message from before you joined'}
+            {row ? previewOf(row) : 'A message from before you joined'}
           </span>
         </span>
       </button>
@@ -413,12 +434,19 @@ type RoomProps = {
   groupId: string;
   manager: ChatManager;
   self: HexString;
+  /** M14: signs `tx` buttons in the group; the reference goes on the group topic. */
+  transactions?: TxRunner | null;
+  /** The strip's "Signs as". */
+  username?: string;
   scrollToMessageId?: string | null;
   scrollRequest?: number;
 };
 
+/** M14: the one signing strip of the room (spec 0007 rate limit): which button, the intent, where it is. */
+type Strip = { messageId: string; row: number; index: number; intent: TxIntent; state: StripPhase };
+
 /** One room per group: the composer fans out, each peer bubble names its sender. */
-export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, scrollRequest = 0 }: RoomProps) => {
+export const GroupRoom = ({ groupId, manager, self, transactions = null, username = 'this account', scrollToMessageId = null, scrollRequest = 0 }: RoomProps) => {
   const peer = groupPeerOf(groupId);
   const group = useLiveQuery(() => getGroup(groupId), [groupId]);
   const messages = useLiveQuery(() => listMessages(peer), [peer]);
@@ -433,6 +461,12 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const [pinJump, setPinJump] = useState<{ messageId: string; request: number } | null>(null);
   const slowWait = useSlowModeWait(group, self);
+  const [strip, setStrip] = useState<Strip | null>(null);
+  // The `tx` button each keyboard started a transaction from (this session).
+  const [txButtons, setTxButtons] = useState<ReadonlyMap<string, { row: number; index: number }>>(() => new Map());
+  // M14: the DAO bot's proposals, read from its messages; the clock ticks while one is not closed.
+  const proposals = useMemo(() => proposalViews(messages ?? NO_ROWS), [messages]);
+  const now = useNow([...proposals.values()].some(view => !view.outcome && !view.executed));
   const peerInfo = new Map(peerInfoRows.map(row => [row.peerId, row]));
   const chatActions = useChatActions();
   // "Clear history" waits out its Undo time with the messages hidden (M12e).
@@ -533,32 +567,95 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
   };
 
   const guarded = (work: Promise<void>, what: string) => void work.catch((cause: unknown) => setError(`${plainError(cause, what)} Try again.`));
+
+  // ── Spec 0007 in a group (M14): the same strip as a contact room; a dry-run always comes first.
+  const openStrip = (messageId: string, r: number, i: number, bytes: Uint8Array) => {
+    if (strip?.state.phase === 'signing') {
+      setError('A transaction is being signed in this chat. Wait for it, then try again.');
+      return;
+    }
+    const intent = decodeTxIntent(bytes);
+    if (!intent) return;
+    setError(null);
+    setStrip({ messageId, row: r, index: i, intent, state: { phase: 'checking' } });
+    const update = (state: StripPhase) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, state } : current));
+    const chain = window.desktop?.chain;
+    if (!chain || !transactions) {
+      update({ phase: 'refused', reason: 'This app cannot run chain actions here.', dryRun: null });
+      return;
+    }
+    chain
+      .dryRun(bytes)
+      .then(dryRun => update(dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }))
+      .catch((cause: unknown) => update({ phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null }));
+  };
+
+  const signStrip = async () => {
+    if (!strip || strip.state.phase !== 'ready' || !transactions) return;
+    const current = strip;
+    const { dryRun } = strip.state;
+    if (!dryRun.id) return;
+    const dryRunId = dryRun.id;
+    setStrip({ ...current, state: { phase: 'signing', dryRun } });
+    try {
+      // The reference goes to the group (its topic), answering the bot's buttons message.
+      await transactions.run({ peer, dryRunId, chainId: current.intent.chainId, note: referenceNote(current.intent.display), intentMessageId: current.messageId });
+      setTxButtons(map => new Map(map).set(current.messageId, { row: current.row, index: current.index }));
+      await manager.pressButton(peer, current.messageId, current.row, current.index);
+      setStrip(s => (s === null || s.messageId !== current.messageId ? s : null));
+    } catch (cause) {
+      setStrip(s => (s && s.messageId === current.messageId ? { ...s, state: { phase: 'refused', reason: plainError(cause, 'It was not signed.'), dryRun } } : s));
+    }
+  };
+
+  // The latest state of the transaction each keyboard started (our own reference rows).
+  const txStatusOf = (messageId: string): TxStatus | null => {
+    const ref = [...(messages ?? [])]
+      .reverse()
+      .find(r => r.direction === 'outgoing' && r.content.type === 'transactionReference' && r.content.reference.intentMessageId === messageId);
+    return ref?.content.type === 'transactionReference' ? ref.content.reference.status : null;
+  };
   const isOwnText = (row: MessageRow) => row.direction === 'outgoing' && (row.content.type === 'text' || row.content.type === 'reply') && !deleting.has(row.messageId);
 
   const actionsFor = (row: MessageRow): BubbleActions | null => {
     if (row.content.type === 'deleted' || deleting.has(row.messageId) || !active) return null;
+    const button = txButtons.get(row.messageId);
+    const status = button ? txStatusOf(row.messageId) : null;
+    const signing = strip?.messageId === row.messageId && (strip.state.phase === 'checking' || strip.state.phase === 'signing');
     const keyboard =
       row.content.type === 'buttons' && row.direction === 'incoming'
         ? {
-            // v1: command, callback and url buttons; a `tx` button needs the 1:1 signing strip (docs/decisions.md M12).
+            // M14: `tx` buttons open the signing strip here too (in v1 groups they were not pressable, decisions M12).
             press: (r: number, i: number) => {
               if (row.content.type !== 'buttons') return;
               const action = row.content.rows[r]?.[i]?.action;
-              if (!action || action.kind === 'tx' || action.kind === 'unsupported') return;
+              if (!action || action.kind === 'unsupported') return;
+              if (action.kind === 'tx') {
+                openStrip(row.messageId, r, i, action.intent);
+                return;
+              }
               const open = action.kind === 'url' && window.desktop ? window.desktop.app.openUrl(action.url) : Promise.resolve();
               guarded(
                 open.then(() => manager.pressButton(peer, row.messageId, r, i)),
                 'The button did not work.',
               );
             },
-            active: null,
+            active: signing && strip ? { row: strip.row, index: strip.index, busy: true } : null,
+            tx: button && status ? { ...button, status } : null,
           }
         : undefined;
+    const proposal = proposals.get(row.messageId);
+    const below =
+      strip && strip.messageId === row.messageId ? (
+        <TxStrip intent={strip.intent} state={strip.state} signerName={username} outcome={null} onSign={() => void signStrip()} onCancel={() => setStrip(null)} />
+      ) : null;
     // M12e Forward: a copy of the text, captioned with its author on this device only.
     const author = row.direction === 'outgoing' ? 'you' : (senderOf(row) ?? group.name);
     const forward = forwardText(row) !== null ? (target: ForwardTarget) => chatActions.forward(target, row, author) : undefined;
     return {
       ...(keyboard ? { keyboard } : {}),
+      ...(below ? { below } : {}),
+      ...(proposal ? { status: <ProposalStatus view={proposal} now={now} /> } : {}),
       ...(forward ? { forward } : {}),
       react: emoji => guarded(manager.react(peer, row.messageId, emoji, !row.reactions.some(r => r.emoji === emoji && r.by === 'me')), 'The reaction was not sent.'),
       reply: () => setMode({ mode: 'reply', target: row }),
@@ -622,6 +719,10 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
           canUnpin={mayPin}
           onJump={messageId => setPinJump(current => ({ messageId, request: (current?.request ?? 0) + 1 }))}
           onUnpin={messageId => guarded(manager.pinGroupMessage(group.id, messageId, false), 'The pin did not change.')}
+          previewOf={row => {
+            const proposal = proposals.get(row.messageId);
+            return proposal ? `Proposal #${proposal.id}: ${proposal.title} · ${phaseLine(proposal, now)}` : messagePreview(row);
+          }}
         />
         <MessageFlow
           rows={clearing ? NO_ROWS : (messages ?? [])}
@@ -665,6 +766,7 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
           ) : null}
           <Composer
             sendDisabled={slowWait > 0}
+            quietSend={strip !== null}
             draft={draft}
             onDraft={text => {
               setDraft(text);

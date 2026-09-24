@@ -19,7 +19,9 @@ describe('markdownToHtml', () => {
     expect(html).toContain('Vec&lt;T&gt;');
   });
 
-  it('makes a pasted group invite link clickable (M16b: main opens it in the app), and no other polkadotapp text', () => {
+  it('makes a pasted group invite link clickable (main opens it in the app), and no other polkadotapp text', () => {
+    expect(markdownToHtml('join us: polkadot-chat://g#AAEC_-x9')).toContain('<a href="polkadot-chat://g#AAEC_-x9" target="_blank" rel="noopener noreferrer">');
+    // The M16b form, for one release: links already shared still open.
     expect(markdownToHtml('join us: polkadotapp://g#AAEC_-x9')).toContain('<a href="polkadotapp://g#AAEC_-x9" target="_blank" rel="noopener noreferrer">');
     expect(markdownToHtml('polkadotapp://pair?handshake=00')).not.toContain('<a ');
   });

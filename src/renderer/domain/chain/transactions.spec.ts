@@ -92,6 +92,20 @@ describe('createTxRunner (spec 0007 references, one per transaction)', () => {
     expect(sent.map(r => r.status)).toEqual(['submitted', 'inBlock']);
   });
 
+  // M14: in a group every reference is a statement on the group topic that every member
+  // downloads; the brief's budget is one per transaction, so a slow block must not add a second.
+  it('in a group, sends the end state only: no "submitted" after 30 s', async () => {
+    const { runner, emit, sent, recorded } = setup();
+    await runner.run({ ...request, peer: 'group:g-1' });
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS * 2);
+    expect(sent).toEqual([]);
+    // The own row still shows the state at once.
+    expect(recorded.at(-1)?.status).toBe('submitted');
+    emit({ hash: HASH, status: 'inBlock', block: 9, error: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent.map(r => [r.status, r.intentMessageId])).toEqual([['inBlock', 'm1']]);
+  });
+
   it('never puts "finalized" on the wire, even when it is the first state it hears', async () => {
     const { runner, emit, sent, recorded } = setup();
     await runner.run(request);

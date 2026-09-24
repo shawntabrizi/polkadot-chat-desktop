@@ -29,6 +29,7 @@
     "e2e:group": "node scripts/e2e-group.mjs",
     "e2e:group2": "node scripts/e2e-group2.mjs",
     "e2e:group2b": "node scripts/e2e-group2b.mjs",
+    "e2e:dao": "node scripts/e2e-dao.mjs",
     "e2e:demo": "node scripts/e2e-demo.mjs",
     "e2e:pay": "node scripts/e2e-pay.mjs",
     "e2e:attach": "node scripts/e2e-attach.mjs",

@@ -232,12 +232,13 @@ export const heirOf = (state: GroupState): Member2 | null =>
   state.members.filter(m => m.role === ROLES.admin).sort((a, b) => a.joinedAt - b.joinedAt || (a.account < b.account ? -1 : 1))[0] ?? null;
 
 /** The copyable form of an invite link: 0011 puts the SCALE link, base64url, in a URL fragment (`…/g#<b64>`). */
-export const INVITE_LINK_PREFIX = 'polkadotapp://g#';
+// Ruling 9 as amended after M16b: our own scheme, never the phone app's `polkadotapp://`.
+export const INVITE_LINK_PREFIX = 'polkadot-chat://g#';
 export const inviteLinkText = (link: InviteLink): string => `${INVITE_LINK_PREFIX}${toBase64Url(encodeInviteLink(link))}`;
 
 /**
- * An invite link in anything a person pastes or clicks: `polkadotapp://g#…`,
- * any `…/g#…` URL, or the bare base64url. Null when it is not one.
+ * An invite link in anything a person pastes or clicks: `polkadot-chat://g#…`,
+ * the M16b `polkadotapp://g#…` (one more release), any `…/g#…` URL, or the bare base64url. Null when it is not one.
  */
 export const parseInviteLink = (text: string): InviteLink | null => {
   const trimmed = text.trim();

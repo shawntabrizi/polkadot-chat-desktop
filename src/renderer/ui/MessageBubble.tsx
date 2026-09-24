@@ -152,6 +152,8 @@ export type BubbleActions = {
   below?: ReactNode;
   /** M12g: the bubble's content in place of its text and keyboard (the requester's own request). */
   body?: ReactNode;
+  /** M14: a block under the text, above the buttons (a DAO proposal's tally, countdown and state). */
+  status?: ReactNode;
   /** M12g: a payment reference's line in place of the note ("Sent 1 PAS to bob.02 · in block #…"). */
   referenceText?: string | null;
   /** M12e: send a copy of the text to another chat (the Forward submenu lists the chats). */
@@ -415,6 +417,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
             </div>
           ) : null}
           <div className="min-w-0 break-words">{body}</div>
+          {deleted || deleting ? null : (actions?.status ?? null)}
           {keyboardSlot}
           {live ? null : (
             <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>

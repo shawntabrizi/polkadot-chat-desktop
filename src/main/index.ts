@@ -30,7 +30,7 @@ if (userDataOverride) app.setPath('userData', userDataOverride);
 // Automation runs (screenshots, GUI checks) with PCD_HEADLESS=1: see headless.ts.
 const headless = isHeadless();
 
-// M16b: group invite links (`polkadotapp://g#…`) open the join view. Before `ready`.
+// Group invite links (`polkadot-chat://g#…`, 0011 ruling 9) open the join view. Before `ready`.
 installInviteLinks({ headless });
 
 function createWindow(smoke: boolean): BrowserWindow {

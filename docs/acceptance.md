@@ -3813,3 +3813,89 @@ SCREENSHOTS_OK in 22.5 s
 
 - `room-voice`: not captured on this machine. The page's AudioContext clock stood still (`currentTime` 0.008 s after 4 s), so the fixture recording was a 110-byte header. The script now records through a silent sink (`sinkId: { type: 'none' }`), which gives a real 12 KB WebM/Opus file, but the `<audio>` element's playback clock also stands still (`currentTime` 0 while playing, no output device), so the shot's "0:01 / 0:04" check fails. Nothing in the voice code changed in M15c; this is the Mac's audio output, not the app.
 - `prepareVideo` (the sender's poster, size and duration from a picked file) did not run: it needs a DOM `<video>` (not in vitest), and a send from the app would store on devnet for a fictional contact. The `room-video` fixture makes its poster in the page with the same steps (one frame, WebP ≤ 2 KB); the wire, the service and the receiver's player are tested (unit tests, VIDEO_OK, the screenshot).
+
+## M14 — DAO chat, desktop half: tx buttons in v2 groups, the proposal card (2026-09-24)
+
+Every app launch set `PCD_HEADLESS=1` and a throwaway `PCD_USER_DATA_DIR`.
+
+### npm run check (last lines, after the rebase onto M15c)
+
+```
+ Test Files  91 passed (91)
+      Tests  794 passed (794)
+check:tokens: clean (191 files)
+```
+
+Exit 0 (tsc and eslint print nothing when clean).
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<temp> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:dao -- --pca <fresh worktree of pca origin/desktop/rfc-0003 at fb7d400>
+
+DAO_E2E_PENDING devnet identity backend and statement allowance too slow on 2026-09-24: the scratch bot's allowance was not granted in time, so its /propose answer was rejected `noAllowance`.
+
+The furthest run (a = pcdrevchibacbfcc, b = pcdbenchzzlx, scratch bot stopped and deleted after), parent and child lines:
+
+```
+BOT_CREATE pcddaoqsmjn (scratch PCA_BOTS_DIR, brain echo, public) at=2.0s
+BOT_REGISTERED pcddaoqsmjn.31 0x22d55ff214cae5d3779ed934d7fe6f68705848ee8149fd77a893b339f1b0da61 at=22.6s
+BOT_FUNDED 2 PAS from //Alice block=13638073
+[a] SELF pcdrevchibacbfcc.48 0x94d0c766c915b5bf88018bbaf9fbadcbef926c724c5e2aa8a04575fcce10a807
+[b] SELF pcdbenchzzlx.23 0xe6c783b9ddb9785600bcfc065d12fef7b053844a8131ba36eda2160cf67a4a7e
+[a] READY username=pcdrevchibacbfcc.48 free=25PAS
+[b] READY username=pcdbenchzzlx.23 free=36.9167PAS
+PEOPLE a=pcdrevchibacbfcc.48 (25PAS) b=pcdbenchzzlx.23 (36.9167PAS) bot=pcddaoqsmjn.31 at=29.4s
+[a] REQUEST_SENT id=0fb5b2a2-050c-436f-9797-ffd6b1e84ca7
+[b] ACCEPTED pcdrevchibacbfcc.48
+[a] CONTACT pcdbenchzzlx.23
+[a] BOT_CONTACT pcddaoqsmjn.31
+[a] GROUP2_CREATED id=ed34b4cf-d05f-4689-8ab6-c45d7f736adc
+[b] JOINED2 id=ed34b4cf-d05f-4689-8ab6-c45d7f736adc epoch=1
+[a] PROMOTED submissions=1
+GROUP_READY group=ed34b4cf-d05f-4689-8ab6-c45d7f736adc bot admin (1 statement) treasury +0.5 PAS from //Alice block=13638079 at=95.3s
+[a] SENT2
+E2E_TIMEOUT a sends /propose
+```
+
+Exit 13. The failing step is PROPOSED. The bot did its chain part and failed at the statement:
+
+```
+BOT_DAO_MEMBERS_SET add=2 ok=true block=13638081
+BOT_DAO_PROPOSED id=4 (on chain)
+BOT_GROUP2_SEND_FAILED statement_submit rejected: noAllowance
+BOT_DAO_COMMAND_FAILED command=propose statement_submit rejected: noAllowance
+BOT_DAO_CLOSED id=4 result=rejected voters=0
+BOT_DAO_POST_FAILED id=4 statement_submit rejected: noAllowance
+```
+
+A People-chain read 10 min after this bot's registration still showed no `:statement_allowance:` for it; the bots of the earlier runs had one (`0x3200000000d00700`). Also, the parent timed out on `[a] SENT2` only because the child printed `SENT2` with no field while the parent waits for `SENT2 `; the child now prints `SENT2 ok` (the timeout would have come from the missing proposal anyway).
+
+Other runs on 2026-09-24, in order:
+- a = pcdbenchfinb, b = pcdbenchfina (the brief's pair): `CREATE2_FAILED Your account’s space on the network is full of chat statements` (AccountFull), twice. The first of these also had `BOT_FUND_FAILED every dev account failed` (Asset Hub dwellir endpoint stalled for minutes; "not in a best block after 90000 ms"). a = pcdbenchfina: the same AccountFull.
+- a = pcdrevchibacbfcc, b = pcdbenchzzlx: once the funding stalled again (every dev account); after run 5, three runs ended `BOT_CREATE_FAILED registered=false`: the identity backend did not confirm the new bot in 180 s. A probe bot made by hand confirmed after 22 min. The last run was stopped by the coordinator during the new 30 min registration wait.
+
+After run 5 the script waits for the bot's allowance before the people start and asks `pca register` again for up to 30 min. These changes are not proved live yet.
+
+### Screenshots (npm run screenshots -- --only room-dao)
+
+```
+0.6s built
+1.8s [main] seeded pcdecejakd.11
+6.8s [main] fixture written
+9.0s [main] saved room-dao
+
+PNGs:
+  .agent-runs/screens/berlin-day/room-dao.png
+  .agent-runs/screens/berlin-night/room-dao.png
+SCREENSHOTS_OK in 9.0 s
+```
+
+Both themes checked by eye: the pin bar reads "Proposal #3: Buy seeds for the spring beds · Voting closes in 41 min 54 s"; the card shows the tally, the clock, "You voted yes", both vote buttons and "View on Subscan"; a member's vote reference follows.
+
+### Not run
+
+- DAO_OK: see DAO_E2E_PENDING above. The contract and bot half is proved live in pca (`DAO_LIVE_OK`, docs/spec/contracts/dao.md).

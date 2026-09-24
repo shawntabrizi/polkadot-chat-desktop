@@ -6,7 +6,7 @@
  */
 
 import type { HexString } from '../../app/bytes';
-import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
+import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db, groupIdOf, isGroupPeer } from '../../app/database';
 
 import { deleteAttachmentKeys, splitAttachmentKeys } from './attachmentKeyStore';
 import { type MessageContent, type TxReference, isLiveFrame, previewOf, referenceRank } from './content';
@@ -144,7 +144,7 @@ export const applyReference = (
   direction: 'incoming' | 'outgoing',
   ids: { messageId: string; timestamp: number },
   reference: TxReference,
-  options: { read?: boolean } = {},
+  options: { read?: boolean; senderAccountId?: HexString } = {},
 ): Promise<{ messageId: string; added: boolean }> =>
   appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
     const hash = reference.hash.toLowerCase();
@@ -155,6 +155,9 @@ export const applyReference = (
       const row: MessageRow = {
         ...ids,
         peerAccountId: peer,
+        // A group's reference row is a group row like any other (M14).
+        ...(isGroupPeer(peer) ? { groupId: groupIdOf(peer) } : {}),
+        ...(options.senderAccountId ? { senderAccountId: options.senderAccountId } : {}),
         direction,
         status: direction === 'outgoing' ? 'sending' : 'received',
         content: { type: 'transactionReference', reference: { ...reference, hash } },

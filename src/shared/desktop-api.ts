@@ -320,7 +320,7 @@ export type DesktopAppApi = {
   /**
    * Opens a button's link in the system browser (spec 0006), after the user
    * saw its host. Only https and polkadotapp links; anything else rejects.
-   * A group invite link (`polkadotapp://g#…`) is not handed out: it comes
+   * A group invite link (`polkadot-chat://g#…`) is not handed out: it comes
    * back as `onOpenLink`.
    */
   openUrl: (url: string) => Promise<void>;

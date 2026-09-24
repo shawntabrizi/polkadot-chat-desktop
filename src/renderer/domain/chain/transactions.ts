@@ -12,13 +12,23 @@
  * takes every state locally; only the posts above go on the wire. Nothing
  * waits for finality (PLAN.md "Best block first").
  *
+ * In a group (M14) the peer is the group: the reference goes on the group
+ * topic as content, and only the end state goes out, never the 30 s status 0,
+ * so a transaction costs the group's topic exactly one statement.
+ *
  * Lives as long as the chat manager, not a room: closing the room does not
  * stop the reference.
  */
 
 import type { DesktopChainApi, TxStatusEvent } from '../../../shared/desktop-api';
-import type { HexString } from '../../app/bytes';
+import type { TxDisplay } from '../../../shared/txIntent';
+import { isGroupPeer } from '../../app/database';
 import type { TxReference } from '../chat/content';
+import type { ChatTargetId } from '../chat/manager';
+
+/** A reference's note: "Top up (1 PAS)", what it was and how much (spec 0007 `note`). */
+export const referenceNote = (display: TxDisplay): string =>
+  display.amount ? `${display.title} (${display.amount}${display.asset ? ` ${display.asset}` : ''})` : display.title;
 
 /** A transaction no block took in this long is reported as submitted (status 0). */
 export const REFERENCE_PENDING_MS = 30_000;
@@ -26,14 +36,15 @@ export const REFERENCE_PENDING_MS = 30_000;
 export type TxRunnerDeps = {
   chain: Pick<DesktopChainApi, 'sign' | 'onTxStatus'>;
   /** Puts the reference on the wire (and on the own row). */
-  sendReference: (peer: HexString, reference: TxReference) => Promise<void>;
+  sendReference: (peer: ChatTargetId, reference: TxReference) => Promise<void>;
   /** The own row only; nothing is sent. */
-  recordReference: (peer: HexString, reference: TxReference) => Promise<void>;
+  recordReference: (peer: ChatTargetId, reference: TxReference) => Promise<void>;
   timers?: { set: (run: VoidFunction, ms: number) => ReturnType<typeof setTimeout>; clear: (timer: ReturnType<typeof setTimeout>) => void };
 };
 
 export type TxRunRequest = {
-  peer: HexString;
+  /** The contact that sent the intent, or the group it was posted in (M14). */
+  peer: ChatTargetId;
   dryRunId: string;
   /** The genesis hash the intent named (the reference's `chainId`). */
   chainId: string;
@@ -124,7 +135,8 @@ export const createTxRunner = ({ chain, sendReference, recordReference, timers =
       tracked.set(key, entry);
       // The row first, at once: the UI never waits for the chain.
       enqueue(entry, () => recordReference(entry.peer, referenceOf(entry, { status: 'submitted', block: null, error: null })));
-      entry.timer = timers.set(() => {
+      // A group hears the end state only: one statement per transaction on its topic (M14).
+      if (!isGroupPeer(entry.peer)) entry.timer = timers.set(() => {
         entry.timer = null;
         if (entry.told || entry.toldPending) return;
         entry.toldPending = true;

@@ -23,9 +23,10 @@ mac:
   # M15b voice notes: macOS asks for the microphone with this text.
   extendInfo:
     NSMicrophoneUsageDescription: Polkadot Chat uses the microphone only while you record a voice message.
-# M16b (spec 0011 ruling 9): group invite links `polkadotapp://g#…` open in
-# the app; macOS only routes a scheme the bundle declares.
+# Spec 0011 ruling 9 (amended, M14): group invite links `polkadot-chat://g#…`
+# open in the app; macOS only routes a scheme the bundle declares. Not
+# `polkadotapp`: that is the phone app's scheme (its pairing links).
 protocols:
   - name: Polkadot Chat invite link
     schemes:
-      - polkadotapp
+      - polkadot-chat

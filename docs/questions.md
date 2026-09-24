@@ -219,3 +219,9 @@ Write the question, what you did meanwhile, and the date.
 - **The daily client budget is a meter, not a wall.** Spec 0012 has no day cap and the client refuses only beyond the authorization. The panel shows today's share (what is left, spread over the days to the refill) and warns past it. Should the client refuse past the share instead?
 - **A video's name goes on the wire** (a video is a file, review M15b answer 4), unlike a photo's. A phone's "IMG_1234.MOV" says little, but a named file may say more than meant. Keep, or send videos nameless like photos?
 - **The "Ask to resend" link is a fragment (`#resend/<id>`).** It is inert on click. A phone app that renders markdown shows a link that does nothing. Should the spec name this form (so pca and the phone apps can offer "Resend" too), or use a plain `replyTo` as spec 0012 suggests?
+
+## M14 (2026-09-24)
+
+- **The card reads the bot's English.** No wire kind carries a proposal (M14 "Do not"), so the card parses dao.md's lines (`Proposal #N:`, `Tally #N:`, `Voting on #N … closed:`, `Proposal #N executed`). A wording change in pca silently turns the card off. Pin the wording in dao.md as a contract for clients, or give botInfo/buttons a structured field later?
+- **Status 0 in groups.** A group reference goes out once (in block or failed), never the 30 s "submitted". Spec 0007 rule 3 allows both; is one statement per transaction the rule for groups (it is what the brief asked)?
+- **The quoted sender of a reply in a group** shows the group's name ("Garden DAO") instead of the member who wrote the quoted message (visible under the bot's tally replies in room-dao.png). Existing M16 behaviour, not changed here. Fix in a group follow-up?

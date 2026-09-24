@@ -573,7 +573,9 @@ describe('M16b: invite links (0011 "Invite link")', () => {
     const link = { groupId: 'g-1', name: 'Crew', admins: ['0x' + '11'.repeat(32)] as HexString[], inviteId: new Uint8Array(16).fill(1), secret: new Uint8Array(16).fill(2) };
     const text = inviteLinkText(link);
     const token = text.slice(INVITE_LINK_PREFIX.length);
-    for (const form of [text, `https://example.org/chat/g#${token}`, `  ${token}  `]) expect(parseInviteLink(form)?.groupId).toBe('g-1');
+    // Ruling 9 as amended: we make `polkadot-chat://g#…`, and still take the M16b `polkadotapp://g#…` on paste for one release.
+    expect(text.startsWith('polkadot-chat://g#')).toBe(true);
+    for (const form of [text, `polkadotapp://g#${token}`, `https://example.org/chat/g#${token}`, `  ${token}  `]) expect(parseInviteLink(form)?.groupId).toBe('g-1');
     expect(parseInviteLink('https://example.org/')).toBeNull();
     expect(parseInviteLink('polkadotapp://g#notalink')).toBeNull();
   });

@@ -145,6 +145,25 @@ describe('chat manager: messaging', () => {
     expect((await db.rooms.get(peerKey))?.lastPreview).toBe('hello bot');
   });
 
+  // Review M16b ruling 6: `joinedVia` makes a contact a stranger whose `welcome` is only an
+  // invite. Once we write to them ourselves we know them, so the mark must go.
+  it('clears the stranger mark of a join-request contact when we send it a message', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await db.contacts.update(peerKey, { joinedVia: 'g-1' });
+    // Receiving does not clear it: only our own choice to write does.
+    await transport.send({ tag: 'text', value: 'please admit me' });
+    await waitFor(async () => (await listMessages(peerKey)).some(r => r.direction === 'incoming' && r.content.type === 'text' && r.content.text === 'please admit me'));
+    expect((await db.contacts.get(peerKey))?.joinedVia).toBe('g-1');
+
+    await manager.sendMessage(peerKey, { type: 'text', text: 'welcome aboard' });
+    expect((await db.contacts.get(peerKey))?.joinedVia).toBeUndefined();
+  });
+
   it('applies the peer’s text, reaction, edit and reply, and counts unread', async () => {
     const store = createInMemoryStatementStore();
     const web = makePeer();

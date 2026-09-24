@@ -79,6 +79,8 @@
 //                   request by link: Approve, Reject), the invite link and settings
 //   group-roles     M16b an admin's role and flags opened inline in the panel
 //   room-pinned     M16b the pin bar at the top of the room
+//   room-dao        M14 DAO chat (fixture): the DAO bot's proposal card with
+//                   the tally, the countdown and the vote buttons, pinned
 //   room-attachment M15a images on Bulletin (fixture): a received photo with a
 //                   caption and Open / Save…, a sent one, one still
 //                   downloading (blurhash), one of ours storing chunk 1 of 2
@@ -166,7 +168,7 @@ const WORKER_SHOTS = {
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
-    'group-invite', 'group-roles', 'room-pinned',
+    'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
   ],
@@ -634,6 +636,89 @@ const group2Fixture = self => {
   };
 };
 
+/**
+ * M14: a DAO group (fixture). The bot's proposal message, as pca's dao.mjs
+ * words it, with real vote intents (never signed: the shot does not press),
+ * two tally replies, a member's vote reference and ours; the proposal pinned.
+ */
+const DAO = {
+  id: 'fixture-dao',
+  name: 'Garden DAO',
+  at: Date.now() - 50 * 60_000,
+  bot: { account: account('e1'), username: 'pcddao.07' },
+  ana: { account: account('e2'), username: 'anagrove.52', at: Date.now() - 3 * 3_600_000 },
+};
+const daoFixture = async self => {
+  const { encodeTxIntent } = await loadTs('src/shared/txIntent.ts');
+  const g = DAO;
+  const t = step => g.at + step * 60_000;
+  const peer = `group:${g.id}`;
+  const deadline = Date.now() + 42 * 60_000;
+  const title = 'Buy seeds for the spring beds';
+  const vote = support =>
+    bytes(
+      encodeTxIntent({
+        version: 1,
+        chainId: GENESIS,
+        calls: [{ kind: 1, to: new Uint8Array(20).fill(0x07), data: Uint8Array.from([0xc9, 0xd2, 0x7a, 0xfe]), value: 1_000_000_000n, gasRefTime: 2_714_471_220n, gasProofSize: 312_757n, storageDepositLimit: 1_079_200_000n }],
+        display: { title: `Vote ${support ? 'yes' : 'no'} on proposal #3`, description: `Stakes 0.1 PAS on "${title}". The stake is your vote's weight; you get it back after the vote closes.`, amount: '0.1', asset: 'PAS' },
+        dryRunRequired: true,
+        expiresAt: BigInt(deadline),
+      }),
+    );
+  const row = (id, step, who, content, extra = {}) => ({
+    messageId: `fixture-dao-${id}`, peerAccountId: peer, groupId: g.id, timestamp: t(step), direction: who ? 'incoming' : 'outgoing',
+    status: who ? 'received' : 'delivered', content, reactions: [], editedAt: null, ...(who ? { senderAccountId: who.account } : {}), ...extra,
+  });
+  const reference = (hash, block) => ({ type: 'transactionReference', reference: { chainId: GENESIS, hash: `0x${hash.repeat(32)}`, status: 'inBlock', block, note: 'Vote yes on proposal #3 (0.1 PAS)', intentMessageId: 'fixture-dao-proposal', error: null } });
+  const entry = (who, role, permissions) => ({ account: who.account, role, permissions, posting: [], joinedAt: t(0) });
+  const state = {
+    groupId: g.id, epoch: 1, version: 4, name: g.name, defaultPermissions: 1, slowModeSecs: 0, joinPolicy: 1, historyShare: 0,
+    members: [entry(self, 2, 0xff), entry(g.bot, 1, 0xbf), entry(g.ana, 0, 0x01)], invites: [], pinned: ['fixture-dao-proposal'], createdAt: t(0),
+  };
+  const messages = [
+    { messageId: 'fixture-dao-created', peerAccountId: peer, groupId: g.id, timestamp: t(0), direction: 'system', status: 'received', content: { type: 'groupEvent', text: `You created ${g.name}` }, reactions: [], editedAt: null },
+    row('ask', 1, g.ana, { type: 'text', text: 'Spring is close. Shall we buy seeds from the treasury?' }),
+    row('propose', 2, null, { type: 'text', text: `/propose ${title} | 2 PAS to ${g.ana.username}` }),
+    row('proposal', 3, g.bot, {
+      type: 'buttons',
+      text: `Proposal #3: ${title}\nPay 2 PAS to ${g.ana.username} from the group treasury.\nProposed by ${self.username}.\nStake 0.1 PAS to vote. The stake is your vote's weight, and you get it back after the vote.`,
+      rows: [
+        [
+          { label: 'Vote yes (stake 0.1 PAS)', action: { kind: 'tx', intent: vote(true) } },
+          { label: 'Vote no (stake 0.1 PAS)', action: { kind: 'tx', intent: vote(false) } },
+        ],
+        [{ label: 'View on Subscan', action: { kind: 'url', url: 'https://assethub-paseo.subscan.io/' } }],
+      ],
+      oneShot: false,
+      pressed: null,
+    }),
+    row('ana-vote', 5, g.ana, reference('a1', 13_702_114)),
+    row('tally-1', 5.2, g.bot, { type: 'reply', messageId: 'fixture-dao-proposal', text: `Tally #3: yes 0.1 PAS (1 vote), no 0 PAS (0 votes). ${g.ana.username} voted yes with 0.1 PAS.` }),
+    row('my-vote', 7, null, reference('a2', 13_702_160)),
+    row('tally-2', 7.2, g.bot, { type: 'reply', messageId: 'fixture-dao-proposal', text: `Tally #3: yes 0.2 PAS (2 votes), no 0 PAS (0 votes). ${self.username} voted yes with 0.1 PAS.` }),
+  ];
+  return {
+    groups: [
+      {
+        id: g.id, name: g.name, admin: self.account,
+        members: [
+          { account: self.account, username: self.username, joinedAt: t(0) },
+          { account: g.bot.account, username: g.bot.username, joinedAt: t(0) },
+          { account: g.ana.account, username: g.ana.username, joinedAt: t(0) },
+        ],
+        version: 4, createdAt: t(0), self: 'member', left: [], invites: [], nextSeq: 1, lastSeq: {}, gapNoted: false, updatedAt: t(7.2),
+        v: 2, epoch: 1, state, stateBytes: fill(8, 0), stateSigner: g.bot.account,
+        keys: [{ epoch: 1, key: fill(32, 0x43), openedAt: t(0), erasesAt: null, signer: self.account }],
+        carry: [], pendingWelcome: null, locked: false, seenIds: [], senders: [], lastSentAt: 0, rotateAt: null, joinRequests: [],
+      },
+    ],
+    contacts: [contactRow(g.ana), contactRow({ ...g.bot, at: t(0) })],
+    rooms: [{ peerAccountId: peer, groupId: g.id, unreadCount: 0, lastMessageAt: t(7.2), lastPreview: 'Tally #3: yes 0.2 PAS (2 votes)', createdAt: t(0), updatedAt: t(7.2) }],
+    messages,
+  };
+};
+
 /** An incoming request from a fictional person (requests.png). Never answered. */
 const ASKER = { requestId: 'fixture-request-incoming', account: account('d7'), username: 'orbitfan.64', at: Date.now() - 12 * 60_000 };
 
@@ -953,6 +1038,7 @@ const mainWorker = async () => {
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
     await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
+    await writeRows(app, await daoFixture({ account: source.accountHex, username: source.username }));
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
     await recordFixtureVoice(app, voiceRows);
@@ -1472,6 +1558,7 @@ const mainShots = async (app, log, pay) => {
   await manageShots(app, log);
   await paymentShots(app, log, pay);
   await group2Shots(app);
+  await daoShots(app);
   if (WORKER_SHOTS.main.slice(-2).some(wanted)) await demoShots(app, log);
 };
 
@@ -1916,6 +2003,25 @@ const openBotRoom = async (app, log) => {
   if (!(await app.waitFor(app.exists('header [data-testid=bot-badge]'), 30_000))) log(`no botInfo from ${GROUP_BOT} yet`);
   log('contact with', GROUP_BOT);
   await app.esc();
+};
+
+/** M14: the fixture DAO group: the proposal card, pinned at the top. */
+const daoShots = async app => {
+  await app.shot('room-dao', async () => {
+    const row = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(DAO.name)}))`;
+    if (await app.evaluate(app.exists('[aria-label="Back to chats"]'))) await app.click('[aria-label="Back to chats"]');
+    if (await app.evaluate(app.exists('[data-testid=assistant-key-state]'))) await app.esc();
+    if (!(await app.waitFor(`!!${row}`, 10_000))) throw new Error('the fixture DAO group is not in the list');
+    await app.evaluate(`${row}.click(); true`);
+    if (await app.evaluate(app.exists('[data-testid=members-panel]'))) await app.click('[data-testid=members-toggle]');
+    if (!(await app.waitFor(`(document.querySelector('[data-testid=proposal-tally]')?.textContent ?? '').includes('2 votes')`, 10_000))) throw new Error('the proposal card does not show the latest tally');
+    if (!(await app.waitFor(`(document.querySelector('[data-testid=pin-text]')?.textContent ?? '').includes('Proposal #3')`, 10_000))) throw new Error('the pin bar does not show the proposal');
+    // The pin bar jumps to the card, as a member would open it.
+    await app.evaluate(`document.querySelector('[data-testid=pin-bar] button').click(); true`);
+    if (!(await app.waitFor(app.exists('[data-testid=proposal-card]'), 5_000))) throw new Error('no proposal card');
+    await sleep(600);
+    await app.settle();
+  });
 };
 
 /** M16: the fixture private group's room and its members panel. */

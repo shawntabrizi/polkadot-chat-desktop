@@ -60,6 +60,24 @@ describe('createActionCache', () => {
     expect(cache.get('a', { keyboard: { press, active: null }, edit: () => undefined })).not.toBe(pressed);
     expect(cache.get('a', null)).toBeNull();
   });
+
+  // The M16b Pin item lives in the bubble's menu: a cache that drops `pin` hides it from every member with the flag.
+  it('keeps the Pin action, its state and the latest closure', () => {
+    const cache = createActionCache();
+    const calls: string[] = [];
+    const off = cache.get('a', { pin: { pinned: false, run: () => calls.push('old') } });
+    cache.get('a', { pin: { pinned: false, run: () => calls.push('new') } })?.pin?.run();
+    expect(calls).toEqual(['new']);
+    expect(cache.get('a', { pin: { pinned: true, run: () => undefined } })).not.toBe(off);
+    expect(cache.get('a', { pin: { pinned: true, run: () => undefined } })?.pin?.pinned).toBe(true);
+  });
+
+  // M14: the proposal card's countdown changes every second; a cached status would freeze it.
+  it('passes a status block through as it is', () => {
+    const cache = createActionCache();
+    const status = 'Voting closes in 5 s';
+    expect(cache.get('a', { status })?.status).toBe(status);
+  });
 });
 
 describe('createActionCache and M12g payments', () => {
