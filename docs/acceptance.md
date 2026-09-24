@@ -3608,14 +3608,14 @@ Reviewed by the agent: `room-file` shows a received PDF row ("Download · 2.2 MB
 
 ## M16b — Groups v2 supergroup features (spec 0011) (2026-09-24)
 
-### npm run check (last lines)
+### npm run check (last lines; after the rebase onto M15b)
 
 ```
- Test Files  84 passed (84)
-      Tests  742 passed (742)
-   Start at  03:04:27
-   Duration  16.52s (transform 3.11s, setup 1.26s, import 13.47s, tests 44.43s, environment 4ms)
-check:tokens: clean (178 files)
+ Test Files  87 passed (87)
+      Tests  760 passed (760)
+   Start at  03:07:29
+   Duration  16.47s (transform 2.99s, setup 1.23s, import 13.86s, tests 44.00s, environment 4ms)
+check:tokens: clean (181 files)
 ```
 
 Exit 0 (tsc and eslint print nothing when clean).
