@@ -14,6 +14,8 @@ import type { IdentityLookup } from '../identity/lookup';
 import { sendChatRequest } from '../requests/gateway';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
+import { OWN_CAPABILITIES } from './capabilities';
+import { toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, IdentityChannelEvent } from './identityEvents';
 import { listMessages } from './messages';
@@ -35,6 +37,7 @@ type Store = ReturnType<typeof createInMemoryStatementStore>;
 const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
   const events: IdentityChannelEvent[] = [];
   const received: IncomingChatMessage[] = [];
+  const capabilities: IncomingChatMessage[] = [];
   const delivered: string[] = [];
   const channel = createIdentityChannel({
     ownIdentityAccountId: self.identity.identityAccountId,
@@ -56,7 +59,11 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
     prover: createSr25519Prover(self.device.statementAccountSeed),
     allocator: createExpiryAllocator(),
     statementStore: store,
-    onMessage: message => received.push(message),
+    // Spec 0013: the web's set rides its first message; the tests read the rest.
+    onMessage: message => {
+      if (message.content.tag === 'capabilities') capabilities.push(message);
+      else received.push(message);
+    },
     onSent: () => undefined,
     onDelivered: id => delivered.push(id),
     onBatchDelivered: () => undefined,
@@ -65,10 +72,12 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
   return {
     events,
     received,
+    capabilities,
     delivered,
     channel,
     roster,
     send: (content: ChatContent, timestamp = Date.now()) => session.send(content, { messageId: `peer-${++counter}`, timestamp }),
+    sendCapabilities: () => session.send(toWire({ type: 'capabilities', capabilities: OWN_CAPABILITIES }), { messageId: 'peer-caps', timestamp: Date.now() }),
     dispose: () => {
       channel.dispose();
       session.dispose();
@@ -77,7 +86,7 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
 };
 
 /** Peer sends a request, the web accepts, the peer learns the web device. */
-const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: ChatManager, transport: ReturnType<typeof openPeerTransport>) => {
+const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: ChatManager, transport: ReturnType<typeof openPeerTransport>, { capable = true } = {}) => {
   const { requestId } = await sendChatRequest({
     recipientAccountId: web.identity.identityAccountId,
     recipientChatPublicKey: web.identity.identityChatPublicKey,
@@ -93,6 +102,11 @@ const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: C
   await manager.acceptRequest(requestId);
   const accepted = await waitFor(() => transport.events.find(event => event.tag === 'accepted'));
   if (accepted.tag === 'accepted') transport.roster.set([accepted.device]);
+  // Spec 0013: the peer's device lists every kind (as a capable client does); without it only base kinds go.
+  if (capable) {
+    await transport.sendCapabilities();
+    await waitFor(async () => (await db.peerCapabilities.count()) > 0);
+  }
   return { requestId, peerKey: bytesToHex(peer.identity.identityAccountId) as HexString };
 };
 
@@ -734,4 +748,56 @@ describe('chat manager: spec 0008 botInfo and the automatic /start (M10)', () =>
     const event = await waitFor(() => transport?.events.find(entry => entry.tag === 'message' && entry.content.tag === 'botInfo'));
     expect(event.tag === 'message' ? event.content : null).toEqual({ tag: 'botInfo', value: guideInfo });
   });
+});
+
+describe('chat manager: capabilities (spec 0013, M20)', () => {
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const setup = async (capable: boolean) => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const peer = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(peer) });
+    transport = openPeerTransport(store, peer, web);
+    const { peerKey } = await establish(store, web, peer, manager, transport, { capable });
+    return { store, web, peer, peerKey };
+  };
+  const texts = () => transport!.received.filter(m => m.content.tag === 'text').map(m => (m.content.tag === 'text' ? m.content.value : ''));
+
+  it('a chat from before this update (no set recorded) gets our set with the next send, once, and not again after a restart', async () => {
+    const { store, web, peer, peerKey } = await setup(true);
+    // As after the update: an existing room, nothing recorded as sent.
+    await db.capabilitiesSent.clear();
+    await manager!.sendMessage(peerKey, { type: 'text', text: 'one' });
+    await manager!.sendMessage(peerKey, { type: 'text', text: 'two' });
+    await waitFor(() => texts().includes('two'));
+    await waitFor(async () => (await db.capabilitiesSent.get(peerKey)) !== undefined);
+    expect(transport!.capabilities).toHaveLength(1);
+    // A restart reads what was sent from disk: nothing again.
+    manager!.dispose();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(peer) });
+    await manager.sendMessage(peerKey, { type: 'text', text: 'three' });
+    await waitFor(() => texts().includes('three'));
+    await sleep(50);
+    expect(transport!.capabilities).toHaveLength(1);
+  });
+
+  it('a text to a baseline phone carries no extension kind: our set once, then plain text; the pending seen never rides and never goes alone', async () => {
+    const { peerKey } = await setup(false);
+    await transport!.send({ tag: 'text', value: 'from the phone' });
+    await waitFor(() => db.messages.get('peer-1'));
+    await manager!.markRead(peerKey);
+    await manager!.sendMessage(peerKey, { type: 'text', text: 'reply' });
+    await manager!.sendMessage(peerKey, { type: 'text', text: 'again' });
+    await waitFor(() => texts().includes('again'));
+    const sent = manager!.submissions.snapshot().submissions;
+    await sleep(SEEN_INTERVAL_MS + 300);
+    expect(transport!.capabilities).toHaveLength(1);
+    expect(transport!.received.map(m => m.content.tag)).toEqual(['text', 'text']);
+    // No standalone seen after the 5 s window either.
+    expect(manager!.submissions.snapshot().submissions).toBe(sent);
+    await manager!.sendTyping(peerKey, 'composing', Date.now() + 5_000);
+    await manager!.deleteForEveryone(peerKey, (await listMessages(peerKey)).filter(r => r.direction === 'outgoing').at(-1)!.messageId);
+    await sleep(50);
+    expect(transport!.received.map(m => m.content.tag)).toEqual(['text', 'text']);
+  }, 15_000);
 });

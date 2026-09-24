@@ -12,21 +12,131 @@
  * derives topics and encryption.
  */
 
+import { x25519 } from '@noble/curves/ed25519.js';
 import {
+  type DeviceTarget,
+  type Encryption,
   type ExpiryAllocator,
   type PeerRoster,
+  Request,
+  type Statement,
+  StatementData,
   type StatementProver,
   type StatementStoreAdapter,
   createAccountId,
+  createEncryption,
+  createEnvelope,
   createMultiDeviceSession,
+  createSessionId,
 } from '@novasamatech/statement-store';
+
+import { bytesToHex } from '../../app/bytes';
 
 import type { DeviceKeys } from '../device/keys';
 import type { UserIdentity } from '../identity/userIdentity';
 
 import { type ChatContent, ChatMessageCodec, type ChatMessageWire } from './identityEvents';
 
-export type IncomingChatMessage = { messageId: string; timestamp: number; content: ChatContent };
+/**
+ * `device`: the statement account of the peer device that sent it (spec 0013
+ * keys capabilities by it); absent on the identity channel and when unknown.
+ */
+export type IncomingChatMessage = { messageId: string; timestamp: number; content: ChatContent; device?: Uint8Array };
+
+/** How many request ids the sender map keeps per session (a batch repeats its id until acked). */
+const SENDER_MEMORY = 512;
+
+/**
+ * Spec 0013 needs the device that sent a message; the SDK's `RequestMessage`
+ * (0.10.2) does not say it. The statement does: each peer device writes on
+ * its own topic `SessionId(D(B'), A)` (mds.md), keyed by
+ * `x25519(ownIdentityChatPrivate, D(B').encryptionPublic)`, and signs with
+ * its statement account. This wraps the adapter the session reads through:
+ * each incoming statement is matched to a roster device by its topic, opened
+ * with that device's key (the SDK opens it again after), and its request id
+ * is mapped to the device. The SDK decodes asynchronously, so the map is
+ * written before the message is delivered. A statement whose proof names
+ * another signer is not attributed.
+ */
+export const createSenderTracker = (params: {
+  ownIdentityAccountId: Uint8Array;
+  ownIdentityChatPrivateKey: Uint8Array;
+  ownStatementAccountId: Uint8Array;
+  ownEncryptionPrivateKey: Uint8Array;
+  roster: () => DeviceTarget[];
+}) => {
+  const envelope = createEnvelope({ ownStatementAccountId: params.ownStatementAccountId, ownEncryptionPrivateKey: params.ownEncryptionPrivateKey });
+  const local = { accountId: createAccountId(params.ownIdentityAccountId), pin: undefined };
+  type Spec = { device: DeviceTarget; encryption: Encryption };
+  let cached: { devices: DeviceTarget[]; specs: Map<string, Spec> } | null = null;
+  const specs = (): Map<string, Spec> => {
+    const devices = params.roster();
+    if (cached?.devices === devices) return cached.specs;
+    const map = new Map<string, Spec>();
+    for (const device of devices) {
+      try {
+        const secret = x25519.getSharedSecret(params.ownIdentityChatPrivateKey, device.encryptionPublicKey);
+        const topic = createSessionId(secret, { accountId: createAccountId(device.statementAccountId), pin: undefined }, local);
+        map.set(bytesToHex(topic).toLowerCase(), { device, encryption: createEncryption(secret) });
+      } catch {
+        // A malformed roster entry: the SDK skips it too.
+      }
+    }
+    cached = { devices, specs: map };
+    return map;
+  };
+  const senders = new Map<string, Uint8Array>();
+
+  const requestIdOf = (spec: Spec, data: Uint8Array): string | null => {
+    const plain = spec.encryption.decrypt(data);
+    if (plain.isErr()) return null;
+    try {
+      const decoded = StatementData.dec(plain.value);
+      if (decoded.tag === 'request') return decoded.value.requestId;
+      if (decoded.tag !== 'multiRequest') return null;
+      const inner = envelope.unwrapForOwnDevice(decoded.value.encryptedRequest, decoded.value.devicesInfo, spec.device.encryptionPublicKey);
+      return inner.isOk() ? Request.dec(inner.value).requestId : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const note = (statement: Statement): void => {
+    if (!statement.data) return;
+    const all = specs();
+    const spec = (statement.topics ?? []).map(topic => all.get(String(topic).toLowerCase())).find(found => found !== undefined);
+    if (!spec) return;
+    const signer = (statement.proof as { value?: { signer?: Uint8Array | string } } | undefined)?.value?.signer;
+    if (signer !== undefined) {
+      const hex = typeof signer === 'string' ? signer.toLowerCase() : bytesToHex(signer).toLowerCase();
+      if (hex !== bytesToHex(spec.device.statementAccountId).toLowerCase()) return;
+    }
+    const requestId = requestIdOf(spec, statement.data);
+    if (requestId === null) return;
+    senders.delete(requestId);
+    senders.set(requestId, spec.device.statementAccountId);
+    if (senders.size > SENDER_MEMORY) senders.delete(senders.keys().next().value as string);
+  };
+
+  return {
+    /** The device that sent request `requestId`, if one of its statements was seen. */
+    senderOf: (requestId: string): Uint8Array | undefined => senders.get(requestId),
+    /** The adapter to hand the session: reads note each statement first; submits pass through. */
+    wrap: (store: StatementStoreAdapter): StatementStoreAdapter => ({
+      queryStatements: (filter, destination) =>
+        store.queryStatements(filter, destination).map(statements => {
+          for (const statement of statements) note(statement);
+          return statements;
+        }),
+      subscribeStatements: (filter, callback) =>
+        store.subscribeStatements(filter, page => {
+          for (const statement of page.statements) note(statement);
+          return callback(page);
+        }),
+      submitStatement: statement => store.submitStatement(statement),
+    }),
+  };
+};
 
 export type PeerSessionParams = {
   identity: UserIdentity;
@@ -60,6 +170,13 @@ export type PeerSession = {
 };
 
 export const createPeerSession = (params: PeerSessionParams): PeerSession => {
+  const senders = createSenderTracker({
+    ownIdentityAccountId: params.identity.identityAccountId,
+    ownIdentityChatPrivateKey: params.identity.identityChatPrivateKey,
+    ownStatementAccountId: params.deviceKeys.statementAccountPublicKey,
+    ownEncryptionPrivateKey: params.deviceKeys.encryptionPrivateKey,
+    roster: () => params.peerRoster.current(),
+  });
   const session = createMultiDeviceSession({
     localDevice: {
       statementAccountId: params.deviceKeys.statementAccountPublicKey,
@@ -74,7 +191,7 @@ export const createPeerSession = (params: PeerSessionParams): PeerSession => {
       chatPublicKey: params.peerIdentityChatPublicKey,
     },
     peerRoster: params.peerRoster,
-    statementStore: params.statementStore,
+    statementStore: senders.wrap(params.statementStore),
     prover: params.prover,
     allocator: params.allocator,
   });
@@ -93,7 +210,8 @@ export const createPeerSession = (params: PeerSessionParams): PeerSession => {
       const wire = message.payload.value;
       if (seen.has(wire.messageId)) continue;
       seen.add(wire.messageId);
-      params.onMessage({ messageId: wire.messageId, timestamp: Number(wire.timestamp), content: wire.versioned.value });
+      const device = senders.senderOf(message.requestId);
+      params.onMessage({ messageId: wire.messageId, timestamp: Number(wire.timestamp), content: wire.versioned.value, ...(device ? { device } : {}) });
     }
   });
 

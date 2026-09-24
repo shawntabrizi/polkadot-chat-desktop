@@ -10,7 +10,8 @@
  * Authorization: the identity is not a person, so it cannot claim storage on
  * the People chain (spec 0012 Unresolved 1). On devnet only, the public dev
  * key `//Eve` (an `AllowedAuthorizer` there, checked 2026-09-24) grants
- * 100 transactions / 64 MiB when the account has too little. No other
+ * 10 transactions / 8 MiB at a time when the account has too little (since
+ * 2026-09-24 it refuses 64 MiB: `InsufficientAuthorizerBudget`). No other
  * profile authorizes on its own.
  */
 
@@ -22,19 +23,25 @@ import { getTxCreator } from 'polkadot-api/tx-creator';
 import { getWsProvider } from 'polkadot-api/ws';
 
 import { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } from '../../shared/chainRead';
-import type { BulletinQuota, BulletinStoreResult } from '../../shared/desktop-api';
+import type { BulletinQuota, BulletinStoreResult, HopSendResult } from '../../shared/desktop-api';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 import { deriveSr25519PairFromSeed } from '../identity/crypto';
 import { metadataCache } from '../metadataCache';
 
 import { devPair } from './faucet';
+import { hopSend } from './hop';
 
 const typedApi = (client: PolkadotClient) => client.getTypedApi(bulletinDevnet);
 
 /** The path the phone apps and pca use for the Bulletin upload key (spec 0012 "Which account signs"). */
 export const BULLETIN_SIGNER_PATH = '//allowance//bulletin//chat';
-/** Devnet grant per top-up (milestone M15 step 3). */
-export const DEVNET_GRANT = { transactions: 100, bytes: 64n * 1024n * 1024n } as const;
+/**
+ * Devnet grant per top-up (M15 step 3; M20: 8 MiB, since `//Eve` refuses
+ * 64 MiB with `InsufficientAuthorizerBudget`). A larger need tops up in
+ * these steps, at most `DEVNET_GRANT_STEPS` times per call.
+ */
+export const DEVNET_GRANT = { transactions: 10, bytes: 8n * 1024n * 1024n } as const;
+export const DEVNET_GRANT_STEPS = 4;
 export const DEVNET_BULLETIN_GENESIS = NETWORK_PROFILES.devnet.bulletin?.genesis ?? '';
 export const BULLETIN_DEVNET_ONLY = 'Automatic Bulletin storage grants run on the devnet Bulletin chain only.';
 /** Bulletin's block time (6 s), to turn an expiry block into a date. */
@@ -175,6 +182,24 @@ export const storeResultOf = (stored: readonly StoredChunk[], ciphertexts: reado
 
 const megabytes = (bytes: bigint): string => (Number(bytes) / (1024 * 1024)).toFixed(1);
 
+/** The innermost error name of a dispatch error (`InsufficientAuthorizerBudget`), or null. */
+export const dispatchErrorName = (error: unknown): string | null => {
+  let name: string | null = null;
+  let node: unknown = error;
+  for (let depth = 0; depth < 6 && node && typeof node === 'object'; depth++) {
+    const typed = node as { type?: unknown; value?: unknown };
+    if (typeof typed.type === 'string') name = typed.type;
+    node = typed.value;
+  }
+  return name;
+};
+
+/** M20: the words for a devnet grant that did not land. */
+export const grantRefusal = (outcome: StoreAttempt, error: string | null): string =>
+  error === 'InsufficientAuthorizerBudget'
+    ? 'The devnet storage grant was refused: the //Eve authorizer has no budget left, even for 8 MB. Try again later.'
+    : `The devnet storage grant did not land (${error ?? outcome}).`;
+
 /**
  * Spec 0012 "Budget check": the chain would take an over-budget store at low
  * priority, so the client refuses it. Null when `chunks` fit.
@@ -295,6 +320,12 @@ export type BulletinService = {
    */
   store: (ciphertexts: readonly Uint8Array[], onProgress?: (progress: StoreProgress) => void) => Promise<StoredChunk[]>;
   /**
+   * M20b: puts a file on a HOP node of this network for a peer with a
+   * baseline device, signed by this account (a HOP node asks for an active
+   * Bulletin authorization; on devnet a missing one is granted first).
+   */
+  sendHop: (bytes: Uint8Array) => Promise<HopSendResult>;
+  /**
    * One chunk by its hash: RPC `bitswap_v1_get`, then `mirror`, then the
    * gateway; the gateway first when `gatewayFirst` (a chunk over 512 KB, see
    * `sourceOrder`); or only `only`.
@@ -311,6 +342,8 @@ export function createBulletinService(
   { onTransaction = () => undefined, log = line => console.info(line), now = Date.now }: { onTransaction?: () => void; log?: Log; now?: () => number } = {},
 ): BulletinService {
   const address = ss58Address(signer.publicKey, 42);
+  const signerPublicKey = signer.publicKey;
+  const signerSign = signer.sign;
   const creator = getTxCreator(signer.publicKey, 'Sr25519', signer.sign);
   const read = <T>(label: string, fn: () => Promise<T>): Promise<T> => retryOnNextEndpoint(() => withTimeout(fn(), READ_TIMEOUT_MS, label), chain.switchEndpoint);
   const bestNumber = async (): Promise<number> => (await chain.client.getBestBlocks())[0]?.number ?? 0;
@@ -367,27 +400,33 @@ export function createBulletinService(
     if (chain.genesis.toLowerCase() === DEVNET_BULLETIN_GENESIS.toLowerCase()) {
       assertDevnetBulletin(chain.genesis);
       const eve = devPair('Eve');
-      const grant = chain.api.tx.TransactionStorage.authorize_account({ who: address, transactions: DEVNET_GRANT.transactions, bytes: DEVNET_GRANT.bytes });
       const eveCreator = getTxCreator(eve.publicKey, 'Sr25519', eve.sign);
-      log(`[bulletin] devnet: //Eve authorizes ${address} for ${DEVNET_GRANT.transactions} transactions / ${megabytes(DEVNET_GRANT.bytes)} MB`);
-      const result = await new Promise<StoreAttempt>(resolve => {
-        const timer = setTimeout(() => resolve('timeout'), STORE_WAIT_MS);
-        const subscription = grant.createSubmitAndWatch(eveCreator).subscribe({
-          next: (event: TxEvent) => {
-            if (event.type === 'broadcasted') onTransaction();
-            if (event.type !== 'inBestBlock') return;
-            clearTimeout(timer);
-            subscription.unsubscribe();
-            resolve(event.ok ? 'stored' : 'failed');
-          },
-          error: () => {
-            clearTimeout(timer);
-            resolve('failed');
-          },
+      // 8 MiB at a time (the authorizer refuses more); a larger need takes a few steps.
+      for (let step = 0; step < DEVNET_GRANT_STEPS && budgetProblem(current, chunkSizes); step++) {
+        const grant = chain.api.tx.TransactionStorage.authorize_account({ who: address, transactions: DEVNET_GRANT.transactions, bytes: DEVNET_GRANT.bytes });
+        log(`[bulletin] devnet: //Eve authorizes ${address} for ${DEVNET_GRANT.transactions} transactions / ${megabytes(DEVNET_GRANT.bytes)} MB`);
+        const result = await new Promise<{ outcome: StoreAttempt; error: string | null }>(resolve => {
+          const timer = setTimeout(() => resolve({ outcome: 'timeout', error: null }), STORE_WAIT_MS);
+          const subscription = grant.createSubmitAndWatch(eveCreator).subscribe({
+            next: (event: TxEvent) => {
+              if (event.type === 'broadcasted') onTransaction();
+              if (event.type !== 'inBestBlock') return;
+              clearTimeout(timer);
+              subscription.unsubscribe();
+              resolve(event.ok ? { outcome: 'stored', error: null } : { outcome: 'failed', error: dispatchErrorName(event.dispatchError) });
+            },
+            error: (error: unknown) => {
+              clearTimeout(timer);
+              resolve({ outcome: 'failed', error: error instanceof Error ? error.message : null });
+            },
+          });
         });
-      });
-      if (result !== 'stored') throw new Error(`The devnet storage grant did not land (${result}).`);
-      current = await allowance();
+        if (result.outcome !== 'stored') throw new Error(grantRefusal(result.outcome, result.error));
+        const before = current;
+        current = await allowance();
+        // A grant that did not raise the budget would loop for nothing.
+        if (before && current && current.bytesLeft <= before.bytesLeft && current.transactionsLeft <= before.transactionsLeft) break;
+      }
     }
     const problem = budgetProblem(current, chunkSizes);
     if (problem) throw new Error(problem);
@@ -434,6 +473,13 @@ export function createBulletinService(
     return result;
   };
 
+  const sendHop = async (bytes: Uint8Array): Promise<HopSendResult> => {
+    // A HOP node takes a submit only from an account with an active authorization; the pool does not spend its bytes.
+    await ensureBudget([1]);
+    const signer = { publicKey: signerPublicKey, sign: signerSign };
+    return hopSend(NETWORK_PROFILES[chain.profile].hopNodes, bytes, signer);
+  };
+
   const fetchChunk = (hash: Uint8Array, mirror: string | null, only?: FetchSource['name'], gatewayFirst = false) => {
     if (hash.length !== 32) return Promise.reject(new Error('A content hash is 32 bytes.'));
     const sources: FetchSource[] = [
@@ -445,5 +491,5 @@ export function createBulletinService(
     return fetchVerified(hash, only ? sources.filter(source => source.name === only) : sourceOrder(sources, gatewayFirst));
   };
 
-  return { address, genesis: chain.genesis, allowance, ensureBudget, store, fetchChunk, dispose: () => undefined };
+  return { address, genesis: chain.genesis, allowance, ensureBudget, store, sendHop, fetchChunk, dispose: () => undefined };
 }

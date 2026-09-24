@@ -4,7 +4,8 @@
  * entry (`identifier`) and a 32-byte `claimTicket`. This module derives the
  * ticket's keys, claims the root entry and the chunks it lists, checks and
  * decrypts them, and acks the entries once the caller has persisted the file.
- * Main process only; it never sends HOP.
+ * Since M20b it also sends: a file for a peer with a baseline device goes to
+ * a HOP node in the phones' dialect (`submitHopFile`). Main process only.
  *
  * Two dialects are live (docs/reference/bulletin-and-media.md 5 and 6):
  * - cipher: the phone apps and pca seal every entry with ChaCha20-Poly1305;
@@ -22,11 +23,12 @@
  */
 
 import { gcm } from '@noble/ciphers/aes.js';
+import { randomBytes } from '@noble/ciphers/utils.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { blake2b } from '@noble/hashes/blake2.js';
 import { getPublicKey, secretFromSeed, sign } from '@scure/sr25519';
 
-import { HOP_MAX_FILE_BYTES, type HopAckResult, type HopCipher, type HopFetchResult, type HopLayout } from '../../shared/desktop-api';
+import { HOP_MAX_FILE_BYTES, type HopAckResult, type HopCipher, type HopFetchResult, type HopLayout, type HopSendResult } from '../../shared/desktop-api';
 import { NETWORK_PROFILES } from '../../shared/network';
 
 /** The apps' 2,000,000-byte chunks plus the AEAD's 28 bytes and some slack. */
@@ -52,6 +54,7 @@ const HOP_REFUSED = new Set([1007, 1008]);
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const CLAIM_CONTEXT = utf8('hop-claim-v1:');
+const SUBMIT_CONTEXT = utf8('hop-submit-v1:');
 const ACK_CONTEXT = utf8('hop-ack-v1:');
 
 const blake2b256 = (data: Uint8Array, key?: Uint8Array): Uint8Array => blake2b(data, { dkLen: 32, ...(key ? { key } : {}) });
@@ -390,6 +393,140 @@ export async function hopFetch(
   } finally {
     rpc?.close();
   }
+}
+
+// ── Send (M20b: base spec "Upload Flow" in the phones' dialect) ─────────────
+
+/** The phones' chunk size (Android `HopService.CHUNK_SIZE_BYTES`, iOS `HandoffFileLoadConfig`). */
+export const HOP_CHUNK_BYTES = 2_000_000;
+/** A file up to this size sits inline in the root entry, as the phones put it (Android `INLINE_MAX_BYTES`). */
+export const HOP_INLINE_MAX_BYTES = HOP_CHUNK_BYTES - 64;
+
+const u64le = (value: number): Uint8Array => {
+  const out = new Uint8Array(8);
+  let rest = BigInt(value);
+  for (let i = 0; i < 8; i += 1) {
+    out[i] = Number(rest & 0xffn);
+    rest >>= 8n;
+  }
+  return out;
+};
+const compact = (value: number): Uint8Array => {
+  if (value < 64) return Uint8Array.of(value << 2);
+  if (value < 16_384) return Uint8Array.of(((value << 2) | 1) & 0xff, value >> 6);
+  const encoded = ((value << 2) | 2) >>> 0;
+  return Uint8Array.of(encoded & 0xff, (encoded >> 8) & 0xff, (encoded >> 16) & 0xff, (encoded >>> 24) & 0xff);
+};
+
+/** RFC 0001 `VersionedUploadedFile::V1(Inline(bytes))`: the phones' root for a small file. */
+export const inlineRoot = (bytes: Uint8Array): Uint8Array => concat(Uint8Array.of(0, 0), compact(bytes.length), bytes);
+/** RFC 0001 `V1(Chunked { totalSize: u64, chunks: Vec<Vec<u8>> })`: the phones' root for a chunked file. */
+export const chunkedRoot = (totalSize: number, chunks: readonly Uint8Array[]): Uint8Array =>
+  concat(Uint8Array.of(0, 1), u64le(totalSize), compact(chunks.length), ...chunks.flatMap(hash => [compact(hash.length), hash]));
+
+/** `nonce(12) ‖ ciphertext ‖ tag(16)` with ChaCha20-Poly1305: the phones' pool entry. */
+export const sealEntry = (key: Uint8Array, plain: Uint8Array, nonce: Uint8Array = randomBytes(NONCE_BYTES)): Uint8Array => concat(nonce, chacha20poly1305(key, nonce).encrypt(plain));
+
+/** `blake2b_256("hop-submit-v1:" ‖ blake2b_256(data) ‖ u64le(timestamp))`: what a submit signs. */
+export const submitPayload = (data: Uint8Array, timestamp: number): Uint8Array => blake2b256(concat(SUBMIT_CONTEXT, blake2b256(data), u64le(timestamp)));
+
+export type HopSigner = { publicKey: Uint8Array; sign: (message: Uint8Array) => Uint8Array };
+export type HopSent = { identifier: Uint8Array; ticket: Uint8Array; entries: number };
+
+/**
+ * Puts `bytes` on the node behind `rpc` as the phones do: a fresh ticket, the
+ * ticket's key as the only recipient (every device of the peer gets the same
+ * ticket in the message), ChaCha20-Poly1305 entries, 2,000,000-byte chunks,
+ * and a versioned root (inline up to 1,999,936 bytes). Each `hop_submit` is
+ * signed by `signer` (the Bulletin-authorized `//allowance//bulletin//chat`
+ * key, as the phones sign) over the base spec's submit payload, positional
+ * params. Resolves with the root's hash (`identifier`) and the ticket.
+ */
+export async function submitHopFile({
+  rpc,
+  bytes,
+  signer,
+  now = Date.now,
+  ticket = randomBytes(HASH_BYTES),
+}: {
+  rpc: HopRpc;
+  bytes: Uint8Array;
+  signer: HopSigner;
+  now?: () => number;
+  ticket?: Uint8Array;
+}): Promise<HopSent> {
+  if (bytes.length < 1 || bytes.length > HOP_MAX_FILE_BYTES) throw new HopFailure('tooLarge', `A file over HOP is 1 byte to ${HOP_MAX_FILE_BYTES / (1024 * 1024)} MB.`);
+  const keys = ticketKeys(ticket);
+  const recipient = toHex(concat(Uint8Array.of(1), keys.publicKey));
+  const signerHex = toHex(concat(Uint8Array.of(1), signer.publicKey));
+  let entries = 0;
+  const submit = async (data: Uint8Array): Promise<Uint8Array> => {
+    const timestamp = now();
+    const signature = signer.sign(submitPayload(data, timestamp));
+    try {
+      await rpc.call('hop_submit', [toHex(data), [recipient], toHex(concat(Uint8Array.of(1), signature)), signerHex, timestamp]);
+    } catch (error) {
+      throw submitFailureOf(error);
+    }
+    entries += 1;
+    return blake2b256(data);
+  };
+  let root: Uint8Array;
+  if (bytes.length <= HOP_INLINE_MAX_BYTES) root = inlineRoot(bytes);
+  else {
+    const hashes: Uint8Array[] = [];
+    for (let at = 0; at < bytes.length; at += HOP_CHUNK_BYTES) hashes.push(await submit(sealEntry(keys.encryptionKey, bytes.subarray(at, at + HOP_CHUNK_BYTES))));
+    root = chunkedRoot(bytes.length, hashes);
+  }
+  const identifier = await submit(sealEntry(keys.encryptionKey, root));
+  return { identifier, ticket, entries };
+}
+
+/** Base spec errors a sender can meet, in words. */
+const submitFailureOf = (error: unknown): HopFailure => {
+  const code = (error as RpcError | undefined)?.code;
+  switch (code) {
+    case 1012:
+      return new HopFailure('refused', 'This account has no Bulletin storage authorization, which a HOP node asks for.');
+    case 1011:
+      return new HopFailure('refused', 'This account used up its space on the HOP node for now.');
+    case 1002:
+    case 1020:
+      return new HopFailure('network', 'The HOP node is busy. Try again in a minute.');
+    case 1001:
+      return new HopFailure('tooLarge', 'The HOP node refused a part of the file as too large.');
+    default:
+      return failureOf(error);
+  }
+};
+
+/**
+ * The IPC form of a send: the first of `nodes` that answers takes the whole
+ * file (a HOP entry stays on the node it was given to). A refusal is final;
+ * a node that cannot be reached passes the file to the next one.
+ */
+export async function hopSend(
+  nodes: readonly string[],
+  bytes: Uint8Array,
+  signer: HopSigner,
+  open: (url: string) => Promise<HopRpc> = url => openHopRpc(url),
+): Promise<HopSendResult> {
+  let last: HopFailure = new HopFailure('network', 'This network has no HOP node in the app.');
+  for (const node of nodes) {
+    let rpc: HopRpc | null = null;
+    try {
+      const url = resolveHopNode(node);
+      rpc = await open(url);
+      const sent = await submitHopFile({ rpc, bytes, signer });
+      return { ok: true, identifier: toHex(sent.identifier), ticket: sent.ticket, node: url.replace(/\/$/, ''), entries: sent.entries };
+    } catch (error) {
+      last = failureOf(error);
+      if (last.reason !== 'network') break;
+    } finally {
+      rpc?.close();
+    }
+  }
+  return { ok: false, reason: last.reason, message: last.message };
 }
 
 /** The IPC form of an ack: its own connection (the fetch's closed when it returned). */

@@ -61,6 +61,7 @@ export const IPC = {
   bulletinAllowance: 'bulletin:allowance',
   hopFetch: 'hop:fetch',
   hopAck: 'hop:ack',
+  hopSend: 'hop:send',
   hopProgress: 'hop:progress',
   fileOpen: 'file:open',
   fileSave: 'file:save',
@@ -486,17 +487,27 @@ export type HopFetchResult =
   | { ok: true; bytes: Uint8Array; entries: string[]; cipher: HopCipher; layout: HopLayout }
   | { ok: false; reason: 'notFound' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
 export type HopAckResult = { acked: number; notFound: number; failed: number };
+/**
+ * M20b: a file this app put on a HOP node. `identifier` (0x-hex) is the root
+ * entry, `node` the wss URL for the message, `ticket` goes only inside the
+ * encrypted message (and sealed at rest). `entries`: pool entries submitted.
+ */
+export type HopSendResult =
+  | { ok: true; identifier: string; ticket: Uint8Array; node: string; entries: number }
+  | { ok: false; reason: 'notFound' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
 
 /**
  * Base spec HOP receive: a phone app's `RichText` attachment. The main
  * process talks to the message's node, derives the keys from the ticket,
- * checks and decrypts; it never sends HOP.
+ * checks and decrypts. Since M20b it also sends a file for a peer with a baseline device.
  */
 export type DesktopHopApi = {
   /** Claims (read-only) and decrypts the file `identifier` (0x-hex) at `node` with `ticket`. */
   fetch: (requestId: string, node: string, identifier: string, ticket: Uint8Array) => Promise<HopFetchResult>;
   /** Acks `entries` (0x-hex): only after the file is persisted, since an ack removes them for good. */
   ack: (node: string, ticket: Uint8Array, entries: string[]) => Promise<HopAckResult>;
+  /** M20b: puts one file (at most 32 MiB) on a HOP node of this network, in the phones' dialect, for a peer with a baseline device. */
+  send: (bytes: Uint8Array) => Promise<HopSendResult>;
   onProgress: (listener: (progress: HopProgress) => void) => () => void;
 };
 

@@ -88,6 +88,25 @@ export const hopTicket = async (messageId: string, index: number, attachment: At
   return openAtRest({ nonce: row.nonce, sealed: row.sealed }, id);
 };
 
+/**
+ * M20b, HOP send: our upload of attachment `index` of our own `messageId` is
+ * done. The row learns its node and root id; the claim ticket goes sealed to
+ * `keys`, as a received one does.
+ */
+export const setHopLocation = async (messageId: string, index: number, attachment: Attachment): Promise<void> => {
+  const hop = attachment.hop;
+  if (!hop) return;
+  const id = attachmentKeyId(messageId, index);
+  const { nonce, sealed } = await sealAtRest(hop.ticket, id);
+  await appDatabase.transaction('rw', db.messages, db.keys, async () => {
+    const row = await db.messages.get(messageId);
+    if (row?.content.type !== 'richText') return;
+    const attachments = row.content.attachments.map((existing, i) => (i === index ? { ...attachment, hop: { ...hop, ticket: new Uint8Array(0) } } : existing));
+    await db.attachmentKeys.put({ id, messageId, index, nonce, sealed });
+    await db.messages.update(messageId, { content: { ...row.content, attachments } });
+  });
+};
+
 /** Item `index` of `messageId` with its key and nonce; the inline ones when the row still has them. Rejects when the key is gone. */
 export const itemWithKey = async (messageId: string, index: number, item: AttachmentItem): Promise<AttachmentItem> => {
   if (hasInlineKey(item)) return item;

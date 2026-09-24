@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { blake2b } from '@noble/hashes/blake2.js';
-import { verify } from '@scure/sr25519';
+import { getPublicKey, secretFromSeed, sign, verify } from '@scure/sr25519';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -9,13 +9,18 @@ import {
   type HopRpc,
   ackHopEntries,
   ackPayload,
+  chunkedRoot,
   claimPayload,
   decodeRoot,
   fetchHopFile,
   hopAck,
   hopFetch,
+  hopSend,
+  inlineRoot,
   openEntry,
   resolveHopNode,
+  submitHopFile,
+  submitPayload,
   ticketKeys,
 } from './hop';
 
@@ -280,5 +285,104 @@ describe('the node a message names', () => {
     });
     expect(result).toMatchObject({ ok: false, reason: 'untrusted' });
     expect(opened).toBe(false);
+  });
+});
+
+describe('HOP send (M20b: the phones\' dialect)', () => {
+  const signerSecret = secretFromSeed(new Uint8Array(32).fill(7));
+  const signer = { publicKey: getPublicKey(signerSecret), sign: (message: Uint8Array) => sign(signerSecret, message) };
+
+  /**
+   * A pool that takes `hop_submit` as the node does: positional [data,
+   * recipients, signature, signer, submitTimestamp], the signature checked
+   * over the submit payload against the signer; claims then go to `pool`.
+   */
+  const submitPool = () => {
+    const stored: Record<string, Uint8Array> = {};
+    const submits: { recipients: string[]; signer: string; timestamp: number; size: number }[] = [];
+    const rpc: HopRpc = {
+      call: async (method, params) => {
+        if (method !== 'hop_submit') throw new Error(`unexpected ${method}`);
+        const [data, recipients, signature, signerHex, timestamp] = params as [string, string[], string, string, number];
+        const entry = bytes(data);
+        const proofBytes = bytes(signature);
+        const signerBytes = bytes(signerHex);
+        if (signerBytes[0] !== 1 || proofBytes[0] !== 1 || !verify(submitPayload(entry, timestamp), proofBytes.subarray(1), signerBytes.subarray(1))) {
+          throw Object.assign(new Error('Invalid signature'), { code: 1007 });
+        }
+        stored[hex(b2(entry))] = entry;
+        submits.push({ recipients, signer: signerHex, timestamp, size: entry.length });
+        return { poolStatus: { entryCount: 1, totalBytes: entry.length, maxBytes: 1 } };
+      },
+      close: () => undefined,
+    };
+    return { rpc, stored, submits };
+  };
+  /** Opens a pool entry with node:crypto (OpenSSL), as pca's legacy dialect does: not this module's own decrypt. */
+  const openWithOpenSsl = (key: Uint8Array, entry: Uint8Array): Uint8Array => {
+    const decipher = crypto.createDecipheriv('chacha20-poly1305', key, entry.subarray(0, 12), { authTagLength: 16 });
+    decipher.setAuthTag(entry.subarray(entry.length - 16));
+    return new Uint8Array(Buffer.concat([decipher.update(entry.subarray(12, entry.length - 16)), decipher.final()]));
+  };
+
+  it('a small file sits inline in a versioned root, one entry, the ticket key the only recipient, signed by our key', async () => {
+    const { rpc, stored, submits } = submitPool();
+    const file = new TextEncoder().encode('a photo from the desktop');
+    const sent = await submitHopFile({ rpc, bytes: file, signer, ticket: TICKET, now: () => 1_720_000_000_000 });
+    expect(sent.entries).toBe(1);
+    expect(submits).toHaveLength(1);
+    // Base spec: recipients are MultiSigner::Sr25519 of the ticket key; every device of the peer gets the same ticket.
+    expect(submits[0]?.recipients).toEqual([`0x01${VECTORS.publicKey}`]);
+    expect(submits[0]?.signer).toBe(`0x01${hex(signer.publicKey)}`);
+    const root = openWithOpenSsl(encryptionKey, stored[hex(sent.identifier)] as Uint8Array);
+    // RFC 0001 `V1(Inline(bytes))`, as the phones write it (iOS vector: 00 00 compact(len) bytes).
+    expect(hex(root.subarray(0, 3))).toBe(`0000${(file.length << 2).toString(16).padStart(2, '0')}`);
+    expect(decodeRoot(root)).toEqual({ layout: 'versioned', inline: file });
+    // And this client's receive path reads it back through a pool that checks every claim.
+    const fetched = await fetchHopFile({ rpc: pool(stored), identifier: sent.identifier, ticket: TICKET });
+    expect(fetched).toMatchObject({ bytes: file, cipher: 'chacha20-poly1305', layout: 'versioned' });
+  });
+
+  it('a large file goes in 2,000,000-byte ChaCha20-Poly1305 chunks and a chunked versioned root', async () => {
+    const { rpc, stored, submits } = submitPool();
+    const file = Uint8Array.from({ length: 4_100_000 }, (_v, i) => (i * 7) & 0xff);
+    const sent = await submitHopFile({ rpc, bytes: file, signer, ticket: TICKET });
+    expect(sent.entries).toBe(4);
+    expect(submits.map(entry => entry.size)).toEqual([2_000_028, 2_000_028, 100_028, 2 + 8 + 1 + 3 * 33 + 28]);
+    const root = decodeRoot(openWithOpenSsl(encryptionKey, stored[hex(sent.identifier)] as Uint8Array));
+    expect(root).toMatchObject({ layout: 'versioned', totalSize: 4_100_000n });
+    const first = 'chunks' in root ? root.chunks[0] : undefined;
+    // A chunk is sealed bare (no envelope), as Android's `uploadChunks` sends it.
+    expect(openWithOpenSsl(encryptionKey, stored[hex(first as Uint8Array)] as Uint8Array)).toEqual(file.subarray(0, 2_000_000));
+    const fetched = await fetchHopFile({ rpc: pool(stored), identifier: sent.identifier, ticket: TICKET });
+    expect(fetched.bytes).toEqual(file);
+    expect(fetched.entries).toHaveLength(4);
+    // 8 MB of hex and AEAD in pure JS: slower than the default 5 s on a busy machine.
+  }, 30_000);
+
+  it('builds the iOS envelope vectors byte for byte', () => {
+    expect([...inlineRoot(Uint8Array.from([0xde, 0xad]))]).toEqual([0x00, 0x00, 0x08, 0xde, 0xad]);
+    const chunked = chunkedRoot(300, [new Uint8Array(32).fill(0xab)]);
+    expect(decodeRoot(chunked)).toEqual({ layout: 'versioned', totalSize: 300n, chunks: [new Uint8Array(32).fill(0xab)] });
+  });
+
+  it('tries the next node when one cannot be reached; a refusal is final and in words', async () => {
+    const { rpc } = submitPool();
+    const opened: string[] = [];
+    const result = await hopSend(['wss://bullet.sik.rocks', 'wss://bullet.tunastaking.eu'], new Uint8Array([1, 2, 3]), signer, async url => {
+      opened.push(url);
+      if (url.includes('sik')) throw new Error('connect failed');
+      return rpc;
+    });
+    expect(result).toMatchObject({ ok: true, node: 'wss://bullet.tunastaking.eu', entries: 1 });
+    expect(opened).toHaveLength(2);
+    const refusing: HopRpc = { call: async () => Promise.reject(Object.assign(new Error('NotAuthorized'), { code: 1012 })), close: () => undefined };
+    const tried: string[] = [];
+    const refused = await hopSend(['wss://bullet.sik.rocks', 'wss://bullet.tunastaking.eu'], new Uint8Array([1]), signer, async url => {
+      tried.push(url);
+      return refusing;
+    });
+    expect(refused).toEqual({ ok: false, reason: 'refused', message: 'This account has no Bulletin storage authorization, which a HOP node asks for.' });
+    expect(tried).toHaveLength(1);
   });
 });

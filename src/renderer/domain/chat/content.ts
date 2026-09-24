@@ -16,14 +16,19 @@ import { decodeTxIntent } from '../../../shared/txIntent';
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 
 import { isBlurhash } from './blurhash';
+import type { Capabilities } from './capabilities';
 import {
   ATTACHMENT_KIND,
   type AttachmentItemWire,
   type AttachmentWire,
   BUTTONS_KIND,
   type BotInfoWire,
+  type BulletinFileWire,
   type ButtonWire,
   type ChatContent,
+  type FileMetaWire,
+  type FileVariantWire,
+  RICH_TEXT_KIND,
   type GroupControl,
   type GroupInfoWire,
   TRANSACTION_REFERENCE_KIND,
@@ -225,7 +230,13 @@ export type OutgoingContent =
   /** Spec 0011: pairwise group control (kind 249). */
   | { type: 'groupControl'; control: GroupControl }
   /** Spec 0012: an attachment whose chunks are in a best block already. */
-  | { type: 'attachment'; items: AttachmentItem[]; caption: string | null };
+  | { type: 'attachment'; items: AttachmentItem[]; caption: string | null }
+  /** Spec 0014: the same files as `RichText` + `FileVariant.bulletin` (a peer whose every device lists variant 1). */
+  | { type: 'bulletinFile'; items: AttachmentItem[]; caption: string | null }
+  /** Base spec HOP: one file on a HOP node (`hop` with its ticket), as the phones send it. */
+  | { type: 'hopFile'; text: string | null; attachment: Attachment }
+  /** Spec 0013: this device's supported set; never a row. */
+  | { type: 'capabilities'; capabilities: Capabilities };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -248,6 +259,8 @@ export type IncomingEffect =
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
+  /** Spec 0013: the sending device's set; the manager keys it by that device. */
+  | { kind: 'capabilities'; capabilities: Capabilities }
   | { kind: 'ignore' };
 
 export const toWire = (content: OutgoingContent): ChatContent => {
@@ -292,7 +305,100 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       return { tag: 'groupControl', value: content.control };
     case 'attachment':
       return { tag: 'attachment', value: { items: content.items.map(attachmentItemWire), caption: content.caption ?? undefined } };
+    case 'bulletinFile':
+      return { tag: 'richText', value: { text: content.caption ?? undefined, attachments: content.items.map(item => ({ tag: 'bulletin', value: bulletinFileWire(item) })) } };
+    case 'hopFile':
+      return { tag: 'richText', value: { text: content.text ?? undefined, attachments: [hopFileWire(content.attachment)] } };
+    case 'capabilities':
+      return { tag: 'capabilities', value: { ...content.capabilities, fileVariants: [...content.capabilities.fileVariants], hopDialects: [...content.capabilities.hopDialects] } };
   }
+};
+
+const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+/** A base `GeneralFileMeta` for a file of `mime` and `size`. */
+const generalMeta = (mimeType: string, fileSize: number) => ({ mimeType, fileSize });
+
+/**
+ * Spec 0014 "Mapping from the 0012 Attachment": the blurhash goes in the base
+ * `FileMeta.thumbnail` (UTF-8, as the phones send it), the 0012 thumbnail is
+ * `preview`, a voice note is `general` plus `voice`, a video's length is in
+ * whole seconds (the base `VideoFileMeta` has no width or height).
+ */
+export const bulletinFileWire = (item: AttachmentItem): BulletinFileWire => {
+  const general = generalMeta(item.mime, item.size);
+  const thumbnail = item.blurhash ? utf8(item.blurhash) : undefined;
+  const meta: FileMetaWire =
+    item.media.kind === 'image'
+      ? { tag: 'image', value: { general, width: item.media.width, height: item.media.height, thumbnail } }
+      : item.media.kind === 'video'
+        ? { tag: 'video', value: { general, duration: Math.ceil(item.media.durationMs / 1000), thumbnail } }
+        : { tag: 'general', value: general };
+  return {
+    meta,
+    name: item.name ?? undefined,
+    preview: item.thumbnail ?? undefined,
+    voice: item.media.kind === 'voice' ? { durationMs: item.media.durationMs, waveform: Uint8Array.from(item.media.waveform) } : undefined,
+    key: item.key,
+    nonce: item.nonce,
+    chunkSize: item.chunkSize,
+    chunks: item.chunks,
+    store: { tag: 'bulletin', value: { genesis: hexToBytes(item.store.genesis), mirror: item.store.mirror ?? undefined } },
+    expiresAt: BigInt(item.expiresAt),
+  };
+};
+
+/** A frame for a video whose width and height the base meta does not carry (0014 Unresolved 2). */
+const VIDEO_FRAME = { width: 16, height: 9 };
+
+/** A received `bulletin` item as the 0012 row stores it: the kind-250 twin gives the same item. */
+const bulletinItemOf = (file: BulletinFileWire): AttachmentItem => {
+  const meta = file.meta;
+  const general = meta.tag === 'general' ? meta.value : meta.value.general;
+  const thumbnail = meta.tag === 'general' ? undefined : meta.value.thumbnail;
+  const media: AttachmentMedia = file.voice
+    ? { kind: 'voice', durationMs: file.voice.durationMs, waveform: [...file.voice.waveform] }
+    : meta.tag === 'image'
+      ? { kind: 'image', width: meta.value.width, height: meta.value.height }
+      : meta.tag === 'video'
+        ? { kind: 'video', ...VIDEO_FRAME, durationMs: meta.value.duration * 1000 }
+        : { kind: 'file' };
+  return {
+    mime: general.mimeType,
+    name: file.name ?? null,
+    size: general.fileSize,
+    media,
+    blurhash: thumbnail && thumbnail.length > 0 ? new TextDecoder().decode(thumbnail) : null,
+    thumbnail: file.preview ?? null,
+    key: file.key,
+    nonce: file.nonce,
+    chunkSize: file.chunkSize,
+    chunks: file.chunks,
+    store: { genesis: bytesToHex(file.store.value.genesis), mirror: file.store.value.mirror ?? null },
+    expiresAt: Number(file.expiresAt),
+  };
+};
+
+/** Base spec `P2PMixnetFile` for a file this client put on a HOP node; `meta.thumbnail` is the blurhash, as the phones send it. */
+export const hopFileWire = (attachment: Attachment): FileVariantWire => {
+  if (!attachment.hop) throw new Error('This file is not on a HOP node yet.');
+  const general = generalMeta(attachment.mimeType, attachment.fileSize);
+  const thumbnail = attachment.blurhash ? utf8(attachment.blurhash) : undefined;
+  const meta: FileMetaWire =
+    attachment.kind === 'image' && attachment.width && attachment.height
+      ? { tag: 'image', value: { general, width: attachment.width, height: attachment.height, thumbnail } }
+      : attachment.kind === 'video'
+        ? { tag: 'video', value: { general, duration: attachment.durationSecs ?? 0, thumbnail } }
+        : { tag: 'general', value: general };
+  return {
+    tag: 'p2pMixnet',
+    value: {
+      identifier: hexToBytes(attachment.hop.identifier),
+      claimTicket: attachment.hop.ticket,
+      nodeEndpoint: { tag: 'wssUrl', value: { url: attachment.hop.node } },
+      meta,
+    },
+  } as FileVariantWire;
 };
 
 const mediaWire = (media: AttachmentMedia): AttachmentItemWire['media'] => {
@@ -527,15 +633,28 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
   switch (content.tag) {
     case 'text':
       return { kind: 'message', content: { type: 'text', text: content.value } };
-    case 'richText':
+    case 'richText': {
+      // Spec 0014: `bulletin` items map to the 0012 row (the kind-250 twin's).
+      // A mixed message (never sent by a client that follows 0014) keeps its HOP items.
+      const files = content.value.attachments ?? [];
+      if (files.length > 0 && files.every(file => file.tag === 'bulletin')) {
+        return {
+          kind: 'message',
+          content: { type: 'attachment', items: files.map(file => bulletinItemOf((file as { value: BulletinFileWire }).value)), caption: content.value.text ?? null },
+        };
+      }
       return {
         kind: 'message',
         content: {
           type: 'richText',
           text: content.value.text ?? null,
-          attachments: (content.value.attachments ?? []).map(attachmentOf).filter((a): a is Attachment => a !== null),
+          attachments: files.map(attachmentOf).filter((a): a is Attachment => a !== null),
         },
       };
+    }
+    case 'capabilities':
+      // Spec 0013: never a row, never a notification; the manager stores it per sending device.
+      return { kind: 'capabilities', capabilities: content.value };
     case 'reply':
       return {
         kind: 'message',
@@ -594,7 +713,7 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       // cannot read is nothing.
       if (content.value.kind === BUTTONS_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } };
       if (content.value.kind === TRANSACTION_REFERENCE_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'transactionReference' } };
-      if (content.value.kind === ATTACHMENT_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'attachment' } };
+      if (content.value.kind === ATTACHMENT_KIND || content.value.kind === RICH_TEXT_KIND) return { kind: 'message', content: { type: 'unsupported', tag: 'attachment' } };
       return { kind: 'ignore' };
     case 'leftChat':
       return { kind: 'message', content: { type: 'leftChat' } };

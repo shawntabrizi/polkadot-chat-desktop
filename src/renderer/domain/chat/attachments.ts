@@ -15,7 +15,7 @@ import { type HexString, bytesToHex } from '../../app/bytes';
 
 import { type BulletinProgress, type BulletinStoreResult, type DesktopBulletinApi, type DesktopHopApi, HOP_MAX_FILE_BYTES, type HopFetchResult, type HopProgress } from '../../../shared/desktop-api';
 
-import { hopTicket, itemWithKey } from './attachmentKeyStore';
+import { hopTicket, itemWithKey, setHopLocation } from './attachmentKeyStore';
 import { SENDER_CHUNK_SIZE, decryptChunk, encryptAttachment, freshKeyAndNonce, isAttachmentError } from './attachmentCrypto';
 import { type Attachment, type AttachmentItem, type AttachmentMedia, attachmentItemWire } from './content';
 import { ATTACHMENT_BOUNDS, attachmentContentLength } from './identityEvents';
@@ -40,6 +40,10 @@ export const OCTET_STREAM = 'application/octet-stream';
 export const GATEWAY_FIRST_ABOVE = 512 * 1024;
 /** AES-GCM tag appended to every chunk. */
 const TAG_BYTES = 16;
+/** A HOP node keeps an entry 24 hours (base spec "HOP Protocol"). */
+export const HOP_RETENTION_MS = 24 * 60 * 60 * 1000;
+/** The detail line of a file this app sent over HOP (M20b). */
+export const HOP_SENT_LINE = 'Sent over HOP; available for 24 hours';
 /** Download retries: 10 s doubling to 10 min, for 24 h after the first failure. */
 const RETRY_FIRST_MS = 10_000;
 const RETRY_MAX_MS = 10 * 60_000;
@@ -70,12 +74,13 @@ export const addPicked = <T extends Pickable>(waiting: readonly T[], picked: rea
   const refuse = (problem: string) => ({ files: [...waiting], problem });
   if (picked.length === 0) return { files: [...waiting], problem: null };
   if (picked.some(file => file.size < 1)) return refuse('This file is empty.');
-  if (picked.some(file => file.size > MAX_ATTACHMENT_BYTES)) return refuse('An attachment is at most 25 MB.');
+  // M20: one file may be up to 32 MB (over 25 MB it goes over HOP); several together stay within 25 MB.
+  if (picked.some(file => file.size > HOP_MAX_FILE_BYTES)) return refuse('An attachment is at most 32 MB.');
   const images = picked.every(file => isImageType(file.type));
   if (!images && picked.length > 1) return refuse('Send one file at a time, or up to 4 images together.');
   const next = images && waiting.every(file => isImageType(file.type)) ? [...waiting, ...picked] : [...picked];
   if (next.length > MAX_ITEMS) return refuse('An album holds at most 4 images.');
-  if (next.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) return refuse('One message carries at most 25 MB.');
+  if (next.length > 1 && next.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) return refuse('One message carries at most 25 MB.');
   return { files: next, problem: null };
 };
 
@@ -193,18 +198,25 @@ export type AttachmentDeps = {
   store: { genesis: HexString; mirror: string | null } | null;
   /** M15c: sends the "Please resend" text of Ask to resend. */
   chat?: Pick<ChatManager, 'sendMessage'> | null;
-  /** Base spec HOP receive (a phone app's `richText` attachment); null where there is no main process. */
-  hop?: Pick<DesktopHopApi, 'fetch' | 'ack' | 'onProgress'> | null;
+  /** Base spec HOP receive (a phone app's `richText` attachment) and, since M20b, send; null where there is no main process. */
+  hop?: (Pick<DesktopHopApi, 'fetch' | 'ack' | 'onProgress'> & Partial<Pick<DesktopHopApi, 'send'>>) | null;
   now?: () => number;
 };
 
 /** M15c: what a resend stored again (chunks the chain still had cost nothing and keep their CIDs). */
 export type ResendResult = { chunks: number; submitted: number; hashes: HexString[] };
 
+type SendingManager = Pick<ChatManager, 'sendAttachment' | 'attachmentRail' | 'sendHopFile'>;
+
 export type AttachmentService = {
-  /** Encrypts, stores and sends `files` to `peer` with `caption`: one message. */
-  send: (manager: Pick<ChatManager, 'sendAttachment'>, peer: HexString, files: readonly PreparedFile[], caption: string | null) => Promise<void>;
-  /** A failed upload: store the same chunks again from the local copy, then `manager.retry` sends the same message. */
+  /**
+   * Sends `files` to `peer` with `caption` on the rail the peer's devices
+   * all read (spec 0013/0014): on Bulletin (encrypt, store, one message), or
+   * for a peer with a baseline device over HOP, one message per file as the
+   * phones send (the caption with the first).
+   */
+  send: (manager: SendingManager, peer: HexString, files: readonly PreparedFile[], caption: string | null) => Promise<void>;
+  /** A failed upload: store the same chunks again from the local copy (or put a HOP file on a node again), then `manager.retry` sends the same message. */
   reupload: (manager: Pick<ChatManager, 'retry'>, peer: HexString, messageId: string) => Promise<void>;
   /**
    * M15c "Resend" (spec 0012 "Re-upload on request"): the sender stores the
@@ -317,7 +329,34 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
     }
   };
 
+  /** M20b: a file on a HOP node of this network; the row learns where once it is there. */
+  const uploadHop = async (messageId: string, bytes: Uint8Array): Promise<NonNullable<Attachment['hop']>> => {
+    if (!hop?.send) throw new Error('This app cannot send files over HOP here.');
+    await patchRow(messageId, 0, { status: 'uploading', done: 0, total: 1, error: null });
+    const result = await hop.send(bytes).catch((error: unknown) => ({ ok: false as const, reason: 'network' as const, message: error instanceof Error ? error.message : String(error) }));
+    if (!result.ok) {
+      await patchRow(messageId, 0, { status: 'uploadFailed', error: result.message });
+      throw new Error(result.message);
+    }
+    await patchRow(messageId, 0, { status: 'ready', done: 1, total: 1, hop: { cipher: 'chacha20-poly1305', layout: 'versioned' } });
+    return { identifier: result.identifier as HexString, node: result.node, ticket: result.ticket };
+  };
+
+  const sendHop = async (manager: SendingManager, peer: HexString, files: readonly PreparedFile[], caption: string | null): Promise<void> => {
+    for (const [index, file] of files.entries()) {
+      const attachment = hopAttachmentOf(file);
+      await manager.sendHopFile(peer, { text: index === 0 ? caption : null, attachment }, async messageId => {
+        // The sender's copy first: the bubble shows it at once, and it is the source of a retry.
+        await db.attachments.put({ ...blankRow(messageId, 0, hopItemOf(attachment), 'uploading', now()), total: 1, expiresAt: now() + HOP_RETENTION_MS, bytes: file.bytes });
+        return uploadHop(messageId, file.bytes);
+      });
+    }
+  };
+
   const send: AttachmentService['send'] = async (manager, peer, files, caption) => {
+    // Spec 0013: the rail every device of the peer reads; HOP for a baseline device or a file over 25 MiB.
+    const total = files.reduce((sum, file) => sum + file.bytes.length, 0);
+    if ((await manager.attachmentRail(peer, total)) === 'hop') return sendHop(manager, peer, files, caption);
     const target = requireBulletin();
     const built = await buildAttachment(files, caption, target.store, now());
     await manager.sendAttachment(peer, { items: built.items, caption }, async messageId => {
@@ -351,6 +390,17 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
   };
 
   const reupload: AttachmentService['reupload'] = async (manager, peer, messageId) => {
+    const row = await db.messages.get(messageId);
+    if (row?.content.type === 'richText') {
+      // M20b: a HOP file whose upload failed goes on a node again from the local copy; one that is there is only sent again.
+      const [attachment] = row.content.attachments;
+      if (attachment && !attachment.hop?.node) {
+        const local = await getAttachmentRow(messageId, 0);
+        if (!local?.bytes) throw new Error('The file is no longer on this computer.');
+        await setHopLocation(messageId, 0, { ...attachment, hop: await uploadHop(messageId, local.bytes) });
+      }
+      return manager.retry(peer, messageId);
+    }
     const { ciphertexts } = await ciphertextsAgain(messageId);
     await storeItems(messageId, ciphertexts);
     await manager.retry(peer, messageId);
@@ -413,6 +463,8 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
     const existing = await getAttachmentRow(messageId, index);
     if (existing?.status === 'ready' && existing.bytes) return 'ready';
     const message = await db.messages.get(messageId);
+    // M20b: never claim our own upload. The peer's ticket key is its only recipient, so our ack would remove it for them.
+    if (message?.direction === 'outgoing') return existing?.status ?? 'failed';
     const attachment = message?.content.type === 'richText' ? message.content.attachments[index] : undefined;
     const base = existing ?? blankRow(messageId, index, item, 'downloading', now());
     const settle = async (status: AttachmentStatus, error: string) => {
@@ -592,6 +644,24 @@ export const hopItemOf = (attachment: Attachment): AttachmentItem => {
     expiresAt: 0,
     via: 'hop',
   };
+};
+
+/**
+ * M20b: a prepared file as a base spec HOP attachment (`FileMeta`): an image
+ * with its size and blurhash, a video with whole seconds and its blurhash,
+ * anything else (a voice note too: the base has no audio meta) as `general`.
+ * The file name has no place in `P2PMixnetFile`.
+ */
+export const hopAttachmentOf = (file: PreparedFile): Attachment => {
+  const base = { mimeType: file.mime, fileSize: file.bytes.length };
+  switch (file.media.kind) {
+    case 'image':
+      return { kind: 'image', ...base, width: file.media.width, height: file.media.height, blurhash: file.blurhash };
+    case 'video':
+      return { kind: 'video', ...base, durationSecs: Math.ceil(file.media.durationMs / 1000), blurhash: file.blurhash };
+    default:
+      return { kind: 'general', ...base };
+  }
 };
 
 /** "1.2 MB", "340 KB", "12 bytes". */

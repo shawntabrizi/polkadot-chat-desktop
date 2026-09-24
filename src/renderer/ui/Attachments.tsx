@@ -30,7 +30,7 @@ import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, 
 import type { AttachmentRow, MessageRow } from '../app/database';
 import { HOP_MAX_FILE_BYTES } from '../../shared/desktop-api';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { autoDownloads, formatSize, getAttachmentRow, hopItemOf, isImageType, resendName } from '../domain/chat/attachments';
+import { HOP_SENT_LINE, autoDownloads, formatSize, getAttachmentRow, hopItemOf, isImageType, resendName } from '../domain/chat/attachments';
 import { isVideoType } from '../domain/chat/attachmentVideo';
 import { getMessage } from '../domain/chat/messages';
 import { decodeBlurhash } from '../domain/chat/blurhash';
@@ -687,6 +687,12 @@ export const HopAttachmentBody = ({ row, own }: { row: MessageRow; own: boolean 
         return <View key={index} messageId={row.messageId} index={index} item={item} own={own} />;
       })}
       {text ? <p className="text-body-m whitespace-pre-wrap">{text}</p> : null}
+      {/* M20b: a file this app sent over HOP lives on the node for a day. */}
+      {own && attachments.some(attachment => attachment.hop?.node) ? (
+        <p className="text-body-s text-fg-secondary-inverted" data-testid="hop-sent">
+          {HOP_SENT_LINE}
+        </p>
+      ) : null}
     </div>
   );
 };

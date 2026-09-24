@@ -66,16 +66,28 @@ export const createIdentityChannel = (params: {
   // (base-spec batching), so one message arrives once per statement until the
   // ack lands. Transport dedup is the SDK's; message dedup is ours.
   const seen = new Set<string>();
+  // Spec 0013 (as pca keys it): a `capabilities` on the identity session is the
+  // set of the device the same batch accepted with. A batch arrives message by
+  // message in one task, so a set waits one turn for its batch's accept.
+  const acceptedIn = new Map<string, Uint8Array>();
 
   // Answering is also what opens the store subscription, so every incoming
   // statement is both delivered and acknowledged from here.
   const stopResponding = session.respondToRequests(ChatMessageCodec, request => {
     if (request.payload.status !== 'parsed') return 'decodingFailed';
     const message = request.payload.value;
+    // A batch extended by a later message is a new request that repeats the accept: note it for every request it is in.
+    const content = message.versioned.value;
+    if (content.tag === 'deviceChatAccepted') acceptedIn.set(request.requestId, content.value.device.statementAccountId);
     if (!seen.has(message.messageId)) {
       seen.add(message.messageId);
       const event = toIdentityChannelEvent(message);
-      if (event) params.onEvent(event);
+      if (event?.tag === 'message' && event.content.tag === 'capabilities') {
+        setTimeout(() => {
+          const device = acceptedIn.get(request.requestId);
+          params.onEvent(device ? { ...event, device } : event);
+        }, 0);
+      } else if (event) params.onEvent(event);
     }
     return 'success';
   });

@@ -18,6 +18,7 @@ import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 import { type GroupInfo, type OutgoingContent, toWire } from './content';
 import { compareGroupRows, getGroup } from './groups';
 import { type GroupsV2Storage, type IncomingGroupMessage, createGroupsV2 } from './groupsV2';
+import { OWN_CAPABILITIES } from './capabilities';
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, GroupInfoWire, GroupMessageWire, IdentityChannelEvent } from './identityEvents';
 import { listMessages } from './messages';
@@ -78,7 +79,9 @@ const openTransport = (store: Store, self: Member, web: Member) => {
     prover: createSr25519Prover(self.device.statementAccountSeed),
     allocator: createExpiryAllocator(),
     statementStore: store,
-    onMessage: message => received.push(message),
+    onMessage: message => {
+      if (message.content.tag !== 'capabilities') received.push(message);
+    },
     onSent: () => undefined,
     onDelivered: () => undefined,
     onBatchDelivered: () => undefined,
@@ -118,6 +121,10 @@ const connect = async (store: Store, web: Member, peer: Member, manager: ChatMan
   await manager.acceptRequest(requestId);
   const accepted = await waitFor(() => transport.events.find(event => event.tag === 'accepted'));
   if (accepted.tag === 'accepted') transport.roster.set([accepted.device]);
+  // Spec 0013: the member's device lists every kind (a capable client).
+  const before = await db.peerCapabilities.count();
+  await transport.send({ type: 'capabilities', capabilities: OWN_CAPABILITIES });
+  await waitFor(async () => (await db.peerCapabilities.count()) > before);
   return transport;
 };
 

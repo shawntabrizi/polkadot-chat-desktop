@@ -6,6 +6,7 @@ import { type TxIntent, decodeTxIntent, encodeTxIntent } from '../../../shared/t
 import { bytesToHex, hexToBytes } from '../../app/bytes';
 
 import { type BotInfo, type OutgoingContent, type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
+import { kindsBitmap } from './capabilities';
 import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec, GROUP_BOUNDS } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
@@ -1086,5 +1087,132 @@ describe('kind 250: spec 0012 attachment (vectors-0012.md)', () => {
     expect(previewOf({ type: 'attachment', items: [imageItem], caption: null })).toBe('Photo');
     expect(previewOf({ type: 'attachment', items: [voiceItem], caption: null })).toBe('Voice message (0:04)');
     expect(previewOf({ type: 'attachment', items: [{ ...imageItem, media: { kind: 'file' }, name: 'a.pdf' }], caption: null })).toBe('File: a.pdf');
+  });
+});
+
+describe('kind 252: spec 0013 capabilities (0013 "Test vector")', () => {
+  // Pinned byte for byte: a phone, pca and this client must agree on the set, or
+  // a sender picks a form the receiver cannot read.
+  const opaque = Bytes();
+  const VECTOR =
+    '0xec144341502d310030fd779001000000fc01b7ff37000000000000000000000000000000000000000000000000000000ff1f08000108000103000000';
+  const kinds = [0, 1, 2, 4, 5, ...Array.from({ length: 12 }, (_, i) => 7 + i), 20, 21, ...Array.from({ length: 13 }, (_, i) => 240 + i)];
+  const capabilities = { version: 1, kinds: kindsBitmap(kinds), fileVariants: [0, 1], hopDialects: [0, 1], features: 3 };
+  const encode = (content: OutgoingContent) =>
+    bytesToHex(opaque.enc(ChatMessageCodec.enc({ messageId: 'CAP-1', timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire(content) } })));
+
+  it('writes the 60-byte vector', () => {
+    expect(encode({ type: 'capabilities', capabilities })).toBe(VECTOR);
+    expect(opaque.dec(VECTOR).length).toBe(59);
+  });
+
+  it('reads the vector into a capabilities effect (never a message row)', () => {
+    const effect = fromWire(ChatMessageCodec.dec(opaque.dec(VECTOR)).versioned.value);
+    expect(effect).toEqual({ kind: 'capabilities', capabilities });
+  });
+
+  it('ignores bytes after `features` (the forward rule: a later version appends fields)', () => {
+    const later = new Uint8Array([...opaque.dec(VECTOR), 0x07, 0x01, 0x02]);
+    later[16] = 2; // `Capabilities.version`: after messageId (6), timestamp (8), version and kind (2)
+    const effect = fromWire(ChatMessageCodec.dec(later).versioned.value);
+    expect(effect).toEqual({ kind: 'capabilities', capabilities: { ...capabilities, version: 2 } });
+  });
+
+  it('keeps unknown kind bits, variants, dialects and feature bits as read', () => {
+    const odd = { version: 1, kinds: kindsBitmap([0, 199, 255]), fileVariants: [0, 1, 9], hopDialects: [0, 7], features: 0x80000003 >>> 0 };
+    const effect = fromWire(viaWire(toWire({ type: 'capabilities', capabilities: odd })));
+    expect(effect).toEqual({ kind: 'capabilities', capabilities: odd });
+  });
+});
+
+describe('spec 0014: `RichText` + `FileVariant.bulletin` (vectors-0014.md)', () => {
+  // A capable peer's desktop and pca must read the variant byte for byte; its
+  // kind-250 twin must land in the same local row, so no stored row migrates.
+  const opaque = Bytes();
+  const GENESIS = '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59' as const;
+  const VECTOR_A =
+    '0x0103144154542d310030fd7790010000000f011c4f7572206361740104010128696d6167652f6a7065670f00000080020000e001000001304c454856366e574232796b38000000111111111111111111111111111111111111111111111111111111111111111122222222222222222222222280841e0004d47b2b87847e22939dd7b1f54541fffbb4afefc09c582fbae8892d0682fc8a8a00e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5900003816c090010000';
+  const VECTOR_B =
+    '0x4904144154542d320030fd7790010000000f000104010058617564696f2f6f67673b20636f646563733d6f7075730d0000000000016810000010004080ff11111111111111111111111111111111111111111111111111111111111111112222222222222222222222220800000008f2413e6849beeed0945f57c6e2ad2123ff1fb177fa95f711eb0685786b434bb47e79076d84989135f84e2f00d739f3d071485f143ea485ede4cd2033f1ebb0a800e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5901e868747470733a2f2f6465766e65742d697066732e6170692e706f6c6b61646f74636f6d6d756e6974792e666f756e646174696f6e2f697066732f003816c090010000';
+  // The same items as the kind-250 vectors of vectors-0012.md (C1 and C2).
+  const KIND250_A =
+    '0x0503144154542d310030fd779001000000fa0428696d6167652f6a706567000f000000000000000180020000e001000001304c454856366e574232796b3800111111111111111111111111111111111111111111111111111111111111111122222222222222222222222280841e0004d47b2b87847e22939dd7b1f54541fffbb4afefc09c582fbae8892d0682fc8a8a00e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5900003816c090010000011c4f757220636174';
+  const KIND250_B =
+    '0x5104144154542d320030fd779001000000fa0458617564696f2f6f67673b20636f646563733d6f707573000d00000000000000036810000010004080ff000011111111111111111111111111111111111111111111111111111111111111112222222222222222222222220800000008f2413e6849beeed0945f57c6e2ad2123ff1fb177fa95f711eb0685786b434bb47e79076d84989135f84e2f00d739f3d071485f143ea485ede4cd2033f1ebb0a800e101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a5901e868747470733a2f2f6465766e65742d697066732e6170692e706f6c6b61646f74636f6d6d756e6974792e666f756e646174696f6e2f697066732f003816c09001000000';
+  const key = new Uint8Array(32).fill(0x11);
+  const nonce = new Uint8Array(12).fill(0x22);
+  const imageItem = {
+    mime: 'image/jpeg',
+    name: null,
+    size: 15,
+    media: { kind: 'image' as const, width: 640, height: 480 },
+    blurhash: 'LEHV6nWB2yk8',
+    thumbnail: null,
+    key,
+    nonce,
+    chunkSize: 2_000_000,
+    chunks: [hexToBytes('0xd47b2b87847e22939dd7b1f54541fffbb4afefc09c582fbae8892d0682fc8a8a')],
+    store: { genesis: GENESIS as `0x${string}`, mirror: null },
+    expiresAt: 1721209600000,
+  };
+  const voiceItem = {
+    mime: 'audio/ogg; codecs=opus',
+    name: null,
+    size: 13,
+    media: { kind: 'voice' as const, durationMs: 4200, waveform: [0, 64, 128, 255] },
+    blurhash: null,
+    thumbnail: null,
+    key,
+    nonce,
+    chunkSize: 8,
+    chunks: [
+      hexToBytes('0xf2413e6849beeed0945f57c6e2ad2123ff1fb177fa95f711eb0685786b434bb4'),
+      hexToBytes('0x7e79076d84989135f84e2f00d739f3d071485f143ea485ede4cd2033f1ebb0a8'),
+    ],
+    store: { genesis: GENESIS as `0x${string}`, mirror: 'https://devnet-ipfs.api.polkadotcommunity.foundation/ipfs/' },
+    expiresAt: 1721209600000,
+  };
+  const encode = (messageId: string, content: OutgoingContent) =>
+    bytesToHex(opaque.enc(ChatMessageCodec.enc({ messageId, timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire(content) } })));
+  const rowOf = (hex: string) => fromWire(ChatMessageCodec.dec(opaque.dec(hex)).versioned.value);
+
+  it('writes vector A (an image with a caption, 194 bytes) byte for byte', () => {
+    expect(encode('ATT-1', { type: 'bulletinFile', items: [imageItem], caption: 'Our cat' })).toBe(VECTOR_A);
+    expect(hexToBytes(VECTOR_A).length).toBe(194);
+  });
+
+  it('writes vector B (a voice note with a mirror, 276 bytes) byte for byte', () => {
+    expect(encode('ATT-2', { type: 'bulletinFile', items: [voiceItem], caption: null })).toBe(VECTOR_B);
+    expect(hexToBytes(VECTOR_B).length).toBe(276);
+  });
+
+  it('reads A and B into the same row as their kind-250 twins (no migration of stored rows)', () => {
+    expect(rowOf(VECTOR_A)).toEqual({ kind: 'message', content: { type: 'attachment', items: [imageItem], caption: 'Our cat' } });
+    expect(rowOf(VECTOR_A)).toEqual(rowOf(KIND250_A));
+    expect(rowOf(VECTOR_B)).toEqual(rowOf(KIND250_B));
+  });
+
+  it('is unreadable for a baseline decoder: the SDK codec throws at the variant byte (so 0013 keeps it from phones)', () => {
+    expect(() => SdkChatMessage.dec(opaque.dec(VECTOR_A))).toThrow();
+  });
+
+  it('a `RichText` with FileVariant index 2 is unsupported, and a phone richText still reads as before', () => {
+    const bytes = opaque.dec(VECTOR_A);
+    // header (6 + 8 + 1 + 1), text (1 + 1 + 7), attachments Some (1), count (1): the variant byte.
+    const at = 16 + 9 + 2;
+    expect(bytes[at]).toBe(1);
+    const later = bytes.slice();
+    later[at] = 2;
+    expect(() => ChatMessageCodec.dec(later)).toThrow();
+    const hop = toWire({
+      type: 'hopFile',
+      text: 'hi',
+      attachment: { kind: 'image', mimeType: 'image/jpeg', fileSize: 10, width: 4, height: 3, blurhash: null, hop: { identifier: bytesToHex(new Uint8Array(32).fill(1)), node: 'wss://bullet.sik.rocks', ticket: new Uint8Array(32).fill(2) } },
+    });
+    const sdkBytes = SdkChatMessage.enc({ messageId: 'm', timestamp: 1n, versioned: { tag: 'v1', value: hop as never } });
+    // The phones' decoder reads our HOP message, and ours writes the same bytes as the SDK's.
+    expect(bytesToHex(ChatMessageCodec.enc({ messageId: 'm', timestamp: 1n, versioned: { tag: 'v1', value: hop } }))).toBe(bytesToHex(sdkBytes));
+    const effect = fromWire(ChatMessageCodec.dec(sdkBytes).versioned.value);
+    expect(effect.kind === 'message' && effect.content.type === 'richText' ? effect.content.attachments[0]?.hop?.node : null).toBe('wss://bullet.sik.rocks');
   });
 });

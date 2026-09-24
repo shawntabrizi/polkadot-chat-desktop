@@ -16,7 +16,7 @@ import { appDatabase, db } from '../../app/database';
 import type { BulletinProgress } from '../../../shared/desktop-api';
 import type { IdentityLookup } from '../identity/lookup';
 import { sendChatRequest } from '../requests/gateway';
-import { type TestPeer, makePeer, waitFor } from '../testing/peers';
+import { type TestPeer, makeDeviceKeys, makePeer, waitFor } from '../testing/peers';
 
 import { contentHash } from './attachmentCrypto';
 import {
@@ -29,6 +29,7 @@ import {
   fitToBudget,
   gatewayFirst,
   getAttachmentRow,
+  hopItemOf,
   parseResendRequest,
   prepareFile,
   resendRequestText,
@@ -37,11 +38,16 @@ import {
 import { type AttachmentItem, fromWire, toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
 import { type IdentityChannelEvent, attachmentContentLength } from './identityEvents';
+import { OWN_CAPABILITIES } from './capabilities';
 import { type ChatManager, createChatManager } from './manager';
 import { addMessage } from './messages';
 import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
 import { MAX_VOICE_MS, prepareVoice } from './voice';
+
+/** A Bulletin file message: the 0014 variant (a capable peer) or kind 250; both map to the same row. */
+const isFileMessage = (m: IncomingChatMessage): boolean =>
+  m.content.tag === 'attachment' || (m.content.tag === 'richText' && (m.content.value.attachments ?? []).some(file => file.tag === 'bulletin'));
 
 const GENESIS = '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59' as HexString;
 const STORE = { genesis: GENESIS, mirror: null };
@@ -56,6 +62,7 @@ const lookupOf = (peer: TestPeer): IdentityLookup => ({
 const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
   const events: IdentityChannelEvent[] = [];
   const received: IncomingChatMessage[] = [];
+  const capabilities: IncomingChatMessage[] = [];
   const common = { prover: createSr25519Prover(self.device.statementAccountSeed), allocator: createExpiryAllocator(), statementStore: store };
   const channel = createIdentityChannel({
     ownIdentityAccountId: self.identity.identityAccountId,
@@ -73,7 +80,10 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
     peerIdentityChatPublicKey: web.identity.identityChatPublicKey,
     peerRoster: roster,
     ...common,
-    onMessage: message => received.push(message),
+    onMessage: message => {
+      if (message.content.tag === 'capabilities') capabilities.push(message);
+      else received.push(message);
+    },
     onSent: () => undefined,
     onDelivered: () => undefined,
     onBatchDelivered: () => undefined,
@@ -81,6 +91,7 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
   return {
     events,
     received,
+    capabilities,
     roster,
     session,
     dispose: () => {
@@ -90,7 +101,7 @@ const openPeerTransport = (store: Store, self: TestPeer, web: TestPeer) => {
   };
 };
 
-const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: ChatManager, transport: ReturnType<typeof openPeerTransport>) => {
+const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: ChatManager, transport: ReturnType<typeof openPeerTransport>, { capable = true } = {}) => {
   const { requestId } = await sendChatRequest({
     recipientAccountId: web.identity.identityAccountId,
     recipientChatPublicKey: web.identity.identityChatPublicKey,
@@ -106,6 +117,11 @@ const establish = async (store: Store, web: TestPeer, peer: TestPeer, manager: C
   await manager.acceptRequest(requestId);
   const accepted = await waitFor(() => transport.events.find(event => event.tag === 'accepted'));
   if (accepted.tag === 'accepted') transport.roster.set([accepted.device]);
+  // Spec 0013: the peer lists every kind and variant (a capable desktop); tests of the baseline peer set their own.
+  if (capable) {
+    await transport.session.send(toWire({ type: 'capabilities', capabilities: OWN_CAPABILITIES }), { messageId: 'peer-caps', timestamp: Date.now() });
+    await waitFor(async () => (await db.peerCapabilities.count()) > 0);
+  }
   return bytesToHex(peer.identity.identityAccountId) as HexString;
 };
 
@@ -207,7 +223,9 @@ describe('sending an image', () => {
     const before = manager.submissions.snapshot();
     await service.send(manager, peerKey, [file], 'Our cat');
 
-    const received = await waitFor(() => transport.received.find(m => m.content.tag === 'attachment'));
+    const received = await waitFor(() => transport.received.find(m => isFileMessage(m)));
+    // Spec 0014: the peer's device listed variant 1, so the file goes as `RichText` + `bulletin`, not kind 250.
+    expect(received.content.tag).toBe('richText');
     const after = manager.submissions.snapshot();
     expect(after.submissions - before.submissions).toBe(1);
     expect(after.messages - before.messages).toBe(1);
@@ -240,10 +258,10 @@ describe('sending an image', () => {
     expect(row?.status).toBe('failed');
     expect((await getAttachmentRow(row?.messageId ?? '', 0))?.status).toBe('uploadFailed');
     expect(manager.submissions.snapshot().submissions - before.submissions).toBe(0);
-    expect(transport.received.some(m => m.content.tag === 'attachment')).toBe(false);
+    expect(transport.received.some(m => isFileMessage(m))).toBe(false);
 
     await service.reupload(manager, peerKey, row?.messageId ?? '');
-    const received = await waitFor(() => transport.received.find(m => m.content.tag === 'attachment'));
+    const received = await waitFor(() => transport.received.find(m => isFileMessage(m)));
     expect(received.messageId).toBe(row?.messageId);
     const effect = fromWire(received.content);
     if (effect.kind !== 'message' || effect.content.type !== 'attachment') throw new Error('not an attachment');
@@ -306,7 +324,7 @@ describe('the 4 KB message budget', () => {
 });
 
 const receivedAttachment = async (transport: ReturnType<typeof openPeerTransport>) => {
-  const received = await waitFor(() => transport.received.find(m => m.content.tag === 'attachment'));
+  const received = await waitFor(() => transport.received.find(m => isFileMessage(m)));
   const effect = fromWire(received.content);
   if (effect.kind !== 'message' || effect.content.type !== 'attachment') throw new Error('not an attachment');
   return { messageId: received.messageId, content: effect.content };
@@ -359,7 +377,7 @@ describe('albums (M15b)', () => {
     await service.send(manager, peerKey, photos, 'The island');
     const { messageId, content } = await receivedAttachment(transport);
     expect(manager.submissions.snapshot().submissions - before.submissions).toBe(1);
-    expect(transport.received.filter(m => m.content.tag === 'attachment')).toHaveLength(1);
+    expect(transport.received.filter(m => isFileMessage(m))).toHaveLength(1);
     expect(content.items).toHaveLength(4);
     expect(content.caption).toBe('The island');
     // Four stores (one chunk each), each item its own key.
@@ -383,7 +401,9 @@ describe('albums (M15b)', () => {
     // A file replaces an album in waiting, and images replace a file.
     expect(addPicked([image, image], [pdf])).toEqual({ files: [pdf], problem: null });
     expect(addPicked([pdf], [image])).toEqual({ files: [image], problem: null });
-    expect(addPicked([], [{ type: 'image/jpeg', size: 25 * 1024 * 1024 + 1 }]).problem).toMatch(/at most 25 MB/);
+    // M20: one file over 25 MB goes over HOP (up to 32 MB); over 32 MB it is refused.
+    expect(addPicked([], [{ type: 'image/jpeg', size: 25 * 1024 * 1024 + 1 }]).problem).toBeNull();
+    expect(addPicked([], [{ type: 'image/jpeg', size: 32 * 1024 * 1024 + 1 }]).problem).toMatch(/at most 32 MB/);
     expect(addPicked([], [{ type: 'text/plain', size: 0 }]).problem).toMatch(/empty/);
     // 25 MiB is the limit per message, not per item.
     expect(addPicked([{ type: 'image/png', size: 20 * 1024 * 1024 }], [{ type: 'image/png', size: 6 * 1024 * 1024 }]).problem).toMatch(/at most 25 MB/);
@@ -429,7 +449,7 @@ describe('resend on request (M15c)', () => {
     expect(result.hashes).toEqual(item.chunks.map(hash => bytesToHex(hash)));
     expect(result.submitted).toBe(1);
     expect(manager.submissions.snapshot().submissions).toBe(before.submissions);
-    expect(transport.received.filter(m => m.content.tag === 'attachment')).toHaveLength(1);
+    expect(transport.received.filter(m => isFileMessage(m))).toHaveLength(1);
 
     const again = createAttachmentService({ bulletin: chain.api, store: STORE });
     await db.attachments.delete(['copy-1', 0]);
@@ -480,7 +500,8 @@ describe('video (M15c)', () => {
     await service.send(manager, peerKey, [video], null);
     const { content } = await receivedAttachment(transport);
     const [item] = content.items as [AttachmentItem];
-    expect(item.media).toEqual({ kind: 'video', width: 640, height: 360, durationMs: 12_345 });
+    // Spec 0014 (Unresolved 2): the base `VideoFileMeta` has no frame size and whole seconds only; the receiver frames it 16:9.
+    expect(item.media).toEqual({ kind: 'video', width: 16, height: 9, durationMs: 13_000 });
     expect(item.name).toBe('ferry.webm');
     expect(item.thumbnail?.length).toBe(1_500);
     // Spec 0012: only images and voice notes download on their own; a video waits for a tap.
@@ -490,5 +511,106 @@ describe('video (M15c)', () => {
     expect(await recipient.fetch('video-1', 0, item)).toBe('ready');
     expect((await getAttachmentRow('video-1', 0))?.bytes).toEqual(bytes);
     recipient.dispose();
+  });
+});
+
+/** Main's HOP send as a fake: records each file, answers where it went. */
+const fakeHop = () => {
+  const sent: Uint8Array[] = [];
+  return {
+    sent,
+    api: {
+      send: async (bytes: Uint8Array) => {
+        sent.push(bytes);
+        return { ok: true as const, identifier: `0x${'ab'.repeat(32)}`, ticket: new Uint8Array(32).fill(9), node: 'wss://bullet.sik.rocks', entries: 1 };
+      },
+      fetch: async () => ({ ok: false as const, reason: 'network' as const, message: 'not in this test' }),
+      ack: async () => ({ acked: 0, notFound: 0, failed: 0 }),
+      onProgress: () => () => undefined,
+    },
+  };
+};
+const hopFileOf = (message: IncomingChatMessage | undefined) =>
+  message?.content.tag === 'richText' ? (message.content.value.attachments ?? []).find(file => file.tag === 'p2pMixnet') : undefined;
+
+describe('the rail per peer (specs 0013 and 0014, M20)', () => {
+  it('a baseline peer (no capabilities): the photo goes over HOP as the phones send it, the keyboard as text', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const peer = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(peer) });
+    transport = openPeerTransport(store, peer, web);
+    const peerKey = await establish(store, web, peer, manager, transport, { capable: false });
+    const chain = fakeBulletin();
+    const hop = fakeHop();
+    const service = createAttachmentService({ bulletin: chain.api, store: STORE, hop: hop.api });
+    expect(await manager.attachmentRail(peerKey)).toBe('hop');
+    const file = photo(1_000);
+    const before = manager.submissions.snapshot();
+    await service.send(manager, peerKey, [file], 'from the desktop');
+    const received = await waitFor(() => transport!.received.find(m => hopFileOf(m)));
+    // One statement for the message (our set rides it); nothing on Bulletin; no kind 250, no variant 1.
+    expect(manager.submissions.snapshot().submissions - before.submissions).toBe(1);
+    expect(chain.calls).toEqual([]);
+    expect(hop.sent).toEqual([file.bytes]);
+    expect(transport.capabilities).toHaveLength(1);
+    const wire = hopFileOf(received);
+    expect(wire?.tag === 'p2pMixnet' ? wire.value.meta : null).toMatchObject({ tag: 'image', value: { width: 640, height: 480 } });
+    expect(received.content.tag === 'richText' ? received.content.value.text : null).toBe('from the desktop');
+    // The sender's row names the node, keeps its copy, and its ticket is sealed (never on the row).
+    const own = await db.messages.get(received.messageId);
+    const attachment = own?.content.type === 'richText' ? own.content.attachments[0] : undefined;
+    expect(attachment?.hop).toMatchObject({ node: 'wss://bullet.sik.rocks', ticket: new Uint8Array(0) });
+    expect((await getAttachmentRow(received.messageId, 0))?.bytes).toEqual(file.bytes);
+    // Our own upload is never claimed (the peer's ticket key is its only recipient).
+    expect(await service.fetch(received.messageId, 0, hopItemOf(attachment!))).toBe('ready');
+
+    const rows = [[{ label: 'Yes', action: { tag: 'command' as const, value: 'yes' } }]];
+    await manager.sendButtons(peerKey, { text: 'Sure?', rows, oneShot: true });
+    const menu = await waitFor(() => transport!.received.find(m => m.content.tag === 'text' && m.content.value.startsWith('Sure?')));
+    expect(menu.content).toEqual({ tag: 'text', value: 'Sure?\n\n1. Yes — reply with a number or the label' });
+    expect(transport.received.some(m => m.content.tag === 'buttons' || m.content.tag === 'seen' || m.content.tag === 'typing')).toBe(false);
+    service.dispose();
+  });
+
+  it('a peer with a capable desktop and a silent phone gets HOP; once the phone is removed, the Bulletin variant', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const peer = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(peer) });
+    transport = openPeerTransport(store, peer, web);
+    const peerKey = await establish(store, web, peer, manager, transport);
+    const chain = fakeBulletin();
+    const hop = fakeHop();
+    const service = createAttachmentService({ bulletin: chain.api, store: STORE, hop: hop.api });
+    expect(await manager.attachmentRail(peerKey)).toBe('bulletin');
+
+    // The peer's second device, a phone that never sends capabilities.
+    const phoneKeys = makeDeviceKeys();
+    const phone = openPeerTransport(store, { identity: peer.identity, device: phoneKeys }, web);
+    phone.roster.set([{ statementAccountId: web.device.statementAccountPublicKey, encryptionPublicKey: web.device.encryptionPublicKey }]);
+    const phoneDevice = { statementAccountId: phoneKeys.statementAccountPublicKey, encryptionPublicKey: phoneKeys.encryptionPublicKey };
+    await transport.session.send({ tag: 'deviceAdded', value: phoneDevice }, { messageId: 'peer-add', timestamp: Date.now() });
+    await waitFor(async () => (await db.contacts.get(peerKey))?.devices.length === 2);
+    // The intersection over both devices: the phone is baseline.
+    expect(await manager.attachmentRail(peerKey)).toBe('hop');
+
+    await service.send(manager, peerKey, [photo(1_000)], null);
+    const onDesktop = await waitFor(() => transport!.received.find(m => hopFileOf(m)));
+    const onPhone = await waitFor(() => phone.received.find(m => hopFileOf(m)));
+    expect(onPhone.messageId).toBe(onDesktop.messageId);
+    expect(chain.calls).toEqual([]);
+    // 0013 "Sending" 3: the new device gets our set with the next message.
+    await waitFor(() => phone.capabilities.length === 1);
+
+    await transport.session.send({ tag: 'deviceRemoved', value: { statementAccountId: phoneDevice.statementAccountId } }, { messageId: 'peer-remove', timestamp: Date.now() });
+    await waitFor(async () => (await db.contacts.get(peerKey))?.devices.length === 1);
+    expect(await manager.attachmentRail(peerKey)).toBe('bulletin');
+    await service.send(manager, peerKey, [photo(1_000)], null);
+    const variant = await waitFor(() => transport!.received.find(m => isFileMessage(m)));
+    expect(variant.content.tag).toBe('richText');
+    expect(hop.sent).toHaveLength(1);
+    phone.dispose();
+    service.dispose();
   });
 });

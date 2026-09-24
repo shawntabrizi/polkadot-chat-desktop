@@ -8,6 +8,7 @@
  * surfaced as `message` for the caller to treat like session content.
  */
 
+import { FileMeta as SdkFileMeta, P2PMixnetFile as SdkP2PMixnetFile } from '@novasamatech/host-chat/codec/attachment';
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
 import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, _void, bool, createCodec, str, u128, u16, u32, u64, u8 } from 'scale-ts';
 
@@ -17,6 +18,10 @@ import type { PeerDevice } from '../../app/database';
 import { AccountCodec, TimeCodec } from './groupCodec';
 
 type SdkChatMessageWire = CodecType<typeof SdkChatMessage>;
+type SdkContent = SdkChatMessageWire['versioned']['value'];
+type SdkRichText = Extract<SdkContent, { tag: 'richText' }>;
+type SdkFileVariant = NonNullable<SdkRichText['value']['attachments']>[number];
+export type FileMetaWire = CodecType<typeof SdkFileMeta>;
 
 /**
  * RFC-0003 `deleted(DeletedContent)`; the SDK (0.10.2) has no such variant.
@@ -167,8 +172,42 @@ export type AttachmentItemWire = {
 /** Spec 0012 `attachment(AttachmentContent)`, provisional kind 250: 1 to 4 items and a caption. */
 export type AttachmentWire = { tag: 'attachment'; value: { items: AttachmentItemWire[]; caption: string | undefined } };
 
+/**
+ * Spec 0014 `BulletinFile`: the 0012 item inside the base spec's `RichText`
+ * as `FileVariant` index 1. `meta` is the base `FileMeta` (the blurhash rides
+ * in its `thumbnail`, as the phones put it); `preview` is 0012's small image.
+ */
+export type BulletinFileWire = {
+  meta: FileMetaWire;
+  name: string | undefined;
+  preview: Uint8Array | undefined;
+  voice: { durationMs: number; waveform: Uint8Array } | undefined;
+  key: Uint8Array;
+  nonce: Uint8Array;
+  chunkSize: number;
+  chunks: Uint8Array[];
+  store: { tag: 'bulletin'; value: { genesis: Uint8Array; mirror: string | undefined } };
+  expiresAt: bigint;
+};
+/** Base spec `FileVariant` plus spec 0014 `bulletin` (index 1). */
+export type FileVariantWire = SdkFileVariant | { tag: 'bulletin'; value: BulletinFileWire };
+/** Base spec `richText` (kind 15) with this app's `FileVariant`. */
+export type RichTextWire = { tag: 'richText'; value: { text: string | undefined; attachments: FileVariantWire[] | undefined } };
+
+/**
+ * Spec 0013 `capabilities(Capabilities)`, provisional kind 252. `kinds` is a
+ * 32-byte bitmap (bit k = byte k/8, bit k%8); `hopDialects`: 0 legacy (the
+ * phones), 1 aesGcm. Never a row.
+ */
+export type CapabilitiesWire = {
+  tag: 'capabilities';
+  value: { version: number; kinds: Uint8Array; fileVariants: number[]; hopDialects: number[]; features: number };
+};
+
 export type ChatContent =
-  | SdkChatMessageWire['versioned']['value']
+  | Exclude<SdkContent, { tag: 'richText' }>
+  | RichTextWire
+  | CapabilitiesWire
   | DeletedWire
   | ButtonsWire
   | ButtonPressWire
@@ -211,6 +250,10 @@ export const GROUP_CONTROL_KIND = 249;
 const GROUP_KINDS: readonly number[] = [GROUP_INFO_KIND, GROUP_MESSAGE_KIND, GROUP_LEAVE_KIND, GROUP_CONTROL_KIND];
 /** Spec 0012 provisional kind (docs/spec/kinds.md, review 0012: 250). */
 export const ATTACHMENT_KIND = 250;
+/** Spec 0013 provisional kind (docs/spec/kinds.md). */
+export const CAPABILITIES_KIND = 252;
+/** Base spec `richText`: decoded here for spec 0014's `FileVariant.bulletin` (index 1), which the SDK codec does not know. */
+export const RICH_TEXT_KIND = 15;
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -347,6 +390,45 @@ const AttachmentItemCodec = Struct({
 });
 const AttachmentContentCodec = Struct({ items: Vector(AttachmentItemCodec), caption: Option(str) });
 
+// Spec 0014 layout (docs/spec/vectors-0014.md). scale-ts numbers enum variants
+// in key order: p2pMixnet 0 (the SDK's struct, unchanged), bulletin 1.
+const BulletinFileCodec = Struct({
+  meta: SdkFileMeta,
+  name: Option(str),
+  preview: Option(Bytes()),
+  voice: Option(Struct({ durationMs: u32, waveform: Bytes() })),
+  key: Bytes(32),
+  nonce: Bytes(12),
+  chunkSize: u32,
+  chunks: Vector(Bytes(32)),
+  store: StoreCodec,
+  expiresAt: u64,
+});
+const FileVariantCodec = Enum({ p2pMixnet: SdkP2PMixnetFile, bulletin: BulletinFileCodec });
+const RichTextContentCodec = Struct({ text: Option(str), attachments: Option(Vector(FileVariantCodec)) });
+
+// Spec 0013 layout (docs/spec/0013-capabilities.md "Test vector").
+const CapabilitiesCodec = Struct({ version: u8, kinds: Bytes(32), fileVariants: Vector(u8), hopDialects: Vector(u8), features: u32 });
+
+/** The 0012 limits of a `bulletin` item, read through the kind-250 shape (spec 0014 "Limits" are 0012's). */
+const bulletinAsItem = (file: BulletinFileWire): AttachmentItemWire => {
+  const general = file.meta.tag === 'general' ? file.meta.value : file.meta.value.general;
+  return {
+    mime: general.mimeType,
+    name: file.name,
+    size: BigInt(general.fileSize),
+    media: file.voice ? { tag: 'voice', value: file.voice } : { tag: 'file', value: undefined },
+    blurhash: undefined,
+    thumbnail: file.preview,
+    key: file.key,
+    nonce: file.nonce,
+    chunkSize: file.chunkSize,
+    chunks: file.chunks,
+    store: file.store,
+    expiresAt: file.expiresAt,
+  };
+};
+
 /**
  * Spec 0012 limits, checked on decode: 1 to 4 items; `mime` at most 64
  * bytes, `name` 128, `blurhash` 64, `thumbnail` 2048, `caption` 1024; a
@@ -405,6 +487,8 @@ const withinGroupBounds = (info: GroupInfoWire['value']): boolean =>
   info.members.every(member => utf8Length(member.username) <= GROUP_BOUNDS.username);
 
 type ExtensionWire =
+  | RichTextWire
+  | CapabilitiesWire
   | DeletedWire
   | ButtonsWire
   | ButtonPressWire
@@ -436,6 +520,8 @@ const GroupInfoMessage = envelope(GroupInfoCodec);
 const GroupLeaveMessage = envelope(GroupLeaveCodec);
 const GroupControlMessage = envelope(GroupControlCodec);
 const AttachmentMessage = envelope(AttachmentContentCodec);
+const RichTextMessage = envelope(RichTextContentCodec);
+const CapabilitiesMessage = envelope(CapabilitiesCodec);
 // `groupMessage`: the header and the wrapper's own fields; the inner content
 // is the rest of the message (its kind byte and body).
 const GroupMessageHead = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, groupId: str, infoVersion: u32, seq: u64 });
@@ -476,6 +562,36 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
   }
   if (header.version !== V1) return null;
   switch (header.kind) {
+    case RICH_TEXT_KIND: {
+      // Only a message with a spec 0014 `bulletin` item is ours to read; any
+      // other richText goes to the SDK decoder as before (null here).
+      let decoded: ReturnType<typeof RichTextMessage.dec>;
+      try {
+        decoded = RichTextMessage.dec(bytes);
+      } catch {
+        return null;
+      }
+      const files = decoded.content.attachments ?? [];
+      if (!files.some(file => file.tag === 'bulletin')) return null;
+      const bulletin = files.flatMap(file => (file.tag === 'bulletin' ? [file.value] : []));
+      const fits =
+        bulletin.length <= ATTACHMENT_BOUNDS.items &&
+        bulletin.every(file => withinItemBounds(bulletinAsItem(file)) && (file.meta.tag === 'general' || (file.meta.value.thumbnail?.length ?? 0) <= ATTACHMENT_BOUNDS.blurhash)) &&
+        (decoded.content.text === undefined || utf8Length(decoded.content.text) <= ATTACHMENT_BOUNDS.caption);
+      if (!fits) return undecodable(header);
+      return { messageId: decoded.messageId, timestamp: decoded.timestamp, versioned: { tag: 'v1', value: { tag: 'richText', value: decoded.content as RichTextWire['value'] } } };
+    }
+    case CAPABILITIES_KIND: {
+      // Spec 0013 forward rule: fields of a later version are appended, so
+      // bytes after `features` are ignored (not the strict end check).
+      try {
+        const decoded = CapabilitiesMessage.dec(bytes);
+        if (decoded.content.version < 1) return undecodable(header);
+        return { messageId: decoded.messageId, timestamp: decoded.timestamp, versioned: { tag: 'v1', value: { tag: 'capabilities', value: decoded.content } } };
+      } catch {
+        return undecodable(header);
+      }
+    }
     case DELETED_KIND:
       // A malformed `deleted` falls through to the SDK decode, which rejects
       // it: one unsupported entry, never a bubble.
@@ -580,6 +696,11 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
     const content = message.versioned.value;
     const head = { messageId: message.messageId, timestamp: message.timestamp, version: V1 };
     switch (content.tag) {
+      case 'richText':
+        // The same bytes as the SDK's for a `p2pMixnet` item; `bulletin` is spec 0014's index 1.
+        return RichTextMessage.enc({ ...head, kind: RICH_TEXT_KIND, content: content.value as never });
+      case 'capabilities':
+        return CapabilitiesMessage.enc({ ...head, kind: CAPABILITIES_KIND, content: content.value });
       case 'deleted':
         return DeletedMessage.enc({ ...head, kind: DELETED_KIND, content: content.value.targetMessageId });
       case 'buttons':
@@ -633,7 +754,8 @@ export type IdentityChannelEvent =
   | { tag: 'accepted'; requestId: string; device: PeerDevice; acceptedAt: number }
   | { tag: 'deviceAdded'; device: PeerDevice }
   | { tag: 'deviceRemoved'; statementAccountId: Uint8Array }
-  | { tag: 'message'; messageId: string; timestamp: number; content: ChatContent };
+  /** `device`: spec 0013, for a `capabilities` in the same batch as a `deviceChatAccepted`: the device that accepted. */
+  | { tag: 'message'; messageId: string; timestamp: number; content: ChatContent; device?: Uint8Array };
 
 export const toIdentityChannelEvent = (message: ChatMessageWire): IdentityChannelEvent | null => {
   const content = message.versioned.value;

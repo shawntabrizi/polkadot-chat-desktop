@@ -753,7 +753,8 @@ export const Room = (props: Props) => {
     try {
       // An attachment stores its chunks again first (same key and nonce: the same message).
       const service = attachmentService();
-      if (row.content.type === 'attachment' && service) await service.reupload(manager, peer as HexString, row.messageId);
+      // M20b: a HOP file (a `richText` of ours) may need its upload again too.
+      if ((row.content.type === 'attachment' || row.content.type === 'richText') && service) await service.reupload(manager, peer as HexString, row.messageId);
       else await manager.retry(peer as HexString, row.messageId);
     } catch (cause) {
       setError(`${plainError(cause, 'The message was not sent.')} Try again.`);

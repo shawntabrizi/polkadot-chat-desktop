@@ -70,8 +70,10 @@ describe('peer session', () => {
     expect(a.sent).toEqual(['m1']);
 
     await waitFor(() => bPhone.received.length === 1 && bLaptop.received.length === 1);
-    expect(bPhone.received[0]).toEqual({ messageId: 'm1', timestamp: 1, content: { tag: 'text', value: 'hello both' } });
+    // Spec 0013: each receiver names the device that sent it (the SDK does not; the session's sender tracker does).
+    expect(bPhone.received[0]).toEqual({ messageId: 'm1', timestamp: 1, content: { tag: 'text', value: 'hello both' }, device: aliceDevice.statementAccountPublicKey });
     expect(bLaptop.received[0]?.messageId).toBe('m1');
+    expect(bLaptop.received[0]?.device).toEqual(aliceDevice.statementAccountPublicKey);
 
     await waitFor(() => a.delivered.includes('m1'));
     expect(a.batches).toBeGreaterThan(0);
@@ -80,7 +82,12 @@ describe('peer session', () => {
     await bLaptop.session.send({ tag: 'text', value: 'laptop here' }, { messageId: 'm2', timestamp: 2 });
     await waitFor(() => a.received.length === 1);
     expect(a.received[0]?.content).toEqual({ tag: 'text', value: 'laptop here' });
+    // The laptop, not the phone: capabilities from one device must never be filed under another.
+    expect(a.received[0]?.device).toEqual(bobLaptop.statementAccountPublicKey);
     await waitFor(() => bLaptop.delivered.includes('m2'));
+    await bPhone.session.send({ tag: 'text', value: 'phone here' }, { messageId: 'm3', timestamp: 3 });
+    await waitFor(() => a.received.length === 2);
+    expect(a.received[1]?.device).toEqual(bobPhone.statementAccountPublicKey);
 
     for (const side of [a, bPhone, bLaptop]) side.session.dispose();
   });

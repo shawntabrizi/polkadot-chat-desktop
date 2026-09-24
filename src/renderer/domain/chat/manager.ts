@@ -37,9 +37,24 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
-import { withAttachmentKeys } from './attachmentKeyStore';
+import { hopTicket, setHopLocation, withAttachmentKeys } from './attachmentKeyStore';
+import {
+  type Capabilities,
+  type FileRail,
+  NO_FILE_RAIL,
+  OWN_CAPABILITIES,
+  capabilitiesDue,
+  capabilitiesUnsent,
+  dropDeviceCapabilities,
+  fileRailOf,
+  formFor,
+  loadEffective,
+  markCapabilitiesSent,
+  storeCapabilities,
+} from './capabilities';
 import { admitAfterDelete, deleteChatLocally, isBlocked, unfinishedDeletes, withdrawRequestLocally } from './chatActions';
 import {
+  type Attachment,
   type AttachmentItem,
   type BotInfo,
   type GroupInfo,
@@ -135,6 +150,25 @@ export type ChatManager = {
    * normal path. A failed upload marks the row failed and sends nothing.
    */
   sendAttachment: (peer: HexString, content: { items: AttachmentItem[]; caption: string | null }, upload: (messageId: string) => Promise<void>) => Promise<void>;
+  /**
+   * Spec 0013/0014: the rail an attachment of `bytes` in all to `peer` takes
+   * now: `bulletin` (the 0014 variant), or `hop` (a baseline device, or a
+   * file over 25 MiB). Rejects with the 0013 text when none fits.
+   */
+  attachmentRail: (peer: HexString, bytes?: number) => Promise<FileRail>;
+  /**
+   * Base spec HOP send (M20b): one file as `RichText` + `P2PMixnet`. The row
+   * exists at once (`attachment` without its node yet); `upload(messageId)`
+   * puts the file on a HOP node and resolves with where; then the message
+   * goes as one statement. A failed upload marks the row failed.
+   */
+  sendHopFile: (
+    peer: HexString,
+    content: { text: string | null; attachment: Attachment },
+    upload: (messageId: string) => Promise<NonNullable<Attachment['hop']>>,
+  ) => Promise<string>;
+  /** Spec 0013: `effective(peer)`, the intersection over the peer's devices (tests and diagnostics). */
+  capabilitiesOf: (peer: HexString) => Promise<Capabilities>;
   /**
    * M12e: withdraw the pending request this identity sent `peer`. The row is
    * removed and the identity channel that waits for the accept is closed, so
@@ -435,6 +469,12 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       case 'deviceRemoved':
         await removePeerDevice(peer, effect.statementAccountId);
         return;
+      case 'capabilities':
+        // Spec 0013, keyed as pca keys it: the sending device (its session's
+        // topic), or on the identity session the device its batch accepted
+        // with, else the peer's identity account (it stands in while no device is known).
+        await storeCapabilities(peer, message.device ?? hexToBytes(peer), effect.capabilities, message.timestamp);
+        return;
       case 'groupInfo':
         await onGroupInfo(peer, effect.info);
         return;
@@ -580,8 +620,9 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         await applyReference(room, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference, { senderAccountId: sender });
         referenceArrived(effect.reference);
         return;
-      // No read receipts in groups (v1); calls, rosters and nested group kinds are not group content.
+      // No read receipts in groups (v1); calls, rosters, capabilities (0013: never in groups) and nested group kinds are not group content.
       case 'seen':
+      case 'capabilities':
       case 'callOffer':
       case 'deviceAdded':
       case 'deviceRemoved':
@@ -637,13 +678,28 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     if (!isUsablePeerDevice(device)) return;
     const contact = await getContact(peer);
     if (!contact) return;
+    const known = contact.devices.some(existing => bytesToHex(existing.statementAccountId) === bytesToHex(device.statementAccountId));
     const updated = await upsertContactDevice(contact, device);
     sessions.publishRoster(peer, updated.devices);
+    // Spec 0013: a new device has not seen our set (a replayed add at start is not new).
+    if (!known) await capabilitiesUnsent(peer);
   };
 
   const removePeerDevice = async (peer: HexString, statementAccountId: Uint8Array): Promise<void> => {
     const updated = await removeContactDevice(peer, statementAccountId);
     if (updated) sessions.publishRoster(peer, updated.devices);
+    await dropDeviceCapabilities(peer, statementAccountId);
+  };
+
+  /**
+   * Spec 0013 `effective(peer)`. A bot that sent its `botInfo` counts as
+   * advertised (owner ruling): the pca transition set. Content on the identity
+   * channel alone does not: a bot with its extensions off is a baseline peer.
+   */
+  const effectiveFor = async (peer: HexString): Promise<Capabilities> => {
+    const [contact, info] = await Promise.all([getContact(peer), getPeerInfo(peer)]);
+    const bot = (info?.botInfo ?? null) !== null;
+    return loadEffective(peer, contact?.devices ?? [], bot, hexToBytes(peer));
   };
 
   // ── Contact establishment (both directions) ────────────────────────────
@@ -710,7 +766,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
           await addPeerDevice(peer, event.device);
           return;
         }
-        if (request.status === 'pending') await setRequestStatus(request.requestId, 'accepted');
+        if (request.status === 'pending') {
+          await setRequestStatus(request.requestId, 'accepted');
+          // Spec 0013: a chat starts; our set rides our first message in it.
+          await capabilitiesUnsent(peer);
+        }
         const seed = { accountId: peer, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
         await establishContact(seed, event.device, request.requestId, event.acceptedAt);
         if (request.welcomeMessage) {
@@ -759,6 +819,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const acceptRequest: ChatManager['acceptRequest'] = async requestId => {
     const request = await requireRequest(requestId, 'incoming');
     await setRequestStatus(requestId, 'accepted');
+    // Spec 0013: a chat starts; our set rides our first message in it.
+    await capabilitiesUnsent(request.peerAccountId);
     const seed = { accountId: request.peerAccountId, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
     await establishContact(seed, request.senderDevice, requestId, Date.now());
     if (request.welcomeMessage) {
@@ -852,6 +914,9 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
   // ── Outgoing ───────────────────────────────────────────────────────────
 
+  // Spec 0013: peers whose copy of our set is on its way (a second message in the same moment does not add another).
+  const capabilitiesQueued = new Set<HexString>();
+
   const submit = async (peer: ChatTargetId, content: OutgoingContent, ids: { messageId: string; timestamp: number }) => {
     if (isGroupPeer(peer)) {
       const group = await getGroup(groupIdOf(peer));
@@ -861,14 +926,37 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       return groupsV2.send(group.id, toWire(content), ids);
     }
     if (!sessions.has(peer)) throw new Error('no chat session with this contact');
+    // Spec 0013 (owner ruling 2026-09-24): every extension kind only to a
+    // peer whose every device listed it; else its fallback, or nothing.
+    const effective = await effectiveFor(peer);
+    const form = formFor(effective, content);
+    if ('drop' in form) return;
+    if ('refuse' in form) throw new Error(form.refuse);
+    const due = await capabilitiesDue(peer);
+    // Everything below enters the session batch in the same task, so the
+    // submission meter sends one statement for all of it.
     // Spec 0005 (revision 2026-09-23): a `seen` still waiting for this peer
-    // rides this message. Both enter the session batch in the same task, so
-    // the submission meter sends one statement for both.
-    const seen = content.type === 'seen' || content.type === 'typing' ? null : seenSender.take(peer);
-    const riding = seen
-      ? sessions.send(peer, toWire({ type: 'seen', ...seen }), { messageId: randomId(), timestamp: Date.now() }).catch((error: unknown) => console.warn('[chat] seen did not go out', error))
-      : null;
-    await Promise.all([sessions.send(peer, toWire(content), ids), riding]);
+    // rides this message, if the peer reads `seen`.
+    const signalOnly = form.send.type === 'seen' || form.send.type === 'typing';
+    const pending = signalOnly ? null : seenSender.take(peer);
+    const seen = pending && 'send' in formFor(effective, { type: 'seen', ...pending }) ? pending : null;
+    const riding: Promise<unknown>[] = [];
+    // Spec 0013: our set rides the first message of a chat (and after a set change or a new peer device).
+    // Not awaited: the message's own status does not wait for the bookkeeping.
+    if (due && !capabilitiesQueued.has(peer)) {
+      capabilitiesQueued.add(peer);
+      void sessions
+        .send(peer, toWire({ type: 'capabilities', capabilities: OWN_CAPABILITIES }), { messageId: randomId(), timestamp: Date.now() })
+        .then(() => markCapabilitiesSent(peer))
+        .catch((error: unknown) => console.warn('[chat] capabilities did not go out', error))
+        .finally(() => capabilitiesQueued.delete(peer));
+    }
+    if (seen) {
+      riding.push(
+        sessions.send(peer, toWire({ type: 'seen', ...seen }), { messageId: randomId(), timestamp: Date.now() }).catch((error: unknown) => console.warn('[chat] seen did not go out', error)),
+      );
+    }
+    await Promise.all([sessions.send(peer, toWire(form.send), ids), ...riding]);
   };
 
   /**
@@ -881,7 +969,10 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     const group = await getGroup(groupIdOf(peer));
     if (!group) throw new Error('This group is not known on this device.');
     if (group.self !== 'member') throw new Error('You are no longer a member of this group.');
-    const targets = otherMembers(group, self).filter(member => sessions.has(member.account));
+    const reachable = otherMembers(group, self).filter(member => sessions.has(member.account));
+    // Spec 0013: a member whose devices do not all read the group kind gets no copy.
+    const readable = await Promise.all(reachable.map(async member => 'send' in formFor(await effectiveFor(member.account), { type: 'groupMessage', groupId: group.id, infoVersion: group.version, seq: 0, content })));
+    const targets = reachable.filter((_member, i) => readable[i]);
     if (targets.length === 0) throw new Error('No member of this group can be reached yet.');
     // A typing hint carries our current `seq` and does not advance it (as pca's
     // bot does, vectors-0009): a receiver that drops typing sees no gap.
@@ -1021,6 +1112,43 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     meter.messageSent();
   };
 
+  const attachmentRail: ChatManager['attachmentRail'] = async (peer, bytes = 0) => {
+    const rail = fileRailOf(await effectiveFor(peer), bytes);
+    if (!rail) throw new Error(NO_FILE_RAIL);
+    return rail;
+  };
+
+  const sendHopFile: ChatManager['sendHopFile'] = async (peer, content, upload) => {
+    const ids = { messageId: randomId(), timestamp: Date.now() };
+    await trustByMessage(peer);
+    // The row shows the file at once; it names its node once the upload is done.
+    const pendingAttachment: Attachment = { ...content.attachment };
+    delete pendingAttachment.hop;
+    await addMessage({
+      messageId: ids.messageId,
+      peerAccountId: peer,
+      timestamp: ids.timestamp,
+      direction: 'outgoing',
+      status: 'sending',
+      content: { type: 'richText', text: content.text, attachments: [pendingAttachment] },
+      reactions: [],
+      editedAt: null,
+    });
+    await settlePendingSeen(peer, ids.messageId);
+    typingSender.sent(peer);
+    try {
+      const hop = await upload(ids.messageId);
+      const attachment: Attachment = { ...content.attachment, hop };
+      await setHopLocation(ids.messageId, 0, attachment);
+      await submit(peer, { type: 'hopFile', text: content.text, attachment }, ids);
+    } catch (error) {
+      await setMessageStatus(ids.messageId, 'failed');
+      throw error;
+    }
+    meter.messageSent();
+    return ids.messageId;
+  };
+
   const leaveGroup: ChatManager['leaveGroup'] = async groupId => {
     const group = await getGroup(groupId);
     if (!group || group.self !== 'member') return;
@@ -1072,6 +1200,9 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     sendMessage,
     sendAttachment,
+    attachmentRail,
+    sendHopFile,
+    capabilitiesOf: effectiveFor,
 
     withdrawRequest: async (peer, at) => {
       await withdrawRequestLocally(peer, at);
@@ -1163,6 +1294,17 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       if (!stored || stored.peerAccountId !== peer || stored.direction !== 'outgoing' || stored.status !== 'failed') return;
       // M15c: an attachment's keys are sealed in `keys`; the same message goes out with them again.
       const row = await withAttachmentKeys(stored);
+      // M20b: a HOP file whose upload finished goes again with its ticket (the node keeps it 24 h).
+      const hopFile = row.content.type === 'richText' ? row.content.attachments[0] : undefined;
+      if (row.content.type === 'richText' && hopFile?.hop?.node) {
+        const attachment: Attachment = { ...hopFile, hop: { ...hopFile.hop, ticket: await hopTicket(messageId, 0, hopFile) } };
+        await setMessageStatus(messageId, 'sending');
+        await submit(peer, { type: 'hopFile', text: row.content.text, attachment }, { messageId, timestamp: row.timestamp }).catch(async error => {
+          await setMessageStatus(messageId, 'failed');
+          throw error;
+        });
+        return;
+      }
       if (row.content.type !== 'text' && row.content.type !== 'reply' && row.content.type !== 'attachment') throw new Error('Only a text message can be sent again.');
       // An attachment's chunks are stored again by the caller first (attachments.ts); the message is the same.
       const content: OutgoingContent =
@@ -1216,6 +1358,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     sendBotInfo: async (peer, info) => {
       const contact = await getContact(peer);
       if (!contact) throw new Error('no contact to describe this client to');
+      if ('drop' in formFor(await effectiveFor(peer), { type: 'botInfo', info })) return;
       await ensureChannel(hexToBytes(peer), contact.chatPublicKey).post(toWire({ type: 'botInfo', info }));
     },
 

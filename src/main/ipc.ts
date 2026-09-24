@@ -28,6 +28,8 @@ import {
   type CreateIdentityResponse,
   type HopAckResult,
   type HopFetchResult,
+  HOP_MAX_FILE_BYTES,
+  type HopSendResult,
   IPC,
   type IdentitySummary,
   type NotifyRequest,
@@ -554,6 +556,15 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (!(ticket instanceof Uint8Array) || ticket.length !== 32) throw new Error('Invalid ticket.');
     if (!Array.isArray(entries) || entries.length < 1 || entries.length > 1 + 1024 || entries.some(entry => typeof entry !== 'string' || !CONTENT_HASH.test(entry))) throw new Error('Invalid entries.');
     return hopAck(node, ticket, entries as string[]);
+  });
+  // M20b: HOP send, for a peer with a baseline device (spec 0013). Signed by the identity's Bulletin key.
+  ipcMain.handle(IPC.hopSend, async (_event, bytes: unknown): Promise<HopSendResult> => {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > HOP_MAX_FILE_BYTES) throw new Error('A file over HOP is at most 32 MB.');
+    const service = await bulletinFor(countBulletin);
+    const result = await service.sendHop(bytes);
+    // One line per send, no key material.
+    console.info(result.ok ? `[hop] sent ${bytes.length} bytes in ${result.entries} entries to ${new URL(result.node).hostname}` : `[hop] not sent: ${result.reason}`);
+    return result;
   });
   ipcMain.handle(IPC.fileOpen, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<void> => openFile(bytes, name, mime));
   ipcMain.handle(IPC.fileSave, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<boolean> => saveFile(getWindow(), bytes, name, mime));

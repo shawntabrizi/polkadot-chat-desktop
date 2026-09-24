@@ -12,6 +12,7 @@ import Dexie, { type Table } from 'dexie';
 import type { HopCipher, HopLayout } from '../../shared/desktop-api';
 
 import type { HexString } from './bytes';
+import type { Capabilities } from '../domain/chat/capabilities';
 import type { BotInfo, GroupMember, MessageContent } from '../domain/chat/content';
 import type { GroupState } from '../domain/chat/groupCodec';
 
@@ -407,6 +408,16 @@ export type AttachmentRow = {
   hop?: { cipher: HopCipher; layout: HopLayout };
 };
 
+/**
+ * Spec 0013: the set one device of a peer sent (`device`: its statement
+ * account, lower-case 0x-hex). The later message time wins; `deviceRemoved`
+ * drops the row. Never a message row.
+ */
+export type PeerCapabilitiesRow = { peer: HexString; device: string; caps: Capabilities; timestamp: number };
+
+/** Spec 0013: the set this device last sent to a peer (its hash); a changed set or a new chat sends it again. */
+export type CapabilitiesSentRow = { peer: HexString; hash: string; sentAt: number };
+
 export const DB_NAME = 'polkadot-chat-web';
 
 const dexie = new Dexie(DB_NAME);
@@ -449,6 +460,10 @@ dexie.version(10).stores({
 dexie.version(11).stores({
   deletedChats: 'peerId',
 });
+dexie.version(12).stores({
+  peerCapabilities: '[peer+device], peer',
+  capabilitiesSent: 'peer',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -473,6 +488,8 @@ export const db: {
   attachmentKeys: Table<AttachmentKeyRow, string>;
   groupJoins: Table<GroupJoinRow, string>;
   deletedChats: Table<DeletedChatRow, PeerId>;
+  peerCapabilities: Table<PeerCapabilitiesRow, [HexString, string]>;
+  capabilitiesSent: Table<CapabilitiesSentRow, HexString>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -492,4 +509,6 @@ export const db: {
   attachmentKeys: dexie.table('keys'),
   groupJoins: dexie.table('groupJoins'),
   deletedChats: dexie.table('deletedChats'),
+  peerCapabilities: dexie.table('peerCapabilities'),
+  capabilitiesSent: dexie.table('capabilitiesSent'),
 };

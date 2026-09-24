@@ -4158,3 +4158,128 @@ SCREENSHOTS_OK in 11.4 s
 ### Not run
 
 - A photo from a real Polkadot phone app: needs the owner's phone. The phones' dialect is covered by unit vectors built from the app code.
+
+## M20 — Capabilities (0013), HOP send to baseline peers, Bulletin as a FileVariant (0014) (2026-09-24)
+
+Desktop half. The brief's `e2e:caps` replaces the milestone's `e2e:rails` (docs/decisions.md "## M20").
+
+### npm run check
+
+```
+ Test Files  102 passed (102)
+      Tests  928 passed (928)
+check:tokens: clean (200 files)
+```
+
+### npm run smoke (PCD_HEADLESS=1, throwaway PCD_USER_DATA_DIR)
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:caps -- --pca <pca worktree at b8b9fc4> (devnet; a=pcde2e, b=pcdbenchqmwk, throwaway pca echo bot with BOT_PROTOCOL_EXTENSIONS=none)
+
+```
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[b] SELF pcdbenchqmwk.45 0x7e8470687cce5c0bd98a694cdcb57854f620687d57cad73ad7d8ddf3ae212c3f
+[b] READY username=pcdbenchqmwk.45 bulletin=5FqFnSwuPTXVN6KPmYfY8Y48SoB47ubgP2kJVM5zPkLdpg9r
+[a] READY username=pcdecejakd.11 bulletin=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT
+PEOPLE a=pcdecejakd.11 b=pcdbenchqmwk.45 at=4.0s
+[a] CHAT_REQUEST_SENT id=3f967cde-3906-4f99-81f8-a28fa4a82dc9 to=pcdbenchqmwk.45
+[b] ACCEPTED pcdecejakd.11
+[a] CONTACT pcdbenchqmwk.45 devices=1
+[b] SAID hello from b statements=1
+[a] CAPS_KNOWN rail=bulletin device=0x7e847068… variants=0,1 dialects=0,1 features=3
+[a] SAID hello from a statements=1
+[b] CAPS_KNOWN rail=bulletin device=0xdce64f1a… variants=0,1 dialects=0,1 features=3
+[a] CAPS_SENT sets=1 hello_statements=1
+[b] CAPS_SENT sets=1 hello_statements=1
+CAPS_EXCHANGED a→b sets=1 b→a sets=1 a_statements_for_hello=1 at=11.8s
+[a] AUTH_OK account=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT transactions_left=32 bytes_left=39642891
+[a] PHOTO_SENT id=7bdbc60e-2498-4b4b-a451-280d369be238 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a wire=richText/bulletin statements=1 others=none
+[b] RAIL_BULLETIN_OK id=7bdbc60e-2498-4b4b-a451-280d369be238 wire=richText/bulletin row=attachment status=ready sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[b] READ the room is read; the seen goes when the 5 s window ends
+[a] SEEN_OK id=7bdbc60e-2498-4b4b-a451-280d369be238 seen_at=2026-09-24T18:40:35.608Z
+BOT_CREATE pcdcapsriwxb (scratch PCA_BOTS_DIR, brain echo, allow pcdecejakd.11) at=36.4s
+BOT_REGISTERED pcdcapsriwxb.34 0xa0cd643cfdf840bda4635ec3d7c22c71ea67f705c2da78d40febc2c857fd4a1d at=78.1s
+[a] BOT_CONTACT pcdcapsriwxb.34 botInfo=none rail=hop
+[a] BOT_ECHO yes text_statements=1
+[a] HOP_SEND_OK id=cde6d93a-5ad3-404d-9fbc-151b4a6e3bf9 wire=richText/p2pMixnet node=bullet.sik.rocks claim=match chacha20-poly1305/versioned/1entries photo_statements=1
+[a] BASELINE_OK sent=capabilities,text,richText(p2pMixnet),text sets=1 statements=text:1,photo:1,buttons:1,after_window:0
+[bot] {"time":"2026-09-24T18:41:36.749Z","event":"BOT_OUTBOUND_SUBMITTED","to":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messages":1}
+[bot] {"time":"2026-09-24T18:41:36.749Z","event":"BOT_RECEIVED_OPENER","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","requestId":"d866ef66-e7b9-4267-9870-3227d827eb19","chars":0}
+[bot] {"time":"2026-09-24T18:41:36.753Z","event":"BOT_RECEIVED_CAPABILITIES","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","device":"dce64f1a9918e031","kinds":24,"fileVariants":[0,1],"hopDialects":[0,1],"features":3}
+[bot] {"time":"2026-09-24T18:41:36.773Z","event":"BOT_RECEIVED_TEXT","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","chars":19}
+[bot] {"time":"2026-09-24T18:41:37.132Z","event":"BOT_OUTBOUND_SUBMITTED","to":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messages":1}
+[bot] {"time":"2026-09-24T18:41:37.438Z","event":"BOT_OUTBOUND_EXTENDED","to":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messages":2,"added":1,"extensions":1}
+[bot] {"time":"2026-09-24T18:41:40.476Z","event":"BOT_RECEIVED_TEXT","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","chars":21,"kind":"richText","attachments":1}
+[bot] {"time":"2026-09-24T18:41:48.483Z","event":"HOP_DOWNLOADED","host":"bullet.sik.rocks","id":"0x7a9b9459644b3b15","bytes":303840,"chunks":0,"layout":"versioned","ms":8002,"bytesPerSec":37971}
+[bot] {"time":"2026-09-24T18:41:48.788Z","event":"BOT_OUTBOUND_SUBMITTED","to":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messages":1}
+[bot] {"time":"2026-09-24T18:41:51.416Z","event":"BOT_RECEIVED_TEXT","from":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","chars":61}
+[bot] {"time":"2026-09-24T18:41:51.727Z","event":"BOT_OUTBOUND_SUBMITTED","to":"dce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653","messages":1}
+BOT_LOG lines=17 shown=11
+MULTI_DEVICE_DOMAIN_OK a peer with a capable desktop and a silent phone gets HOP on both devices; after deviceRemoved, the Bulletin variant (domain test, not live)
+[a] EXIT
+[b] EXIT
+CAPS_OK CAPS_EXCHANGED RAIL_BULLETIN_OK SEEN_OK HOP_SEND_OK BASELINE_OK MULTI_DEVICE_DOMAIN_OK sent=capabilities,text,richText(p2pMixnet),text sets=1 statements=text:1,photo:1,buttons:1,after_window:0 at=117.3s
+exit=0
+```
+
+pca M20 stored our set under our device (`BOT_RECEIVED_CAPABILITIES device=dce64f1a…`) and downloaded our HOP photo in the phones' layout (`HOP_DOWNLOADED … layout=versioned`). (c) is the domain test, **not live**: a second device cannot get a statement allowance on devnet. An earlier run against pre-M20 pca passed the same desktop checks; that pca could not read the versioned root (`BOT_MEDIA_DOWNLOAD_FAILED attachment larger than cap`).
+
+A first run with a=pcdbenchcold stopped at the grant with the new plain error (`//Eve` now refuses even 8 MiB):
+
+```
+[a] AUTH_FAILED The devnet storage grant was refused: the //Eve authorizer has no budget left, even for 8 MB. Try again later.
+Bulletin authorization: AUTH_FAILED The devnet storage grant was refused: the //Eve authorizer has no budget left, even for 8 MB. Try again later.
+```
+
+### npm run e2e:attach (devnet, pcde2e → pcdeceb)
+
+```
+[b] SAID hello from b
+[a] CAPS_KNOWN rail=bulletin
+[a] SENT id=dad18339-657b-4476-9ca9-a05a14e11429 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a statements_delta=1 messages_delta=1 bulletin_tx_delta=1 status=sent
+[b] FETCH_OK id=dad18339-657b-4476-9ca9-a05a14e11429 status=ready sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a chunks=1 cid0=bafk2bzacecjxbnvez4iqjag6mc4xhaonrmqovhqx5xhohoah5huv5bztj36ze
+[b] GATEWAY_OK id=dad18339-657b-4476-9ca9-a05a14e11429 status=ready sources=gateway sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[b] FILE_OK id=2e86a7b9-6c68-4b0f-951c-d3c457e2c844 name=m15b-e2e-archive.bin media=file size=2300000 order=gateway-first,bitswap-first sources=gateway,bitswap sha256=e5c438377f408ceb44ea932b1484f584cc0ca3182db90789a061f64aaddc1163
+[b] ALBUM_OK id=b8326b10-2829-41ec-9a0c-7c7a519771be items=4 kinds=image,image,image,image caption="M15b: an album of four" sources=bitswap,bitswap,bitswap,bitswap ready=4
+[b] VOICE_OK id=57f95ea6-e5e5-4e02-8b74-c682d98a94ef media=voice duration_ms=60000 bars=32 mime="audio/webm; codecs=opus" sources=bitswap sha256=503c5b1b2fe747e3e7e0b76aeba77f19b1ea043811a35c220e00fabc3dcdd30a
+[b] VIDEO_OK id=de0617d9-c384-4230-95a5-37fbbc615fff media=video 16x9 duration_ms=8000 name=m15c-e2e-clip.webm poster=blurhash(28) order=gateway-first sources=gateway sha256=20326262cf202f0e3797b7d95f6f7e9e244a414fa1efc9a4cac1acc25e92ff37
+[b] RESEND_OK id=dad18339-657b-4476-9ca9-a05a14e11429 status=ready cid0=bafk2bzacecjxbnvez4iqjag6mc4xhaonrmqovhqx5xhohoah5huv5bztj36ze sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+BOT_DESCRIBE_SKIPPED the fleet runs 289d02c, which does not contain b8b9fc4 M20: capabilities (kind 252), gated extensions, HOP send in the phones' dialect, FileVariant 1, HOP timeout, 8 MiB grants
+ATTACH_OK FILE_OK ALBUM_OK VOICE_OK VIDEO_OK RESEND_OK BOT_DESCRIBE_SKIPPED at=277.7s
+exit=0
+```
+
+Two earlier runs: the video check assumed kind-250 metadata (the base `VideoFileMeta` has no frame size and whole seconds; bytes matched; the check takes both forms now), and the fleet bot step failed because the fleet runs pre-M20 pca, which cannot read HOP in the phones' dialect (kind 250 is no longer sent). The bot step now waits for pca M20 on the fleet (read-only check).
+
+### npm run e2e:typing (pcdpirate.81, transition rule through botInfo)
+
+```
+SEEN_RECEIVED upTo=97b3a2d7-1c2f-4709-a2be-27e6bdb77605 at=4.3s
+READ_SUBMISSIONS 1 (inside the 5 s window: 0)
+COUNTS submissions=2 messages=1 acknowledgements=1 (this round)
+DIAGNOSTICS submissions=3 messages=1 acknowledgements=3 (whole run: request and accept included)
+BUDGET_OK
+exit=0
+```
+
+### npm run e2e:hop — not green, environment
+
+```
+[pca create] ⚠ The public Polkadot Products Devnet faucet may have accepted this allowance grant. Do not retry it yet.
+BOT_STORAGE storage:   not authorized; //Eve grants it on devnet at=50.0s
+BOT_STORAGE //Eve: grant failed: {"type":"TransactionStorage","value":{"type":"InsufficientAuthorizerBudget"}} at=134.2s
+BOT_STORAGE storage:   not authorized at=135.8s
+HOP_FAILED the bot has no Bulletin authorization for hop_submit
+exit=1
+```
+
+The scratch bot's Bulletin account could not get an authorization: `//Eve` refuses every grant (`InsufficientAuthorizerBudget`), so pca's `hop_submit` is refused before any desktop code runs. The desktop's HOP receive path is unchanged except a guard for our own uploads (unit tests green); pca M20 read a desktop HOP file in e2e:caps. Rerun when the devnet authorizer has budget.
+
+### Not run
+
+- `npm run screenshots`: no new screenshot required by the brief; the HOP detail line ("Sent over HOP; available for 24 hours") is not captured.
+- A real phone: needs the owner's phone.
+- `e2e:group2`, `e2e:group2b` and other desktop-pair e2es: not rerun. A desktop pair that creates a group before the peer sent anything now gets "cannot take part in groups yet" (question in docs/questions.md "## M20").

@@ -35,6 +35,7 @@
     "e2e:pay": "node scripts/e2e-pay.mjs",
     "e2e:attach": "node scripts/e2e-attach.mjs",
     "e2e:hop": "node scripts/e2e-hop.mjs",
+    "e2e:caps": "node scripts/e2e-caps.mjs",
     "e2e:agent": "node scripts/e2e-agent.mjs",
     "e2e:agent:packaged": "node scripts/e2e-agent.mjs --packaged",
     "e2e:tools": "node scripts/e2e-tools.mjs",

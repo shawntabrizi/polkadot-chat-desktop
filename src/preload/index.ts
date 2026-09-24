@@ -103,6 +103,7 @@ const api: DesktopApi = {
   hop: {
     fetch: (requestId, node, identifier, ticket) => ipcRenderer.invoke(IPC.hopFetch, requestId, node, identifier, ticket),
     ack: (node, ticket, entries) => ipcRenderer.invoke(IPC.hopAck, node, ticket, entries),
+    send: bytes => ipcRenderer.invoke(IPC.hopSend, bytes),
     onProgress: listen(IPC.hopProgress),
   },
   files: {

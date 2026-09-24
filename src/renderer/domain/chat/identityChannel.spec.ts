@@ -91,3 +91,31 @@ describe('identity channel', () => {
     bobChannel.dispose();
   });
 });
+
+describe('identity channel: capabilities (spec 0013, keyed as pca keys them)', () => {
+  it('a set in the same batch as deviceChatAccepted is the accepting device\'s', async () => {
+    const store = createInMemoryStatementStore();
+    const alice = makePeer();
+    const bot = makePeer();
+    const aliceEvents: IdentityChannelEvent[] = [];
+    const aliceChannel = open(store, alice, bot, aliceEvents);
+    const botChannel = open(store, bot, alice, []);
+    const device = { statementAccountId: bot.device.statementAccountPublicKey, encryptionPublicKey: bot.device.encryptionPublicKey };
+    const caps = { version: 1, kinds: new Uint8Array(32).fill(0xff), fileVariants: [0, 1], hopDialects: [0], features: 3 };
+    // Queued in one task: one batch (the accept's statement), as pca sends them.
+    await Promise.all([
+      botChannel.post({ tag: 'deviceChatAccepted', value: { requestId: 'req-1', device } }),
+      botChannel.post({ tag: 'capabilities', value: caps }),
+    ]);
+    const set = await waitFor(() => aliceEvents.find(event => event.tag === 'message' && event.content.tag === 'capabilities'));
+    expect(set.tag === 'message' && set.device).toEqual(bot.device.statementAccountPublicKey);
+
+    // A set alone on the identity session names no device: the manager keys it by the identity account.
+    await botChannel.post({ tag: 'capabilities', value: caps });
+    await waitFor(() => aliceEvents.filter(event => event.tag === 'message').length === 2);
+    const alone = aliceEvents.filter(event => event.tag === 'message')[1];
+    expect(alone?.tag === 'message' && alone.device).toBeUndefined();
+    aliceChannel.dispose();
+    botChannel.dispose();
+  });
+});

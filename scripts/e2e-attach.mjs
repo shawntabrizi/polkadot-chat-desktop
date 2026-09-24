@@ -6,7 +6,10 @@
 // Each person is a child process (`--role a|b`) running this repo's modules
 // (the renderer's domain code over fake-indexeddb, the main process's Bulletin
 // service), as e2e-pay.mjs does. The parent orders the steps:
-//  0. a and b have a chat (a request, b accepts);
+//  0. a and b have a chat (a request, b accepts); M20: b says hello, and its
+//     spec 0013 `capabilities` ride that text, so a knows b's device lists
+//     the Bulletin variant (CAPS_KNOWN) and sends its files as 0014
+//     `RichText` + `bulletin` (both map to the same row as kind 250);
 //  1. a's Bulletin account has storage: on devnet a `//Eve` grant when it has
 //     none (AUTH_OK);
 //  2. a encrypts a 300 KB PNG this script draws (a red circle), stores its
@@ -29,7 +32,8 @@
 //     stores the same ciphertext again (the chain still has it on devnet, so
 //     nothing is broadcast), b fetches again by the same CIDs (RESEND_OK).
 //  5. the bot step (BOT_DESCRIBE_OK) runs only when the pca fleet already runs
-//     the pca half of M15a; else BOT_DESCRIBE_SKIPPED with the reason. The
+//     the pca half of M20 (it reads the files this client now sends; before
+//     M20: M15a); else BOT_DESCRIBE_SKIPPED with the reason. The
 //     fleet is read (its REVISION file), never changed. M15b: the bot's first
 //     text after the attachment message must talk about the image
 //     (scripts/lib/botDescribe.mjs); a greeting fails it. M15c: when the bot's
@@ -74,9 +78,10 @@ else await parent();
 // ── Is the bot half live? Read-only checks of the pca repo and the fleet ────
 
 function botReadiness() {
-  const log = spawnSync('git', ['-C', PCA_REPO, 'log', '--format=%h %s', 'origin/desktop/rfc-0003', '--grep', 'M15a', '-n', '1'], { encoding: 'utf8' });
+  // M20: files reach a bot as the 0014 variant or over HOP in the phones' dialect (kind 250 is no longer sent), which pca reads from its M20 commit on.
+  const log = spawnSync('git', ['-C', PCA_REPO, 'log', '--format=%h %s', 'origin/desktop/rfc-0003', '--grep', '^M20', '-n', '1'], { encoding: 'utf8' });
   const commit = log.status === 0 ? log.stdout.trim() : '';
-  if (!commit) return { ready: false, reason: 'no "M15a" commit on pca desktop/rfc-0003 yet' };
+  if (!commit) return { ready: false, reason: 'no "M20" commit on pca desktop/rfc-0003 yet' };
   const revision = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', FLEET, 'cat /root/pca-bots/demo/app/REVISION'], { encoding: 'utf8' });
   const running = revision.status === 0 ? revision.stdout.trim() : '';
   if (!running) return { ready: false, reason: 'the fleet REVISION could not be read' };
@@ -172,6 +177,9 @@ async function parent() {
   if (!requested) return;
   if (!(await step('b', `ACCEPT ${field(requested, 'id')}`, /^ACCEPTED /, 'accept'))) return;
   if (!(await step('a', 'WAIT_CONTACT', /^CONTACT /, 'contact on a'))) return;
+  // M20 (spec 0013): until b's device has listed what it reads, a treats it as a baseline client (HOP).
+  if (!(await step('b', 'SAY hello from b', /^SAID /, 'b says hello'))) return;
+  if (!(await step('a', 'WAIT_CAPS', /^CAPS_KNOWN /, "b's capabilities on a"))) return;
 
   // 1–2. Authorize, store, send.
   if (!(await step('a', 'AUTH', /^AUTH_OK /, 'authorization'))) return;
@@ -352,7 +360,14 @@ async function child(name) {
   const lookup = createIdentityLookup(connection);
   manager = await createChatManager({ identity, deviceKeys, statementStore: connection.adapter, lookup, onConnectionStatus: connection.onStatus, username: saved.username });
   // As App.tsx: the manager sends the text of an Ask to resend (M15c).
-  attachments = createAttachmentService({ bulletin: bulletinApi, store: { genesis, mirror: null }, chat: manager });
+  // M20: a bot on the pca transition set (or one that lists no variant 1) gets files over HOP, signed by this identity's Bulletin key.
+  const hopApi = {
+    send: (bytes) => service.sendHop(bytes),
+    fetch: async () => ({ ok: false, reason: 'network', message: 'not used here' }),
+    ack: async () => ({ acked: 0, notFound: 0, failed: 0 }),
+    onProgress: () => () => undefined,
+  };
+  attachments = createAttachmentService({ bulletin: bulletinApi, store: { genesis, mirror: null }, chat: manager, hop: hopApi });
   console.log(`READY username=${saved.username} bulletin=${service.address}`);
 
   const image = drawTestImage();
@@ -464,6 +479,15 @@ async function child(name) {
         if (!contact) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: contact`);
         console.log(`CONTACT ${contact.username} devices=${contact.devices.length}`);
       }
+      if (command === 'SAY') {
+        await manager.sendMessage(otherHex, { type: 'text', text: rest.join(' ') });
+        console.log(`SAID ${rest.join(' ')}`);
+      }
+      if (command === 'WAIT_CAPS') {
+        const rail = await waitFor(async () => ((await db.peerCapabilities.where('peer').equals(otherHex).count()) > 0 ? manager.attachmentRail(otherHex) : null));
+        if (!rail) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the peer's capabilities`);
+        console.log(`CAPS_KNOWN rail=${rail}`);
+      }
       if (command === 'AUTH') {
         const before = await service.allowance();
         // One chunk of the test image: the grant (devnet only) runs when the account has too little.
@@ -563,7 +587,10 @@ async function child(name) {
       if (command === 'FETCH_VIDEO') {
         const { row, results, same } = await fetchAll(rest[0], [rest[1]]);
         const item = row.content.items[0];
-        const matches = item.media.kind === 'video' && item.media.width === VIDEO.width && item.media.height === VIDEO.height && item.media.durationMs === VIDEO.durationMs && item.name === VIDEO.name && item.mime === 'video/webm' && typeof item.blurhash === 'string';
+        // M20: as the 0014 variant the base `VideoFileMeta` carries no frame size (framed 16:9) and whole seconds (kind 250 kept both).
+        const frame = (item.media.width === VIDEO.width && item.media.height === VIDEO.height) || (item.media.width === 16 && item.media.height === 9);
+        const length = item.media.durationMs === VIDEO.durationMs || item.media.durationMs === Math.ceil(VIDEO.durationMs / 1000) * 1000;
+        const matches = item.media.kind === 'video' && frame && length && item.name === VIDEO.name && item.mime === 'video/webm' && typeof item.blurhash === 'string';
         const line = `id=${row.messageId} media=${item.media.kind} ${item.media.width}x${item.media.height} duration_ms=${item.media.durationMs} name=${item.name} poster=blurhash(${item.blurhash?.length ?? 0}) order=${orders.join(',')} sources=${sources.join(',')} sha256=${results[0].sha}`;
         console.log(same && matches ? `VIDEO_OK ${line}` : `FETCH_VIDEO_FAILED ${line} error=${results[0].error}`);
       }
@@ -622,7 +649,8 @@ async function child(name) {
         console.log(`BOT_CONTACT ${username} greeting_before_send=${greeted ? 'yes' : 'none in 45 s'}`);
         const before = new Set((await listMessages(botHex)).filter((row) => row.direction === 'incoming').map((row) => row.messageId));
         await attachments.send(manager, botHex, [preparedImage()], 'What is in this image? Answer in one short sentence.');
-        const sent = (await listMessages(botHex)).filter((row) => row.direction === 'outgoing' && row.content.type === 'attachment').at(-1);
+        const sent = (await listMessages(botHex)).filter((row) => row.direction === 'outgoing' && (row.content.type === 'attachment' || row.content.type === 'richText')).at(-1);
+        console.log(`BOT_RAIL ${sent?.content.type === 'richText' ? 'hop' : 'bulletin'} (spec 0013: the bot's set, or the transition set)`);
         // Only the bot's texts after the attachment message count; one must say what the image shows. A refusal
         // ends the wait at once; a greeting or a welcome does not count and the wait goes on.
         const size = { width: image.width, height: image.height };

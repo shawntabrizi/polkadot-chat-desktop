@@ -5,6 +5,10 @@ import { deriveIdentityKeys } from '../identity/keys';
 
 import {
   BULLETIN_DEVNET_ONLY,
+  DEVNET_GRANT,
+  DEVNET_GRANT_STEPS,
+  dispatchErrorName,
+  grantRefusal,
   RETRY_BACKOFF_MS,
   type StoreAttempt,
   allowanceOf,
@@ -156,5 +160,19 @@ describe('mirror prefixes from a message', () => {
     expect(httpsPrefix('file:///etc/')).toBeNull();
     expect(httpsPrefix('https://user:pw@example.com/')).toBeNull();
     expect(httpsPrefix(null)).toBeNull();
+  });
+});
+
+describe('devnet grant (M20: //Eve refuses 64 MiB)', () => {
+  it('asks for 8 MiB at a time, a few steps at most, so the authorizer budget can still pay', () => {
+    expect(DEVNET_GRANT).toEqual({ transactions: 10, bytes: 8n * 1024n * 1024n });
+    expect(DEVNET_GRANT_STEPS * Number(DEVNET_GRANT.bytes)).toBeGreaterThanOrEqual(25 * 1024 * 1024);
+  });
+
+  it('says in plain words when even 8 MiB is refused', () => {
+    const error = { type: 'Module', value: { type: 'TransactionStorage', value: { type: 'InsufficientAuthorizerBudget' } } };
+    expect(dispatchErrorName(error)).toBe('InsufficientAuthorizerBudget');
+    expect(grantRefusal('failed', dispatchErrorName(error))).toBe('The devnet storage grant was refused: the //Eve authorizer has no budget left, even for 8 MB. Try again later.');
+    expect(grantRefusal('timeout', null)).toBe('The devnet storage grant did not land (timeout).');
   });
 });
