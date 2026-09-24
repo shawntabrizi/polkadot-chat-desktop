@@ -42,4 +42,6 @@ Provisional kind numbers are in the range 240–254 (`kinds.md`); RFC-0003 takes
 | `0009-groups.md` | draft complete 2026-09-23 (fan-out v1) | desktop M12, pca `desktop/rfc-0003` |
 | `0011-groups-v2.md` | draft 2026-09-24 (private groups: epoch key, one statement per message, privacy levels); review in `docs/review/0011-groups-v2.md` | M16 |
 | `0010-bot-directory.md` | draft 2026-09-24 (signed bot cards on a directory topic, kind 251); review in `docs/review/0010-bot-directory.md` | M17 |
-| `0012-attachments.md` | implemented M15a–c (Bulletin transaction storage, kind 250); review in `docs/review/0012-attachments.md`; HOP interop decision pending | M15 |
+| `0012-attachments.md` | implemented M15a–c (Bulletin transaction storage, kind 250); review in `docs/review/0012-attachments.md`; HOP interop decided 2026-09-24 (both paths; see 0013, 0014) | M15 |
+| `0013-capabilities.md` | draft 2026-09-24 (per-device `capabilities`, kind 252: kinds bitmap, file variants, HOP dialects, feature bits; sender uses the intersection over the peer's devices; vector in the file) | M20 |
+| `0014-bulletin-file-variant.md` | draft 2026-09-24 (0012's file as `FileVariant.bulletin = 1` in `richText`; kind 250 retired after one release); vectors in `vectors-0014.md` | M20 |
