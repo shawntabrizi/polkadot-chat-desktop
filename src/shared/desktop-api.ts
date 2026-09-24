@@ -527,6 +527,8 @@ export type DesktopProfilesApi = {
 
 export type DesktopApi = {
   version: string;
+  /** The OS version for a bug report ("15.6" on macOS). */
+  osVersion: string;
   identity: DesktopIdentityApi;
   chain: DesktopChainApi;
   assistant: DesktopAssistantApi;

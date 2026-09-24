@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import { join } from 'node:path';
 
+import { BUILD, windowTitle } from '../shared/appVersion';
+
 import { removeOpenedCopies } from './files';
 import { isHeadless } from './headless';
 import { installInviteLinks, openInviteLink, setInviteLinkWindow } from './inviteLinks';
@@ -9,7 +11,7 @@ import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
 import { loadWindowBounds, rememberWindowBounds } from './windowState';
-import { registerProfilesIpc, startProfile } from './profileSession';
+import { notifyProfileName, registerProfilesIpc, startProfile } from './profileSession';
 import { bundleMoved, reopenWindow } from './reopen';
 
 const SMOKE_TIMEOUT_MS = 30_000;
@@ -57,6 +59,7 @@ function createWindow(smoke: boolean): BrowserWindow {
     // capturePage() screenshots work on the hidden window.
     show: !smoke && !headless && !testReopen,
     paintWhenInitiallyHidden: true,
+    title: windowTitle('Polkadot Chat', notifyProfileName()),
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -69,6 +72,13 @@ function createWindow(smoke: boolean): BrowserWindow {
     },
   });
   installContextMenu(win);
+  // The page titles itself ("(3) Polkadot Chat" with unread); the window adds
+  // the version and, with several profiles, the profile, so the Window menu and
+  // Mission Control tell two windows and two builds apart.
+  win.on('page-title-updated', (event, title) => {
+    event.preventDefault();
+    win.setTitle(windowTitle(title, notifyProfileName()));
+  });
 
   // Message text (assistant replies included) renders links with
   // target=_blank. They open in the system browser, never in a new app window
@@ -158,6 +168,8 @@ void app.whenReady().then(async () => {
     return;
   }
   setMetadataCacheDir(join(app.getPath('userData'), 'metadata'));
+  // macOS About panel: "Version 0.2.1 (abc1234, built 2026-09-24)".
+  app.setAboutPanelOptions({ applicationName: 'Polkadot Chat', applicationVersion: BUILD.version, version: `${BUILD.commit}, built ${BUILD.buildDate}` });
   // Before the window exists, so macOS never gives the app a dock icon or the front.
   if (headless) app.dock?.hide();
   registerIpc(getWindow);

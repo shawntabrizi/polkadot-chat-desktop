@@ -15,6 +15,7 @@ const listen =
 
 const api: DesktopApi = {
   version: process.versions.electron,
+  osVersion: process.getSystemVersion(),
   identity: {
     get: () => ipcRenderer.invoke(IPC.identityGet),
     available: (username, profile) => ipcRenderer.invoke(IPC.identityAvailable, username, profile),

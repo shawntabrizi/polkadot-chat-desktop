@@ -7,6 +7,12 @@ import { defineConfig } from 'vitest/config';
 // its tests under node, with fake-indexeddb from vitest.setup.ts.
 export default defineConfig({
   plugins: [react()],
+  // Fixed stand-ins for the build values electron.vite.config.ts injects (src/shared/appVersion.ts).
+  define: {
+    __APP_VERSION__: JSON.stringify('9.9.9-test'),
+    __APP_COMMIT__: JSON.stringify('abc1234'),
+    __BUILD_DATE__: JSON.stringify('2026-01-02'),
+  },
   // The renderer's aliases (electron.vite.config.ts), so a spec can render a component (M12 streamingFence.spec.ts).
   resolve: {
     alias: {

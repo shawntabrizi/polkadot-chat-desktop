@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
+import { BUILD, bugReportLine } from '../../shared/appVersion';
 import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
@@ -35,6 +36,7 @@ import { StorageSettings } from './StorageSettings';
 import { type DemoRuntime, DemoSettings, useDemoBots } from './DemoBots';
 import { useChatActions } from './chatActions';
 import { Checkbox, Switch } from './controls';
+import { createCopyFlag } from './copyFlag';
 import { ENGINE_LABELS, TOOL_CHOICES } from './engines';
 import { formatDay, plainError, toHex } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -761,6 +763,35 @@ const AgentSection = ({ profileId }: { profileId: NetworkProfileId }) => {
   );
 };
 
+/** The version at the foot of Settings; Copy gives the line a bug report needs. */
+const VersionFooter = () => {
+  const [copied, setCopied] = useState(false);
+  const [flag] = useState(() => createCopyFlag(setCopied));
+  useEffect(() => () => flag.dispose(), [flag]);
+  const copy = async () => {
+    const desktop = window.desktop;
+    const profileCount = desktop?.profiles ? (await desktop.profiles.state()).profiles.length : 1;
+    await navigator.clipboard.writeText(bugReportLine({ osVersion: desktop?.osVersion ?? 'unknown', profileCount }));
+    flag.copied();
+  };
+  return (
+    <div className="flex items-center justify-between gap-2 px-5 py-2">
+      <p className="text-caption text-fg-tertiary" data-testid="app-version">
+        Version {BUILD.version} ({BUILD.commit})
+      </p>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="rounded-medium text-label-m font-normal"
+        onClick={() => void copy().catch((cause: unknown) => console.warn('[settings] copy failed', cause))}
+      >
+        <Copy aria-hidden />
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+    </div>
+  );
+};
+
 /** Settings fill the right pane: sections as containers on the page surface. */
 export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
@@ -791,6 +822,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
       <KeyboardSection />
       {submissions ? <DiagnosticsSection submissions={submissions} /> : null}
       <DangerSection onReset={onReset} />
+      <VersionFooter />
     </div>
   </div>
 );
