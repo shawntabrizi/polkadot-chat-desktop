@@ -27,6 +27,8 @@
     "e2e:meter": "node scripts/e2e-meter.mjs",
     "e2e:flip": "node scripts/e2e-flip.mjs",
     "e2e:group": "node scripts/e2e-group.mjs",
+    "e2e:demo": "node scripts/e2e-demo.mjs",
+    "e2e:pay": "node scripts/e2e-pay.mjs",
     "probe:statements": "node scripts/probe-statements.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },

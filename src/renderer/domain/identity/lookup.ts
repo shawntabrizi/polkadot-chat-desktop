@@ -171,3 +171,46 @@ export const fromRepository = (repository: IdentityRepository): IdentityLookup =
     return { accountId, username: identity.fullUsername ?? identity.liteUsername, chatPublicKey };
   },
 });
+
+/** The chain pads a lite number to two digits (`name.6` → `name.06`). */
+export const canonicalUsername = (username: string): string =>
+  username
+    .trim()
+    .replace(/^@/, '')
+    .toLowerCase()
+    .replace(/^([a-z0-9]+)\.(\d)$/, '$1.0$2');
+
+/** Username → identity account (`null`: no one owns the name on this network). */
+export type UsernameResolver = (username: string) => Promise<Uint8Array | null>;
+
+type UsernameOwnerEntry = { getValue: (key: Uint8Array, options: { at: 'best' }) => Promise<string | undefined> };
+
+/**
+ * M12i: an exact username lookup on the People chain
+ * (`Resources.UsernameOwnerOf`, as the e2e scripts read it), at the best
+ * block. Not the backend search: that one mines a proof of work per query,
+ * rate-limits, and matches prefixes. A read that fails throws; only a name
+ * with no owner is `null`.
+ */
+export const createUsernameResolver = ({ lazyClient, switchEndpoint }: LookupConnection): UsernameResolver => {
+  const accountCodec = AccountId();
+  const entry = (): UsernameOwnerEntry =>
+    (lazyClient.getClient().getUnsafeApi().query as unknown as { Resources: { UsernameOwnerOf: UsernameOwnerEntry } }).Resources.UsernameOwnerOf;
+  let runtime: Promise<unknown> | null = null;
+  const ready = (): Promise<unknown> => {
+    runtime ??= awaitBestRuntime(lazyClient.getClient()).catch((error: unknown) => {
+      runtime = null;
+      throw error;
+    });
+    return runtime;
+  };
+  return async username => {
+    const key = new TextEncoder().encode(canonicalUsername(username));
+    const owner = await retryOnNextEndpoint(async () => {
+      await ready();
+      return withTimeout(entry().getValue(key, { at: 'best' }), READ_TIMEOUT_MS, 'username lookup');
+    }, switchEndpoint);
+    if (typeof owner !== 'string' || owner === '') return null;
+    return accountCodec.enc(owner);
+  };
+};

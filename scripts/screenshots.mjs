@@ -107,6 +107,23 @@
 // M12f room-meter.png (also a fixture shot): a meter bot's room with the
 // header's one number (balance − pending) and its tooltip open.
 //
+// M12g (fixture shots too): send-pas.png is "+" → Send PAS in a fictional
+// person's room with the amount row filled in. room-request.png is that
+// person's request for 0.5 PAS as the payer sees it: the tx button "Pay 0.5
+// PAS" with Decline beside it (never pressed; its call data is a placeholder,
+// so the app would refuse to sign it anyway). room-request-paid.png is the
+// requester's side of the last `npm run e2e:pay` run (.agent-runs/pay-last.json,
+// the seeded identity must be its person a): the own request and the payer's
+// reference with the real hash and block, so "Paid" comes from the app's own
+// check of that extrinsic's transfer on devnet Asset Hub.
+//
+// M12i (fixture shots): demo-onboarding.png is "Meet the demo bots" as it
+// opens after sign-up (the mark sign-up sets, then a reload), settings-demo.png
+// Settings › Demo. Nothing is pressed, so no request goes out. Two bots the
+// seeded identity has no chat with get a fixture pending request (a fictional
+// account), one just sent ("Sent") and one a minute old ("No answer yet");
+// bots it already chats with show "Chatting".
+//   npm run screenshots -- --only demo-onboarding,settings-demo
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
 // The seeded identity is a plain identity.json from the Node scripts; a tiny
@@ -129,7 +146,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const electronBin = join(root, 'node_modules/.bin/electron');
@@ -155,7 +172,10 @@ const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--on
 const only = onlyArg ? new Set(onlyArg.split(',').map(name => name.trim().replace(/\.png$/, '')).filter(Boolean)) : null;
 const wanted = name => only === null || only.has(name);
 // M12e: shots taken from local fixture rows, with no network flow before them.
-const MANAGE_SHOTS = ['chat-menu', 'archived', 'settings-privacy', 'room-meter'];
+const MANAGE_SHOTS = ['chat-menu', 'archived', 'settings-privacy', 'room-meter', 'send-pas', 'room-request', 'room-request-paid'];
+// M12i: fixture shots too, taken at the end of manageShots.
+const DEMO_SHOTS = ['demo-onboarding', 'settings-demo'];
+MANAGE_SHOTS.push(...DEMO_SHOTS);
 const SEEDED_SHOTS = ['chats', 'room', 'room-deleted', 'room-buttons', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'settings-diagnostics', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results'];
 const manageOnly = only !== null && !SEEDED_SHOTS.some(name => only.has(name));
 if (only) {
@@ -385,6 +405,152 @@ const unseedMeterFixture = app =>
     };
   })`);
 
+/**
+ * M12g: rows for the payment shots, built with the app's own payments module
+ * (so the request bytes are what the app sends). A person asks us for 0.5
+ * PAS (the payer's view), and the last e2e:pay request with its real payment
+ * (the requester's view), when that run's person a is the seeded identity.
+ */
+const PAY_LAST = join(root, '.agent-runs', 'pay-last.json');
+const paymentFixture = async seededAccountHex => {
+  const { register } = await import('tsx/esm/api');
+  register();
+  const pay = await import(pathToFileURL(join(root, 'src/renderer/domain/chain/payments.ts')).href);
+  const chainId = METER_FIXTURE.info.balance.chainId;
+  const now = Date.now();
+  // Display only: never a real transfer (requestProblem refuses to pay it).
+  const placeholder = new Uint8Array([0x0a, 0x03]);
+  const keyboard = (intent, amount, note) =>
+    pay.requestButtons(intent, amount, note).rows.map(row => row.map(button => ({ label: button.label, action: { kind: 'tx', intent: Array.from(button.action.value) } })));
+  const askAmount = 5_000_000_000n;
+  const asker = { account: `0x${'c8'.repeat(32)}`, username: 'rubyfinch.23', at: now - 10 * 60_000 };
+  const askIntent = pay.transferIntent({ chainId, callData: placeholder, amount: askAmount, title: pay.requestTitle(asker.username, askAmount), description: 'Concert tickets', expiresAt: now + pay.REQUEST_TTL_MS });
+  const ask = { ...asker, text: pay.requestButtons(askIntent, askAmount, 'Concert tickets').text, rows: keyboard(askIntent, askAmount, 'Concert tickets') };
+  const last = existsSync(PAY_LAST) ? JSON.parse(readFileSync(PAY_LAST, 'utf8')) : null;
+  let paid = null;
+  let paidMissing = last ? null : 'no .agent-runs/pay-last.json: run npm run e2e:pay first';
+  if (last && last.a.accountHex !== seededAccountHex) paidMissing = `pay-last.json is for ${last.a.username}, not the seeded identity`;
+  if (last && !paidMissing) {
+    const amount = BigInt(last.amount);
+    const intent = pay.transferIntent({ chainId, callData: placeholder, amount, title: pay.requestTitle(last.a.username, amount), description: last.note, expiresAt: now + pay.REQUEST_TTL_MS });
+    paid = {
+      account: last.b.accountHex,
+      username: last.b.username,
+      at: now - 30 * 60_000,
+      requestId: last.requestId,
+      text: pay.requestButtons(intent, amount, last.note).text,
+      rows: keyboard(intent, amount, last.note),
+      reference: { chainId, hash: last.hash, status: 'inBlock', block: last.block, note: last.paymentNote, intentMessageId: last.requestId },
+    };
+  }
+  return { ask, paid, paidMissing };
+};
+
+const seedPaymentFixture = (app, fixture) =>
+  app.evaluate(`new Promise((done, fail) => {
+    const f = ${JSON.stringify(fixture)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages'], 'readwrite');
+      const bytes = b => new Uint8Array(32).fill(b);
+      const rows = rs => rs.map(r => r.map(b => ({ label: b.label, action: { kind: 'tx', intent: new Uint8Array(b.action.intent) } })));
+      // One made-up device each, so the header shows no "no device" warning; unread 0, so no read receipt goes out.
+      const person = (p, preview, last) => {
+        tx.objectStore('contacts').put({ accountId: p.account, username: p.username, chatPublicKey: bytes(7), devices: [{ statementAccountId: bytes(8), encryptionPublicKey: bytes(9) }], createdAt: p.at, updatedAt: p.at });
+        tx.objectStore('rooms').put({ peerAccountId: p.account, unreadCount: 0, lastMessageAt: last, lastPreview: preview, createdAt: p.at, updatedAt: p.at });
+      };
+      person(f.ask, f.ask.text, f.ask.at + 1);
+      tx.objectStore('messages').put({ messageId: 'fixture-pay-hello', peerAccountId: f.ask.account, timestamp: f.ask.at, direction: 'incoming', status: 'received',
+        content: { type: 'text', text: 'Got us two seats for Saturday!' }, reactions: [], editedAt: null });
+      tx.objectStore('messages').put({ messageId: 'fixture-pay-ask', peerAccountId: f.ask.account, timestamp: f.ask.at + 1, direction: 'incoming', status: 'received',
+        content: { type: 'buttons', text: f.ask.text, rows: rows(f.ask.rows), oneShot: false, pressed: null }, reactions: [], editedAt: null });
+      if (f.paid) {
+        person(f.paid, 'Paid', f.paid.at + 60000);
+        tx.objectStore('messages').put({ messageId: f.paid.requestId, peerAccountId: f.paid.account, timestamp: f.paid.at, direction: 'outgoing', status: 'delivered',
+          content: { type: 'buttons', text: f.paid.text, rows: rows(f.paid.rows), oneShot: false, pressed: null }, reactions: [], editedAt: null });
+        tx.objectStore('messages').put({ messageId: 'fixture-pay-ref', peerAccountId: f.paid.account, timestamp: f.paid.at + 60000, direction: 'incoming', status: 'received',
+          content: { type: 'transactionReference', reference: f.paid.reference }, reactions: [], editedAt: null });
+      }
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+const unseedPaymentFixture = (app, fixture) =>
+  app.evaluate(`new Promise((done, fail) => {
+    const f = ${JSON.stringify(fixture)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages'], 'readwrite');
+      for (const p of [f.ask, f.paid].filter(Boolean)) {
+        tx.objectStore('contacts').delete(p.account);
+        tx.objectStore('rooms').delete(p.account);
+      }
+      for (const id of ['fixture-pay-hello', 'fixture-pay-ask', 'fixture-pay-ref', f.paid?.requestId].filter(Boolean)) tx.objectStore('messages').delete(id);
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+/** Opens the chat row whose text includes `username`. */
+const openRow = async (app, username) => {
+  const row = `[...document.querySelectorAll('[data-testid=chat-row]')].find(r => r.textContent.includes(${JSON.stringify(username)}))`;
+  if (!(await app.waitFor(`!!${row}`, 60_000))) throw new Error(`${username} is not in the list`);
+  await app.evaluate(`${row}.click(); true`);
+  if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(username)}`, 20_000))) throw new Error(`the room with ${username} did not open`);
+};
+
+/** M12g: send-pas, room-request, room-request-paid. */
+const paymentShots = async (app, shot, seededAccountHex) => {
+  const fixture = await paymentFixture(seededAccountHex);
+  await seedPaymentFixture(app, fixture);
+  await app.evaluate('location.reload(); true');
+  await sleep(1000);
+  await shot('room-request', async () => {
+    await openRow(app, fixture.ask.username);
+    if (!(await app.waitFor(`${app.exists('[data-testid=keyboard-button][data-action=tx]')} && ${app.exists('[data-testid=request-decline]')}`, 20_000))) throw new Error('no Pay and Decline under the request');
+    log('request:', JSON.stringify(await app.evaluate(`[...document.querySelectorAll('[data-testid=message-incoming]')].pop().innerText.replace(/\\s+/g, ' ')`)));
+  });
+  await shot('send-pas', async () => {
+    await openRow(app, fixture.ask.username);
+    if (!(await app.waitFor(app.exists('[data-testid=composer-plus]'), 30_000))) throw new Error('no "+" in the composer (Asset Hub not open?)');
+    await pressOn(app, '[data-testid=composer-plus]');
+    if (!(await app.waitFor(app.exists('[data-testid=plus-send-pas]'), 10_000))) throw new Error('the "+" menu did not open');
+    await app.click('[data-testid=plus-send-pas]');
+    if (!(await app.waitFor(app.exists('[data-testid=payment-row][data-kind=send]'), 10_000))) throw new Error('no amount row');
+    await app.type('[data-testid=payment-amount]', '1.5');
+    await app.type('[data-testid=payment-note]', 'Your ticket');
+    await app.waitFor(`!document.querySelector('[data-testid=payment-submit]').disabled`, 5_000);
+  });
+  // Not a shot: Review opens the signing strip after the dry-run (fee, signer,
+  // balance after); Cancel closes it. Nothing is signed.
+  if (wanted('send-pas') && (await app.evaluate(app.exists('[data-testid=payment-submit]')))) {
+    await app.click('[data-testid=payment-submit]');
+    if (await app.waitFor(`document.querySelector('[data-testid=tx-strip]')?.dataset.phase === 'ready'`, 60_000)) {
+      log('send strip:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=tx-strip]').innerText.replace(/\\s+/g, ' ')`)));
+    } else {
+      const strip = await app.evaluate(`document.querySelector('[data-testid=tx-strip]')?.innerText.replace(/\\s+/g, ' ') ?? 'no strip'`);
+      missing.push(`send-pas Review check (the strip did not become ready: ${JSON.stringify(strip)})`);
+    }
+    await app.clickText('[data-testid=tx-strip] button', 'Cancel');
+  }
+  // The amount row is local state: leaving the room drops it.
+  await app.key('Escape', 'Escape', { windowsVirtualKeyCode: 27 });
+  await shot('room-request-paid', async () => {
+    if (!fixture.paid) throw new Error(fixture.paidMissing);
+    await openRow(app, fixture.paid.username);
+    // The app reads the extrinsic's Balances.Transfer on the chain before it says "Paid".
+    if (!(await app.waitFor(app.exists('[data-testid=payment-request][data-state=paid]'), 60_000))) {
+      const state = await app.evaluate(`document.querySelector('[data-testid=payment-request-state]')?.innerText ?? 'no request bubble'`);
+      throw new Error(`the request did not turn paid: ${JSON.stringify(state)}`);
+    }
+    log('paid:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=payment-request]').innerText.replace(/\\s+/g, ' ')`)), 'reference:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=tx-reference]')?.innerText.replace(/\\s+/g, ' ') ?? ''`)));
+  });
+  await unseedPaymentFixture(app, fixture);
+};
+
 /** Writes the fixture (idempotent: fixed keys) into the app's IndexedDB. */
 const seedFixture = app =>
   app.evaluate(`new Promise((done, fail) => {
@@ -440,7 +606,7 @@ const pressOn = async (app, selector) => {
 };
 
 /** The three M12e shots on an open chat screen. `shot` records a miss and goes on. */
-const manageShots = async (app, shot) => {
+const manageShots = async (app, shot, seededAccountHex) => {
   await seedFixture(app);
   // Dexie does not see writes made outside it: a reload reads them.
   await app.evaluate('location.reload(); true');
@@ -500,6 +666,64 @@ const manageShots = async (app, shot) => {
     );
     await unseedMeterFixture(app);
   }
+  if (['send-pas', 'room-request', 'room-request-paid'].some(wanted)) await paymentShots(app, shot, seededAccountHex);
+  if (DEMO_SHOTS.some(wanted)) await demoShots(app, shot);
+};
+
+/** M12i: fixture pending requests to two demo bots with no state yet (fixed ids, removed after). */
+const DEMO_FIXTURE_IDS = ['fixture-demo-sent', 'fixture-demo-silent'];
+const writeDemoFixture = (app, rows) =>
+  app.evaluate(`new Promise((done, fail) => {
+    const rows = ${JSON.stringify(rows)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['requests'], 'readwrite');
+      for (const r of rows) {
+        if (r.remove) { tx.objectStore('requests').delete(r.requestId); continue; }
+        tx.objectStore('requests').put({ requestId: r.requestId, peerAccountId: r.accountId, peerUsername: r.username, peerChatPublicKey: new Uint8Array(32).fill(7),
+          direction: 'outgoing', status: 'pending', welcomeMessage: 'Hi!', timestamp: r.at, senderDevice: null, createdAt: r.at });
+      }
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+/** M12i: demo-onboarding and settings-demo. Nothing is pressed: no request leaves the app. */
+const demoShots = async (app, shot) => {
+  const rowsReady = `document.querySelectorAll('[data-testid=demo-row]').length > 0`;
+  // The mark sign-up sets; the chat screen shows the step once after a reload.
+  await app.evaluate(`localStorage.setItem('pcd-demo-intro', '1'); location.reload(); true`);
+  await sleep(1000);
+  if (!(await app.waitFor(`${app.exists('[data-testid=demo-intro]')} && ${rowsReady}`, 60_000))) throw new Error('"Meet the demo bots" did not open after the sign-up mark');
+  // Two bots with no status yet get a fixture request (after the live rows loaded).
+  await sleep(1500);
+  const free = await app.evaluate(`[...document.querySelectorAll('[data-testid=demo-row]')].filter(r => !r.querySelector('[data-testid=demo-status]')).map(r => r.dataset.username)`);
+  const fixture = free.slice(0, 2).map((username, index) => ({
+    requestId: DEMO_FIXTURE_IDS[index],
+    accountId: `0x${(index === 0 ? 'd1' : 'd2').repeat(32)}`,
+    username,
+    // "Sent" lasts 15 s from its time; the reload and the chat start take a few of them.
+    at: index === 0 ? Date.now() + 10_000 : Date.now() - 60_000,
+  }));
+  log('demo fixture requests:', fixture.map(row => row.username).join(', ') || 'none (every bot has a state)');
+  await writeDemoFixture(app, fixture);
+  await app.evaluate(`localStorage.setItem('pcd-demo-intro', '1'); location.reload(); true`);
+  await sleep(1000);
+  await shot('demo-onboarding', async () => {
+    if (!(await app.waitFor(`${app.exists('[data-testid=demo-intro]')} && ${rowsReady}`, 60_000))) throw new Error('"Meet the demo bots" did not open again');
+    // The button reads "Start chats with all" once the chat manager runs.
+    if (!(await app.waitFor(`!document.querySelector('[data-testid=demo-start-all]').disabled`, 60_000))) throw new Error('the chat did not start (the button stays disabled)');
+    log('demo intro:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=demo-intro]').innerText.replace(/\\s+/g, ' ')`)));
+  });
+  if (await app.evaluate(app.exists('[data-testid=demo-skip]'))) await app.click('[data-testid=demo-skip]');
+  await shot('settings-demo', async () => {
+    await app.click('[aria-label=Settings]');
+    if (!(await app.waitFor(`${app.exists('[data-testid=demo-settings]')} && document.querySelectorAll('[data-testid=demo-settings] [data-testid=demo-row]').length > 0`, 20_000))) throw new Error('no Demo section in Settings');
+    await app.evaluate(`document.querySelector('[data-testid=demo-settings]').closest('section').scrollIntoView({ block: 'center' }); true`);
+    log('settings demo:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=demo-settings]').innerText.replace(/\\s+/g, ' ')`)));
+  });
+  await writeDemoFixture(app, DEMO_FIXTURE_IDS.map(requestId => ({ requestId, remove: true })));
 };
 
 // ── Sign-up (a fresh profile per theme) ──────────────────────────────────
@@ -585,7 +809,7 @@ app.whenReady().then(() => {
       try {
         await app.setTheme(theme);
         if (!(await app.waitFor(app.exists('[data-testid=username]'), 60_000))) throw new Error('the chat screen did not open');
-        await manageShots(app, shot);
+        await manageShots(app, shot, source.accountHex);
       } catch (error) {
         missing.push(`${theme}: ${error.message}`);
       } finally {
@@ -1286,7 +1510,7 @@ app.whenReady().then(() => {
       });
 
       // M12e, last: the fixture rows would show in the shots above.
-      if (MANAGE_SHOTS.some(wanted)) await manageShots(app, shot);
+      if (MANAGE_SHOTS.some(wanted)) await manageShots(app, shot, source.accountHex);
     } catch (error) {
       missing.push(`${theme}: ${error.message}`);
     } finally {

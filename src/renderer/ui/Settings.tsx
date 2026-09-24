@@ -29,6 +29,7 @@ import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, Assis
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
 import { PeerAvatar } from './Avatar';
+import { type DemoRuntime, DemoSettings, useDemoBots } from './DemoBots';
 import { useChatActions } from './chatActions';
 import { Checkbox, Switch } from './controls';
 import { ENGINE_LABELS, TOOL_CHOICES } from './engines';
@@ -45,6 +46,8 @@ type Props = {
   assistantApi: DesktopAssistantApi | null;
   /** The chat manager's submission counts (M12c); null while chat starts. */
   submissions: ChatManager['submissions'] | null;
+  /** M12i Settings › Demo; null while chat starts. */
+  demoRuntime: DemoRuntime | null;
 };
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -602,8 +605,19 @@ const DangerSection = ({ onReset }: Pick<Props, 'onReset'>) => {
   );
 };
 
+/** M12i: the demo bots; hidden on a network that has none (Paseo). */
+const DemoSection = ({ profileId, runtime }: { profileId: NetworkProfileId; runtime: DemoRuntime | null }) => {
+  const bots = useDemoBots(profileId);
+  if (bots.length === 0) return null;
+  return (
+    <Section title="Demo">
+      <DemoSettings profileId={profileId} bots={bots} runtime={runtime} />
+    </Section>
+  );
+};
+
 /** Settings fill the right pane: sections as containers on the page surface. */
-export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions }: Props) => (
+export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
     <div className="mx-auto flex max-w-2xl flex-col gap-2 pb-2">
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
@@ -618,6 +632,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
           <p className="text-body-m text-fg-secondary">Available only inside Polkadot Chat Desktop.</p>
         </Section>
       )}
+      <DemoSection profileId={profileId} runtime={demoRuntime} />
       <KeyboardSection />
       {submissions ? <DiagnosticsSection submissions={submissions} /> : null}
       <DangerSection onReset={onReset} />

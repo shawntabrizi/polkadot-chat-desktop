@@ -135,3 +135,19 @@ Write the question, what you did meanwhile, and the date.
 - **Spec 0008 text.** The Recipient rule says "latest `version` wins". With v3 the bot resends the same version with a new `pending`, so the client must let an equal version replace the stored one (vectors-0008c says this; I cannot edit `docs/spec/*.md`). Please change the spec text to "a `version` ≥ the stored one replaces it".
 - **A short dip after a charge.** The charge can show in a best block a few seconds before the statement with the charge's reference and the botInfo with pending 0 arrives. In that window the header shows `new balance − old pending` (too low, never below 0). A fix would need the bot to tell the charged amount ahead of the block, or the client to hide the number while a charge is known to be in flight. Is the short dip acceptable?
 - **Forward to the Assistant does not open the Assistant.** The toast says "Sent to the Assistant" and the reply streams in its room. Should the forward also open the Assistant room, so the answer is seen at once?
+
+## M12g (2026-09-24)
+
+- **Spec 0007 text.** Please add the two note conventions to spec 0007 (I cannot edit `docs/spec/*.md`): a request's payment starts its `note` with `req:<request messageId>`, then a space and the words; a direct send's note is `Sent <amount> PAS[ · <words>]`. pca bots that answer a request would need the same rule.
+- **The incoming send's amount is the note's.** "bob.02 sent you 1 PAS" reads the amount from the note (the peer's claim), as every reference shows its note. Only a request's "Paid" is checked on the chain. Should the incoming send bubble also wait for the chain check (one more `transfersOf` per incoming send)?
+- **The existential-deposit rule now applies to every signed intent**, bot buttons too: a Meter top-up that would leave less than 0.01 PAS is refused before the chain's test. I think this is right (no transaction of this app should reap the account). Agree?
+- **A second payment of the same request.** Pay turns "Paid" and disabled once our own reference is in a block, so this client cannot pay twice. A second device of the payer, or a phone, could. The requester then shows "Paid" once; the second transfer is a plain reference bubble. Is that enough for v1?
+- **The tx button's label repeats the amount.** "Pay 0.5 PAS" plus the spec 0007 caption "0.5 PAS". The milestone names the label "Pay 1 PAS" and the rules ask for the amount beside the label. Keep both, or label the request button "Pay"?
+- **A foreign M12i change is in the working tree.** While I worked, another agent added demo-bot files (`src/main/demoManifest.ts`, `src/shared/demoBots.ts`) and hunks in `ipc.ts`, `preload/index.ts` and `desktop-api.ts`. I committed only my hunks and left theirs uncommitted in the tree.
+
+## M12i (2026-09-24)
+
+- **Tags.** I tagged pirate and guide `assistant`, meter `payments`, flip `game`, and faucet, echo and colour `utility`. The milestone gives the taglines but not the tags. Change any?
+- **The step shows once.** The mark is cleared when "Meet the demo bots" opens, so quitting during the step does not bring it back. Settings › Demo has the same button. Is once right, or should it come back until the person presses Start or Skip?
+- **Two wordings for one pending request.** The demo row says "Sent" for 15 s and then "No answer yet"; the chat list row (M12e) says "No answer yet · sent just now" from the first second. Should the chat list also say "Sent" for the first seconds?
+- **Remove demo chats keeps the contacts** (M12e delete). A later "Start chat" then sends "Hi!" as a message, not a request. Should "Remove" also forget the contacts, so the next start is a fresh request?

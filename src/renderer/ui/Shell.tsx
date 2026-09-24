@@ -21,7 +21,7 @@ import { applyDripStatus, syncDrip } from '../domain/faucet/dripFlow';
 import { FAUCET_PEER } from '../domain/faucet/faucet';
 import type { TxRunner } from '../domain/chain/transactions';
 import type { ChatManager } from '../domain/chat/manager';
-import type { IdentityLookup } from '../domain/identity/lookup';
+import type { IdentityLookup, UsernameResolver } from '../domain/identity/lookup';
 import type { SearchResult } from '../domain/identity/search';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { Badge } from '@/components/ui/badge';
@@ -34,6 +34,7 @@ import type { DesktopAssistantApi } from '../../shared/desktop-api';
 import { PeerAvatar } from './Avatar';
 import { ChatList, type ChatSelection, type ChatTarget, useChatOrder, useForwardTargets } from './ChatList';
 import { ChatActionsProvider, useChatActionsValue, usePending } from './chatActions';
+import { DemoIntro, takeDemoIntro } from './DemoBots';
 import { IncomingRequestRoom, OutgoingRequestRoom, RequestsPanel, usePendingIncoming } from './Requests';
 import { BalanceChip, Pocket } from './Pocket';
 import { Room } from './Room';
@@ -56,7 +57,9 @@ export type Selection =
   /** M11b: the Pocket (balances and address), from the footer chip. */
   | { kind: 'pocket' }
   /** M12: "New group" from the New chat panel. */
-  | { kind: 'newGroup' };
+  | { kind: 'newGroup' }
+  /** M12i: "Meet the demo bots", once after sign-up. */
+  | { kind: 'demoIntro' };
 
 type LeftView = 'chats' | 'requests';
 
@@ -65,7 +68,7 @@ type Props = {
   identity: UserIdentity;
   profileId: NetworkProfileId;
   /** Null while the chat manager starts. */
-  runtime: { manager: ChatManager; lookup: IdentityLookup; transactions: TxRunner | null } | null;
+  runtime: { manager: ChatManager; lookup: IdentityLookup; resolveUsername: UsernameResolver; transactions: TxRunner | null } | null;
   assistant: AssistantChat | null;
   assistantApi: DesktopAssistantApi | null;
   connection: ConnectionSnapshot;
@@ -107,7 +110,7 @@ const EmptyRoom = ({ title, text }: { title: string; text: string }) => (
 
 export const Shell = ({ username, identity, profileId, runtime, assistant, assistantApi, connection, onReset }: Props) => {
   const [left, setLeft] = useState<LeftView>('chats');
-  const [chosen, setSelection] = useState<Selection>({ kind: 'none' });
+  const [chosen, setSelection] = useState<Selection>(() => (takeDemoIntro() ? { kind: 'demoIntro' } : { kind: 'none' }));
   const [search, setSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [searchFocus, setSearchFocus] = useState(0);
@@ -301,6 +304,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             manager={runtime.manager}
             transactions={runtime.transactions}
             self={{ accountId: identity.identityAccountId, username }}
+            assetHubChainId={NETWORK_PROFILES[profileId].assetHub?.genesis ?? null}
             connection={connection}
             scrollToMessageId={selection.jump?.messageId ?? null}
             scrollRequest={selection.jump?.seq ?? 0}
@@ -349,6 +353,17 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               setLeft('chats');
               exitSearch();
               setSelection({ kind: 'room', peer: groupPeerOf(groupId) });
+            }}
+          />
+        );
+      case 'demoIntro':
+        return (
+          <DemoIntro
+            profileId={profileId}
+            runtime={runtime}
+            onDone={() => {
+              setLeft('chats');
+              setSelection({ kind: 'none' });
             }}
           />
         );
@@ -473,6 +488,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               onReset={onReset}
               assistantApi={assistantApi}
               submissions={runtime?.manager.submissions ?? null}
+              demoRuntime={runtime}
             />
           </main>
         ) : selection.kind === 'pocket' ? (

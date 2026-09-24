@@ -13,7 +13,7 @@ import { forwardCounts } from '../domain/chat/submissions';
 import { ensureFaucet } from '../domain/faucet/faucet';
 import type { DeviceKeys } from '../domain/device/keys';
 import { getDeviceKeys } from '../domain/device/repository';
-import { type IdentityLookup, createIdentityLookup } from '../domain/identity/lookup';
+import { type IdentityLookup, type UsernameResolver, createIdentityLookup, createUsernameResolver } from '../domain/identity/lookup';
 import { ensureSelfIdentitySeeded } from '../domain/identity/selfIdentity';
 import { type UserIdentity, readUserIdentity } from '../domain/identity/userIdentity';
 import { Toaster } from '@/components/ui/sonner';
@@ -21,6 +21,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 
 import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
 
+import { markDemoIntro } from './DemoBots';
 import { Shell } from './Shell';
 import { SignUp } from './SignUp';
 import { plainError, toSs58 } from './format';
@@ -48,7 +49,7 @@ const start = async (identityApi: DesktopIdentityApi): Promise<Boot | null> => {
   return { username: summary.username, deviceKeys, identity, profileId: summary.profile };
 };
 
-type Runtime = { manager: ChatManager; lookup: IdentityLookup; transactions: TxRunner | null };
+type Runtime = { manager: ChatManager; lookup: IdentityLookup; resolveUsername: UsernameResolver; transactions: TxRunner | null };
 
 const Centered = ({ children }: { children: ReactNode }) => (
   <main className="flex min-h-screen items-center justify-center p-4 text-center">{children}</main>
@@ -132,6 +133,7 @@ export const App = () => {
       if (active) setConnection(tracker.snapshot());
     });
     const lookup = createIdentityLookup(connection);
+    const resolveUsername = createUsernameResolver(connection);
     createChatManager({
       identity,
       deviceKeys,
@@ -152,7 +154,7 @@ export const App = () => {
         // M12e: the Diagnostics totals live in main, so a reload does not zero them.
         const diagnostics = window.desktop?.diagnostics;
         stopForward = diagnostics ? forwardCounts(created.submissions, delta => diagnostics.add(delta)) : () => undefined;
-        setRuntime({ manager: created, lookup, transactions });
+        setRuntime({ manager: created, lookup, resolveUsername, transactions });
       })
       .catch((cause: unknown) => {
         console.error('[app] chat manager failed to start', cause);
@@ -179,6 +181,8 @@ export const App = () => {
     } else {
       toast(`Signed up as ${result.username}`, { description: result.finalized ? 'Confirmed.' : 'Confirmed, finalizing.' });
     }
+    // M12i: the chat screen that follows shows "Meet the demo bots" once.
+    markDemoIntro();
     setNeedsSignUp(false);
     setStartCount(count => count + 1);
   };

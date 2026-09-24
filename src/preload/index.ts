@@ -44,6 +44,8 @@ const api: DesktopApi = {
     balance: () => ipcRenderer.invoke(IPC.chainBalance),
     onBestBlock: listen(IPC.chainBestBlock),
     faucetDrip: chainId => ipcRenderer.invoke(IPC.faucetDrip, chainId),
+    transferCall: (to, amount) => ipcRenderer.invoke(IPC.chainTransferCall, to, amount),
+    transfersOf: (hash, block) => ipcRenderer.invoke(IPC.chainTransfersOf, hash, block),
   },
   assistant: {
     getSettings: () => ipcRenderer.invoke(IPC.assistantGetSettings),
@@ -73,6 +75,9 @@ const api: DesktopApi = {
     },
     get: () => ipcRenderer.invoke(IPC.diagnosticsGet),
     onChanged: listen(IPC.diagnosticsChanged),
+  },
+  demo: {
+    bots: profile => ipcRenderer.invoke(IPC.demoBots, profile),
   },
 };
 

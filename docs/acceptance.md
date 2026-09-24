@@ -2647,3 +2647,77 @@ I looked at the day PNG of this run (header "with Meter: 4.9 PAS (~49 replies)",
 ### git status --short
 
 This file is part of the commit, so the result is in the M12f hand-off report.
+
+## M12i (2026-09-24)
+
+### npm run check
+
+Green after the load dropped (23:31):
+
+```
+ Test Files  68 passed (68)
+      Tests  566 passed (566)
+check:tokens: clean (155 files)
+```
+
+Four earlier runs, while the machine ran at load average 32–39 (a runaway process, killed by the coordinator at 23:30), failed only the two timing tests of `src/renderer/domain/chat/messages.spec.ts` (a 5 s timeout over 500 deletions, a 50 ms search budget); they failed the same way with the M12i specs excluded and passed alone. No threshold was changed.
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) npm run smoke
+
+```
+✓ built in 977ms
+SMOKE_OK
+```
+
+### npm run e2e:demo
+
+A fresh identity registered in the run (9 lines "Waiting for the network" left out):
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:demo
+> node scripts/e2e-demo.mjs
+identity register pcddemoiykp on devnet
+  Creating keys
+  Claiming username
+identity registered pcddemoiykp.37 confirmed=true finalized=false at=32.5s
+SELF 0x7ce34787c8509eb1992de0690bdcec22fa7551b34d3bf336ec99b702137f9054 pcddemoiykp.37
+[ws] connected
+people best block #7057537
+DEMO_START bots=pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05 opener="Hi!"
+DEMO_STEP pcdpirate.81 sent at=35.8s
+DEMO_STEP pcdguide.70 sent at=36.9s
+DEMO_STEP pcdmeter.01 sent at=37.9s
+DEMO_STEP pcdflip.44 sent at=39.0s
+DEMO_STEP pcdfaucet.77 sent at=40.1s
+DEMO_STEP pcdpeer.47 sent at=41.2s
+DEMO_STEP pcdcolor.05 sent at=42.2s
+RUN1 sent=7 of 7 at=42.2s
+ACCEPTED pcdpirate.81 after=7.5s
+ACCEPTED pcdguide.70 after=7.5s
+ACCEPTED pcdmeter.01 after=7.5s
+ACCEPTED pcdflip.44 after=7.5s
+ACCEPTED pcdfaucet.77 after=7.5s
+ACCEPTED pcdpeer.47 after=7.5s
+ACCEPTED pcdcolor.05 after=8.5s
+DEMO_OK n=7 within=8.5s no-answer=none
+GREETED 7/7 pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05
+DEMO_IDEMPOTENT sent=0 pcdpirate.81=skipped pcdguide.70=skipped pcdmeter.01=skipped pcdflip.44=skipped pcdfaucet.77=skipped pcdpeer.47=skipped pcdcolor.05=skipped
+```
+
+### PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots -- --only demo-onboarding,settings-demo
+
+```
+9.2s demo fixture requests: pcdpirate.81, pcdguide.70
+11.2s saved berlin-day/demo-onboarding.png
+12.1s saved berlin-day/settings-demo.png
+20.3s saved berlin-night/demo-onboarding.png
+21.2s saved berlin-night/settings-demo.png
+21.8s seeded profile removed: true
+SCREENSHOTS_OK
+```
+
+I looked at the day onboarding PNG (seven rows with avatar, name, tag chip and tagline; "Sent" and "No answer yet" on the two fixture rows; "Start chats with all" and "Skip") and the night Settings › Demo PNG ("Start chat" per row, "Start all", "Remove demo chats").
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12i hand-off report.

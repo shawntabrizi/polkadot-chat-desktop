@@ -19,6 +19,7 @@ import {
   type AssistantSendRequest,
   type AssistantSettings,
   type AssistantSettingsUpdate,
+  type ChainTransfer,
   type CreateIdentityRequest,
   type CreateIdentityResponse,
   IPC,
@@ -41,6 +42,7 @@ import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { deriveIdentityKeys } from './identity/keys';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
+import { createDemoManifestSource } from './demoManifest';
 import { createDiagnostics } from './diagnostics';
 import { readMetadata, writeMetadata } from './metadataCache';
 import { isHeadless } from './headless';
@@ -76,6 +78,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
 const CONTRACT = /^0x[0-9a-fA-F]{40}$/;
 const GENESIS = /^0x[0-9a-fA-F]{64}$/;
+const ACCOUNT = /^0x[0-9a-fA-F]{64}$/;
 
 /**
  * Spec 0007: one Asset Hub connection and signing service for the identity
@@ -299,6 +302,17 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     return (await txServiceFor(getWindow)).contractRead(chainId, address, calldata);
   });
   ipcMain.handle(IPC.chainBalance, async (): Promise<AccountBalance> => (await txServiceFor(getWindow)).balance());
+  // M12g: call data only; nothing is signed without a dry-run of the intent that holds it.
+  ipcMain.handle(IPC.chainTransferCall, async (_event, to: unknown, amount: unknown): Promise<Uint8Array> => {
+    if (typeof to !== 'string' || !ACCOUNT.test(to)) throw new Error('Invalid account.');
+    if (typeof amount !== 'string' || !/^[1-9]\d{0,37}$/.test(amount)) throw new Error('Invalid amount.');
+    return (await txServiceFor(getWindow)).transferCall(Uint8Array.from(Buffer.from(to.slice(2), 'hex')), BigInt(amount));
+  });
+  ipcMain.handle(IPC.chainTransfersOf, async (_event, hash: unknown, block: unknown): Promise<ChainTransfer[]> => {
+    if (typeof hash !== 'string' || !TX_HASH.test(hash)) throw new Error('Invalid transaction hash.');
+    if (!(typeof block === 'number' && Number.isInteger(block) && block >= 0)) throw new Error('Invalid block.');
+    return (await txServiceFor(getWindow)).transfersOf(hash, block);
+  });
   // The embedded Faucet: devnet Asset Hub only (the guard is checked before anything opens).
   ipcMain.handle(IPC.faucetDrip, async (_event, chainId: unknown): Promise<FaucetDrip> => {
     const allowed = assertDevnetChain(chainId);
@@ -404,6 +418,13 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (totals && win && !win.webContents.isDestroyed()) win.webContents.send(IPC.diagnosticsChanged, totals);
   });
   ipcMain.handle(IPC.diagnosticsGet, () => diagnostics.snapshot());
+
+  // M12i: the demo bots list; a manifest URL is fetched here, never by the renderer.
+  const demoManifest = createDemoManifestSource();
+  ipcMain.handle(IPC.demoBots, async (_event, profile: unknown) => {
+    if (!isNetworkProfileId(profile)) throw new Error('Unknown network.');
+    return [...(await demoManifest())[profile]];
+  });
 
   ipcMain.handle(IPC.appSetBadge, (_event, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.min(Math.floor(count), 9999) : 0;

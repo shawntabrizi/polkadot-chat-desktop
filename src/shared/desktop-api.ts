@@ -1,6 +1,7 @@
 // Exposed by src/preload as `window.desktop`. Optional on Window because the
 // renderer also runs without Electron (vitest, a plain browser).
 
+import type { DemoBot } from './demoBots';
 import type { NetworkProfileId } from './network';
 
 /** Every IPC channel name, shared by main and preload. */
@@ -36,10 +37,13 @@ export const IPC = {
   chainContractRead: 'chain:contractRead',
   chainBalance: 'chain:balance',
   chainBestBlock: 'chain:bestBlock',
+  chainTransferCall: 'chain:transferCall',
+  chainTransfersOf: 'chain:transfersOf',
   faucetDrip: 'faucet:drip',
   diagnosticsAdd: 'diagnostics:add',
   diagnosticsGet: 'diagnostics:get',
   diagnosticsChanged: 'diagnostics:changed',
+  demoBots: 'demo:bots',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -149,7 +153,21 @@ export type DesktopChainApi = {
    * arrive on `onTxStatus` under the returned hash.
    */
   faucetDrip: (chainId: string) => Promise<FaucetDrip>;
+  /**
+   * M12g: the call data of `Balances.transfer_keep_alive(to, amount)` on
+   * Asset Hub (`to`: a 0x-hex 32-byte account; `amount`: planck, decimal).
+   */
+  transferCall: (to: string, amount: string) => Promise<Uint8Array>;
+  /**
+   * M12g: what the transaction `hash` in block `block` moved, from the
+   * block's `Balances.Transfer` events (best chain). Empty when the block
+   * does not hold it.
+   */
+  transfersOf: (hash: string, block: number) => Promise<ChainTransfer[]>;
 };
+
+/** One `Balances.Transfer` event: accounts as 0x-hex, the amount in planck (decimal). */
+export type ChainTransfer = { from: string; to: string; amount: string };
 
 /** A drip the app sent: the extrinsic hash, the paying dev account ("//Bob"), the chain. */
 export type FaucetDrip = { hash: string; from: string; chainId: string };
@@ -296,6 +314,11 @@ export type DesktopDiagnosticsApi = {
   onChanged: (listener: (counts: DiagnosticsCounts) => void) => () => void;
 };
 
+/** M12i: the demo bots of a network (a fetched manifest, else the built-in list). */
+export type DesktopDemoApi = {
+  bots: (profile: NetworkProfileId) => Promise<DemoBot[]>;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
@@ -303,6 +326,7 @@ export type DesktopApi = {
   assistant: DesktopAssistantApi;
   app: DesktopAppApi;
   diagnostics: DesktopDiagnosticsApi;
+  demo: DesktopDemoApi;
 };
 
 declare global {
