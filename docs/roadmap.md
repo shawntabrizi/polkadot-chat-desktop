@@ -55,3 +55,17 @@ A bot that ships with the app is embedded in the app: a local contact whose logi
 ## Structured directives (added 2026-09-23 after the owner saw partial buttons JSON during streaming)
 
 Models produce client directives (buttons, tx intents, bot-info updates) today as a fenced text block that the host parses. Not planned before this: in M13, engines that support tool calling (the proxy engine; any API-backed pca brain) get a `buttons`/`tx` tool generated from the same schema as the parser, so the directive arrives as one validated object and never streams as text. The fenced block stays the fallback for text-only engines (Claude Code, Codex, OpenCode CLIs) and is never required. Wire format unchanged.
+
+## Chat management (owner ask, 2026-09-24) → M12e
+
+Today a room offers mute, block, report, decline (incoming request) and leave (group). Missing, all local to the client unless marked:
+1. **Delete chat**: removes the room, its messages and a pending outgoing request from this device. The peer keeps their copy (as Telegram). If the peer accepts later, the chat comes back as a fresh request.
+2. **Withdraw a pending request** (the same action on a pending row): stop resubmitting; the statement expires in the store. Show "No answer yet · sent 3 d ago" on pending rows.
+3. **Archive** a chat (hidden list, unread still counted).
+4. **Pin** chats to the top (max 5).
+5. **Mark as unread / mark as read**.
+6. **Clear history** (keeps the contact and the session).
+7. **Nickname** for a contact (local label; the username stays visible).
+8. **Forward** a message to another chat (a copy, "Forwarded from" shown).
+9. **Blocked list** in Settings with unblock.
+Later: chat folders and an unread filter; export chat; per-chat notification sounds.
