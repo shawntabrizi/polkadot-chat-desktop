@@ -119,3 +119,5 @@ The fenced block is a host convention for text-only models, not wire format. A s
 ### Over-limit keyboards (2026-09-24)
 
 A received `buttons` whose rows, buttons per row, or label length exceed the limits is treated as undecodable: the client shows the base spec's unsupported message and never renders a partial keyboard. Hosts (pca, desktop) agree on this rule.
+
+Hosts with tool-calling engines (M13) MAY offer a `send_buttons` tool built from the same schema; a tool call yields the same `buttons` content as the fenced block. Hosts SHOULD accept bare-string buttons (label = command) and a flat row from a tool call.
