@@ -15,6 +15,8 @@ The shared cost of the Statement Store is **submissions**: every submitted state
 | groupMessage (247) | n−1 per message for n members | temporary (v1); cap 16; v2 = one submission on a group topic with a shared key (MLS, as t3ams) |
 | Meter charges (not wire; chain) | 1 Asset Hub extrinsic per 5 metered replies or 10 min, whichever first, plus one reference statement per charge; the header shows the on-chain balance, `/balance` shows balance minus the pending debit | implemented in pca c488a31 (M12c) |
 
+Base-protocol cost noted 2026-09-24: every fetched batch is acknowledged with one submission (the base spec's ACK), so a back-and-forth costs about two submissions per message, one from each side; the desktop Diagnostics counts these. A piggybacked ACK (the ACK riding the next outgoing statement) is an upstream question for chat-spec.
+
 Reference points: a person's 1:1 chat sends roughly one statement per message; pca live placeholders now start only after 20 s; the base spec's request extension already batches every un-ACKed message into one statement.
 
 Owner's question that produced this page: "are we keeping the protocol efficient? this must scale to lots of people on shared infra."
