@@ -517,3 +517,11 @@ a bot; the Diagnostics counter shows 1 submission per group message.
 6. Join policy 1 with a bot admin: the bot forwards the request to the owner over DM with Approve / Reject buttons (spec 0006) and admits on Approve. M16b.
 7. Removal by a bot admin on request: an admin sends the bot the DM command `/remove <username>`; the bot checks the sender's role in the state, then rekeys. No new wire variant. M16b.
 8. A bot announces `botInfo` once when it joins a v2 group, riding inside its first messages statement (no standalone statement).
+
+### Rulings after the pca M16b build (2026-09-24, pca 96bf004)
+
+9. Invite link form: `polkadotapp://g#<InviteLink base64url>` (the scheme the phone app already accepts for `url` buttons; the desktop registers it too). A host MAY wrap it in an https link it owns; the fragment is never sent to a server.
+10. New groups default to join policy 1 (link with approval); a bot admin gets `/joinpolicy <0|1|2>`; `/invite` on a policy-0 group creates the invite and warns.
+11. A promoted admin gets every flag except `manage admins` (0x00BF) by default.
+12. When the bot is the owner, it forwards a join request to the first other admin with `approve joins`.
+13. Policy numbers as written in this spec (0 admins add only, 1 link with approval, 2 link open); the coordinator's brief had them reversed, the code follows the spec.
