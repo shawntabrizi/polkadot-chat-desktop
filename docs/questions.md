@@ -151,3 +151,11 @@ Write the question, what you did meanwhile, and the date.
 - **The step shows once.** The mark is cleared when "Meet the demo bots" opens, so quitting during the step does not bring it back. Settings › Demo has the same button. Is once right, or should it come back until the person presses Start or Skip?
 - **Two wordings for one pending request.** The demo row says "Sent" for 15 s and then "No answer yet"; the chat list row (M12e) says "No answer yet · sent just now" from the first second. Should the chat list also say "Sent" for the first seconds?
 - **Remove demo chats keeps the contacts** (M12e delete). A later "Start chat" then sends "Hi!" as a message, not a request. Should "Remove" also forget the contacts, so the next start is a fresh request?
+
+## M12h (2026-09-24)
+
+- **room-buttons without the spinner.** The callback press would send a `buttonPress` to the fixture bot's made-up device, so the shot shows the keyboard and the url strip only. Is the spinner state still wanted in the set? It would need a live peer again (a fourth live flow).
+- **An incoming send that the chain does not show.** After the chain read, a send whose transfer is not in that extrinsic reads "bob.02 sent you 0.1 PAS · not found on the chain". Is that wording right, or should the bubble say less (for example only "not confirmed")?
+- **The flip's second stake failed once** with `Revive.StorageDepositLimitExhausted` after its dry-run passed (run 2 in docs/acceptance.md "## M12h"). It left our stake waiting; the script now settles such a round first. My guess, not proved: the second player's dry-run ran on a node that did not have our stake yet, so its storage deposit limit fit the "first staker" path. A pca/contract item?
+- **room-tx-done alone takes about 18 s**, 14 s of them the first Asset Hub connection for the header's Meter balance. Other fixture shots take about 3.5 s. Keep the balance in that shot (it proves the hint), or take it from room-meter only?
+- **Spec 0006 text.** Over-limit keyboards are now rejected (M8 review). Please state "reject" in spec 0006 (I cannot edit `docs/spec/*.md`).

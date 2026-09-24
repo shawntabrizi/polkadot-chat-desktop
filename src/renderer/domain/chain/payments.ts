@@ -167,6 +167,17 @@ export const movedBetween = (transfers: readonly ChainTransfer[], from: string, 
     .filter(entry => entry.from.toLowerCase() === from.toLowerCase() && entry.to.toLowerCase() === to.toLowerCase())
     .reduce((sum, entry) => sum + BigInt(entry.amount), 0n);
 
+/**
+ * A peer's reference whose transfer the chain must confirm before the room
+ * shows it as money: the payment of one of our own requests ("Paid"), or a
+ * direct send to us ("sent you", M12h). Only once it is in a block.
+ */
+export const needsTransferCheck = (reference: TxReference, isOwnRequest: (requestId: string) => boolean): boolean => {
+  if (reference.block === null || !settled(reference.status)) return false;
+  const requestId = requestIdOfNote(reference.note);
+  return requestId !== null ? isOwnRequest(requestId) : sentOf(reference.note) !== null;
+};
+
 /** The peer's references that claim to pay `requestId` and are in a block: the ones to check on the chain. */
 export const claimedPayments = (requestId: string, rows: readonly MessageRow[]): TxReference[] =>
   rows.flatMap(row =>
@@ -220,12 +231,22 @@ export const payerState = (request: PaymentRequest, rows: readonly MessageRow[],
 /**
  * The line of a payment's reference bubble, or null for any other
  * reference. `requested`: the amount of the request a `req:` note names,
- * when this room has it.
+ * when this room has it. `received`: for a peer's direct send, the planck
+ * the chain moved from the peer to us in that extrinsic (undefined while not
+ * read). The note is the peer's claim, so an incoming send reads as money
+ * received only once the chain shows it (M12g review, answer 2), and then
+ * with the chain's amount.
  */
-export const paymentLine = (reference: TxReference, own: boolean, peerName: string, requested: bigint | null): string | null => {
+export const paymentLine = (reference: TxReference, own: boolean, peerName: string, requested: bigint | null, received?: bigint): string | null => {
   const sent = sentOf(reference.note);
   const requestId = requestIdOfNote(reference.note);
   if (!sent && requestId === null) return null;
+  if (sent && !own && reference.status !== 'failed') {
+    const claim = withWords(`${peerName} sent you ${sent.amount} ${PAYMENT_ASSET}`, sent.words);
+    if (received === undefined || !settled(reference.status)) return `${claim} · checking…`;
+    if (received === 0n) return `${claim} · not found on the chain`;
+    return referenceLine({ ...reference, note: withWords(`${peerName} sent you ${pas(received)} ${PAYMENT_ASSET}`, sent.words) });
+  }
   const amount = sent ? `${sent.amount} ${PAYMENT_ASSET}` : requested !== null ? `${pas(requested)} ${PAYMENT_ASSET}` : null;
   const words = sent ? sent.words : noteWords(reference.note);
   const head = sent

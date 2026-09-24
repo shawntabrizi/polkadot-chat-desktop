@@ -1,5 +1,5 @@
 import { Archive, ChevronDown, ChevronRight, MessagesSquare } from 'lucide-react';
-import { type ReactNode, useMemo, useState, useSyncExternalStore } from 'react';
+import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { HexString } from '../app/bytes';
 import {
@@ -20,6 +20,7 @@ import { isLiveFrame } from '../domain/chat/content';
 import { displayName } from '../domain/chat/chatActions';
 import { draftPreview } from '../domain/chat/drafts';
 import { clearKey, deleteKey, withdrawKey } from '../domain/chat/undo';
+import { DEMO_NO_ANSWER_MS } from '../domain/demo/demo';
 import { FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { PeerTyping, TypingStore } from '../domain/chat/signals';
 
@@ -168,8 +169,33 @@ const stateOf = (room: RoomRow | undefined) => ({
 const previewWithDraft = (data: ListData, peer: PeerId, fallback: string): string =>
   draftPreview(data.drafts.get(peer), data.lastMessages.get(peer)?.timestamp) ?? fallback;
 
-/** A pending outgoing request (M12e): how long it has waited. */
-export const outgoingPreview = (sentAt: number, now: number = Date.now()): string => `No answer yet · sent ${formatAgo(sentAt, now)}`;
+/**
+ * A pending outgoing request (M12e): how long it has waited. The first 15 s
+ * read "Sent · just now", as the demo row does (M12i review): "No answer yet"
+ * a second after sending reads as a failure.
+ */
+export const outgoingPreview = (sentAt: number, now: number = Date.now()): string =>
+  now - sentAt < DEMO_NO_ANSWER_MS ? 'Sent · just now' : `No answer yet · sent ${formatAgo(sentAt, now)}`;
+
+/**
+ * The list's clock for pending requests: moves when the youngest one passes
+ * 15 s, so its row turns to "No answer yet" on its own, and catches up on any
+ * change of the list's data (as the ages did when they read the time in render).
+ */
+export const useSentClock = (data: Pick<ListData, 'requests'> | undefined): number => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const current = Date.now();
+    const turns = (data?.requests ?? [])
+      .filter(r => r.direction === 'outgoing' && r.status === 'pending' && current - r.timestamp < DEMO_NO_ANSWER_MS)
+      .map(r => r.timestamp + DEMO_NO_ANSWER_MS - current + 50);
+    if (current - now > 1_000) turns.push(0);
+    if (turns.length === 0) return undefined;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, Math.min(...turns)));
+    return () => clearTimeout(timer);
+  }, [data, now]);
+  return now;
+};
 
 const NO_PENDING: ReadonlySet<string> = new Set();
 
@@ -197,6 +223,7 @@ export const buildRows = (
   open: (target: ChatTarget) => void,
   typing: ReadonlyMap<PeerId, PeerTyping> = new Map(),
   pending: ReadonlySet<string> = NO_PENDING,
+  now: number = Date.now(),
 ): ListRows => {
   // A chat whose delete (or a request whose withdraw) waits out its Undo time is hidden;
   // a room whose history is being cleared shows no last message (M12e).
@@ -372,7 +399,7 @@ export const buildRows = (
             avatar={<PeerAvatar name={request.peerUsername} />}
             name={request.peerUsername}
             time={formatListTime(request.timestamp)}
-            preview={outgoingPreview(request.timestamp)}
+            preview={outgoingPreview(request.timestamp, now)}
             previewTone="tertiary"
             unread={0}
             selected={selected.kind === 'outgoing' && selected.peer === request.peerAccountId}
@@ -465,6 +492,7 @@ export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing }: Props
   const store = typing ?? noTyping;
   const typingStates = useSyncExternalStore(store.subscribe, store.snapshot);
   const pending = usePending();
+  const now = useSentClock(data);
   if (!data) return null;
   const { rows, archived, others } = buildRows(
     data,
@@ -472,6 +500,7 @@ export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing }: Props
     target => (target.kind === 'room' ? onOpenRoom(target.peer) : onOpenOutgoing(target.peer)),
     typingStates,
     pending,
+    now,
   );
   const archivedUnread = archived.reduce((sum, row) => {
     const room = row.target.kind === 'room' ? data.rooms.get(row.target.peer) : undefined;

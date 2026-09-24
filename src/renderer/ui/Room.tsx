@@ -11,6 +11,8 @@ import {
   type PaymentRequest,
   cleanNote,
   declineText,
+  movedBetween,
+  needsTransferCheck,
   pas,
   payerState,
   paymentLine,
@@ -464,17 +466,16 @@ export const Room = (props: Props) => {
   }, [messages]);
   const selfHex = self ? bytesToHex(self.accountId) : null;
 
-  // A peer's reference that claims to pay one of our requests: read what the
-  // chain moved in that extrinsic (once per hash and block). "Paid" rests on this.
+  // A peer's reference that claims to pay one of our requests, or to send us
+  // PAS (M12h): read what the chain moved in that extrinsic (once per hash
+  // and block). "Paid" and "sent you" rest on this.
   useEffect(() => {
     const chain = window.desktop?.chain;
     if (!chain || !manager) return;
     for (const row of messages ?? []) {
       if (row.direction !== 'incoming' || row.content.type !== 'transactionReference') continue;
       const reference = row.content.reference;
-      const requestId = requestIdOfNote(reference.note);
-      if (!requestId || !requestsById.get(requestId)?.own || reference.block === null) continue;
-      if (reference.status !== 'inBlock' && reference.status !== 'finalized') continue;
+      if (!needsTransferCheck(reference, id => requestsById.get(id)?.own === true) || reference.block === null) continue;
       const key = transferKey(reference);
       if (transfers.has(key) || checking.current.has(key)) continue;
       checking.current.add(key);
@@ -491,7 +492,9 @@ export const Room = (props: Props) => {
       const reference = row.content.reference;
       const requestId = requestIdOfNote(reference.note);
       const requested = requestId ? (requestsById.get(requestId)?.amount ?? null) : null;
-      return { referenceText: paymentLine(reference, row.direction === 'outgoing', name, requested) };
+      const found = transfers.get(transferKey(reference));
+      const received = found && selfHex ? movedBetween(found, peer, selfHex) : undefined;
+      return { referenceText: paymentLine(reference, row.direction === 'outgoing', name, requested, received) };
     }
     const request = row.direction === 'outgoing' ? requestsById.get(row.messageId) : undefined;
     if (!request || !selfHex) return {};

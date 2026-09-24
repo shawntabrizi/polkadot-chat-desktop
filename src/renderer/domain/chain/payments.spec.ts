@@ -16,6 +16,7 @@ import { type MessageContent, type TxReference, keyboardOf, referenceLine } from
 import {
   declineText,
   parsePas,
+  needsTransferCheck,
   paymentLine,
   paymentRequestOf,
   payerState,
@@ -222,9 +223,35 @@ describe('notes and lines', () => {
 
   it('says who paid whom on each side', () => {
     expect(paymentLine(reference(sendNote(PAS, '')), true, 'bob.02', null)).toBe('Sent 1 PAS to bob.02 · in block #77');
-    expect(paymentLine(reference(sendNote(PAS, 'lunch')), false, 'bob.02', null)).toBe('bob.02 sent you 1 PAS · lunch · in block #77');
+    expect(paymentLine(reference(sendNote(PAS, 'lunch')), false, 'bob.02', null, PAS)).toBe('bob.02 sent you 1 PAS · lunch · in block #77');
     expect(paymentLine(reference(requestPaymentNote('REQ-1', '')), false, 'bob.02', PAS / 5n)).toBe('bob.02 paid your request of 0.2 PAS · in block #77');
     expect(paymentLine(reference(requestPaymentNote('REQ-1', '')), true, 'alice.01', PAS / 5n)).toBe('Paid 0.2 PAS to alice.01 · in block #77');
     expect(paymentLine(reference('Top up (1 PAS)'), true, 'bot', null)).toBeNull();
+  });
+
+  // M12g review answer 2: the note is the sender's claim. An incoming send
+  // must not read as money received until the chain shows the transfer, and
+  // then with what the chain moved, not what the note says.
+  it('reads an incoming send as checking until the chain shows the transfer, then with the chain amount', () => {
+    const send = reference(sendNote(PAS / 10n, ''));
+    expect(paymentLine(send, false, 'bob.02', null)).toBe('bob.02 sent you 0.1 PAS · checking…');
+    expect(paymentLine({ ...send, status: 'submitted', block: null }, false, 'bob.02', null, PAS / 10n)).toBe('bob.02 sent you 0.1 PAS · checking…');
+    expect(paymentLine(send, false, 'bob.02', null, PAS / 10n)).toBe('bob.02 sent you 0.1 PAS · in block #77');
+    expect(paymentLine(send, false, 'bob.02', null, PAS / 20n)).toBe('bob.02 sent you 0.05 PAS · in block #77');
+    expect(paymentLine(send, false, 'bob.02', null, 0n)).toBe('bob.02 sent you 0.1 PAS · not found on the chain');
+    // Our own send and a failed one need no check.
+    expect(paymentLine(send, true, 'bob.02', null)).toBe('Sent 0.1 PAS to bob.02 · in block #77');
+    expect(paymentLine({ ...send, status: 'failed', block: null }, false, 'bob.02', null)).toBe('bob.02 sent you 0.1 PAS · failed');
+  });
+
+  // Without a chain read the send above would say "checking…" for ever: the
+  // room reads the transfer of a send exactly as it does for our requests.
+  it('asks the chain about a send to us and a payment of our request, once in a block', () => {
+    const ours = (id: string) => id === 'REQ-1';
+    expect(needsTransferCheck(reference(sendNote(PAS, '')), ours)).toBe(true);
+    expect(needsTransferCheck(reference(requestPaymentNote('REQ-1', '')), ours)).toBe(true);
+    expect(needsTransferCheck(reference(requestPaymentNote('REQ-9', '')), ours)).toBe(false);
+    expect(needsTransferCheck(reference('Top up (1 PAS)'), ours)).toBe(false);
+    expect(needsTransferCheck({ ...reference(sendNote(PAS, '')), status: 'submitted', block: null }, ours)).toBe(false);
   });
 });

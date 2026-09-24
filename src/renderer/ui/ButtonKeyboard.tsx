@@ -50,7 +50,7 @@ export const ButtonKeyboard = ({ rows, keyboard, onAskUrl, confirming }: Props) 
         {row.map((button, i) => {
           const { action } = button;
           // Spec 0007 (owner requirement): a tx button says it signs, shows the amount, and expires.
-          const txView = action.kind === 'tx' ? txButtonView(action.intent, Date.now()) : null;
+          const txView = action.kind === 'tx' ? txButtonView(action.intent, Date.now(), button.label) : null;
           const runnable = action.kind !== 'unsupported' && txView?.expired !== true;
           const active = same(keyboard?.active ?? null, r, i) || same(confirming, r, i);
           const busy = keyboard?.active?.busy === true && same(keyboard.active, r, i);

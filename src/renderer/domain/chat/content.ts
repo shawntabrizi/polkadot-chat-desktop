@@ -343,9 +343,19 @@ const actionOf = (action: ButtonWire['action']): ButtonAction => {
 };
 
 /**
- * The stored keyboard of a received `buttons`: within the spec's limits
- * (extra rows and buttons are dropped, long labels cut). Row and button
- * positions are kept, so a press names the sender's indexes.
+ * Spec 0006 limits on a received keyboard: at most 8 rows of 4 buttons, labels
+ * of at most 40 characters. Over them the whole `buttons` message is rejected
+ * (the unsupported bubble), as pca's decoder does (M8 review: a cut keyboard
+ * misrepresents the bot, so both clients reject).
+ */
+export const keyboardFits = (rows: readonly ButtonWire[][]): boolean =>
+  rows.length <= MAX_BUTTON_ROWS && rows.every(row => row.length <= MAX_BUTTONS_PER_ROW && row.every(button => [...button.label].length <= MAX_BUTTON_LABEL));
+
+/**
+ * The stored keyboard of a `buttons` message. A received one is within the
+ * limits already (`keyboardFits`); the cuts guard the local paths (the
+ * Assistant's block, our own sends). Row and button positions are kept, so a
+ * press names the sender's indexes.
  */
 export const keyboardOf = (rows: readonly ButtonWire[][]): ChatButton[][] =>
   rows
@@ -389,6 +399,7 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
     case 'deleted':
       return { kind: 'deleted', targetMessageId: content.value.targetMessageId };
     case 'buttons':
+      if (!keyboardFits(content.value.rows)) return { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } };
       return {
         kind: 'message',
         content: { type: 'buttons', text: content.value.text, rows: keyboardOf(content.value.rows), oneShot: content.value.oneShot, pressed: null },

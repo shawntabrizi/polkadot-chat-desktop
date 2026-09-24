@@ -315,9 +315,13 @@ export const countUnread = async (): Promise<number> =>
 /** How many message hits the search shows (M7b step 1c). */
 export const MESSAGE_SEARCH_LIMIT = 20;
 
-/** The text a message search reads: text and richText rows, never a bot's live frame (status, not content). */
+/**
+ * The text a message search reads: text, richText and reply rows (a reply's
+ * own text is user text too, M7b review), never a bot's live frame (status,
+ * not content).
+ */
 const searchableText = (row: MessageRow): string | null => {
-  if (row.content.type === 'richText') return row.content.text;
+  if (row.content.type === 'richText' || row.content.type === 'reply') return row.content.text;
   if (row.content.type === 'text') return isLiveFrame(row.content) ? null : row.content.text;
   return null;
 };

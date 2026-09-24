@@ -214,4 +214,13 @@ describe('pending outgoing request', () => {
     expect(outgoingPreview(now - 3 * 24 * 3_600_000, now)).toBe('No answer yet · sent 3 d ago');
     expect(outgoingPreview(now - 5 * 60_000, now)).toBe('No answer yet · sent 5 min ago');
   });
+
+  // M12i review: "No answer yet" a second after sending reads as a failure,
+  // and the demo row already says "Sent" for 15 s. One request, one wording.
+  it('reads "Sent · just now" for the first 15 s, as the demo row does', () => {
+    const now = Date.UTC(2026, 8, 24, 12);
+    expect(outgoingPreview(now, now)).toBe('Sent · just now');
+    expect(outgoingPreview(now - 14_999, now)).toBe('Sent · just now');
+    expect(outgoingPreview(now - 15_000, now)).toBe('No answer yet · sent just now');
+  });
 });

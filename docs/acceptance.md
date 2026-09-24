@@ -2972,3 +2972,144 @@ DEMO_IDEMPOTENT sent=0 pcdpirate.81=skipped pcdguide.70=skipped pcdmeter.01=skip
 ```
 
 `DEMO_WAITED_FOR_KEY` did not appear in any run. Sign-up (`createIdentity`) already waits for the attestation at the best block, so the key was there at the first read each time. The waiting, send-after-visible and timeout paths are covered by `src/renderer/domain/demo/demo.spec.ts` "the wait for this identity's key" (fake timers).
+
+## M12h (2026-09-24)
+
+Every app launch set `PCD_HEADLESS=1` and a throwaway `PCD_USER_DATA_DIR` (the screenshot script sets both per app; smoke got them on the command line). The live flows used the VPS fleet (pcdflip.44, pcdguide.70, pcdpirate.81, the embedded Faucet's devnet transfer) and the test identities pcde2e, pcdbenchzzlx, pcdbenchqmwk, pcdbenchfina, pcdeceb; the fleet was not touched. Worktree `pcd-m12h`, branch `m12h`.
+
+### Timings
+
+| Run | Command | Result | Wall time |
+| --- | --- | --- | --- |
+| Before (bdba746, a copy of the tree) | `PCD_HEADLESS=1 PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json PCD_SCREENSHOT_ROOM_WITH=pcdbenchfinb node scripts/screenshots.mjs` | SCREENSHOTS_PARTIAL (5 missed) | **352 s** |
+| After, full | `PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots` | SCREENSHOTS_OK, 72 PNGs | **78.8 s** |
+| After, one shot | `… npm run screenshots -- --only room-tx-done` | SCREENSHOTS_OK | **18.1 s** |
+| After, one fixture shot | `… npm run screenshots -- --only chat-menu` | SCREENSHOTS_OK | **3.5 s** |
+
+The before run missed `berlin-day/group-create`, `room-group`, `group-members` ("pcdbenchfina.25 is not among the contacts to pick": an old request was accepted) and `chat-menu` in both themes ("the row menu did not open"). Its slow parts: the flows ran once per theme (the night room-bot waited 59 s for the room peer), and every shot waited in turn.
+
+Other after runs, not the acceptance run:
+- Run 1: SCREENSHOTS_PARTIAL in 80.2 s. Only `settings-diagnostics` missed: my check wanted the ratio 2.00, and the real pirate request had added a submission. The check now wants a count with messages > 0; `--only settings-diagnostics` then passed in 3.6 s (`Submissions per message 2.00 (6 / 3) Delivery acknowledgements (not counted above) 4`).
+- Run 2: SCREENSHOTS_PARTIAL in 282.6 s. The devnet was slow: the Faucet drip showed no outcome in 120 s, our stake took 23 s to a block, and the second player's stake failed on chain after a passing dry-run (`STAKE_FAILED Revive.StorageDepositLimitExhausted` in flip-peer.log). That left our stake waiting, and the next flip run's dry-run said "already staked". The script now fails at once on `STAKE_FAILED` and settles a stale round first (`--only room-flip,room-flip-done`: "our earlier stake still waits; the second player settles it", then SCREENSHOTS_OK in 47.7 s). See docs/questions.md "## M12h".
+
+### npm run check
+
+```
+ Test Files  69 passed (69)
+      Tests  576 passed (576)
+   Duration  16.40s (transform 2.64s, setup 1.05s, import 11.72s, tests 35.23s, environment 4ms)
+check:tokens: clean (156 files)
+```
+
+(tsc and eslint print nothing when clean.) Specs that encode the carry items, each checked to fail without the change where marked:
+- `src/renderer/ui/ChatList.spec.ts` "reads "Sent · just now" for the first 15 s, as the demo row does".
+- `src/renderer/ui/sentClock.spec.tsx` "turns to "No answer yet" 15 s after sending with no other render" (fails with the hook's timer removed: `expected 'Sent · just now' to be 'No answer yet · sent just now'`).
+- `src/renderer/domain/chain/payments.spec.ts` "reads an incoming send as checking until the chain shows the transfer, then with the chain amount" and "asks the chain about a send to us and a payment of our request, once in a block".
+- `src/renderer/ui/txButton.spec.ts` "drops the caption when the label already shows the amount, and keeps it otherwise".
+- `src/renderer/domain/chat/messages.spec.ts` "finds text, richText and reply rows …" (the reply row is now a hit).
+- `src/renderer/domain/chat/content.spec.ts` "rejects a received keyboard over the limits as unsupported, and keeps one at the limits".
+
+### npm run smoke
+
+```
+✓ built in 187ms
+SMOKE_OK
+```
+
+### npm run screenshots (full, timed)
+
+```
+0.5s built
+2.8s [main] seeded pcdecejakd.11
+3.0s [group] seeded pcdbenchqmwk
+3.0s [flip] seeded pcdbenchzzlx
+4.9s [signup] saved signup
+18.9s [group] request of pcdbenchfina.25 arrived 12.8 s after it was sent
+19.7s [main] fixture written
+19.8s [group] contact with pcdguide.70
+20.1s [group] header: "working…"
+21.0s [flip] faucet room: "ave no value. What do you need? Get 1 PAS Get test funds Copy my address 12:23 AM Dripped 1 PAS from //Alice · in block #13631042 0xb47b…e4e3 Copy hash View on Subscan 12:23 AM Balance now 28.4791 PAS"
+21.1s [group] saved room-typing
+21.8s [main] saved chats
+21.9s [flip] saved faucet
+22.7s [group] contact with pcdbenchfina.25
+23.8s [group] saved group-create
+23.8s [main] saved room
+24.1s [flip] request sent to pcdflip
+24.8s [main] saved room-deleted
+24.9s [main] url strip: "Open docs.polkadot.com in your browser?CancelOpen" disabled: 1
+25.9s [main] saved room-buttons
+25.9s [main] command menu: ["/stakingHow staking works","/rewardsYour rewards this era","/validatorsPick validators to nominate","/startStart over","/helpWhat I can do"]
+26.9s [main] saved room-bot
+27.6s [flip] flip strip: "Coin flip stake Stakes 0.5 PAS in a coin flip. The second staker triggers the flip; the winner takes 1 PAS. Amount 0.5 PAS Fee ≈ 0.0017 PAS Signs as pcdbenchzzlx.23 After this: your stake: 0.5 PAS Cancel Sign"
+28.2s [main] saved room-seen
+28.6s [flip] saved room-flip
+31.0s [main] strip: "Send to yourself A test transfer of 0.01 PAS from your account back to it Amount 0.01 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 The test run passed. Cancel Sign"
+31.9s [group] group senders: ["pcdbenchfina.25","pcdguide.70"]
+32.0s [main] saved room-tx
+32.0s [main] header: "with Meter: 4.9 PAS (~49 replies)"
+32.1s [flip] stake: "Coin flip stake (0.5 PAS) · in block #13631048\n\n0xd2f2…b74b\nCopy hash\nView on Subscan"
+32.9s [group] saved room-group
+33.0s [main] saved room-tx-done
+34.1s [group] saved group-members
+42.2s [flip] second player stakes
+44.8s [main] saved pocket
+46.0s [main] saved assistant
+48.0s [flip] settled: "Flip settled: pcdeceb.89 won 1 PAS · in block #13631056\n\n0x24a1…0f79\nCopy hash\nView on Subscan"
+48.0s [main] request sent to pcdpirate.81 from a global search hit
+49.0s [flip] saved room-flip-done
+50.0s [main] saved search
+50.5s [main] saved search-jump
+54.2s [main] global search "pcd": 8 rows, 15 after Show more
+55.2s [main] saved search-empty
+57.7s [main] saved search-no-results
+58.5s [main] bots: ["Faucet Test funds for devnet","P Captain Dot A cheerful pirate who answers everything in pirate speak. Test bot on devnet.","T Staking Helper Answers staking questions and checks your rewards"]
+59.5s [main] saved search-bots
+60.8s [main] saved requests
+62.9s [main] saved settings
+62.9s [main] diagnostics: "Submissions per message 2.33 (7 / 3) Delivery acknowledgements (not counted above) 6"
+63.9s [main] saved settings-diagnostics
+64.9s [main] saved keyboard
+64.9s [main] row menu: "Pin Mark as read Mute Archive Clear history Block Delete chat"
+65.9s [main] saved chat-menu
+66.9s [main] saved archived
+68.1s [main] saved settings-privacy
+69.0s [main] header: "with Meter: 4.7 PAS (~47 replies)" tooltip: "4.9 PAS on chain · 0.2 not yet charged"
+69.3s [main] saved room-meter
+69.4s [main] request: "Requested 0.5 PAS · Concert tickets Pay 0.5 PAS Decline 12:13 AM 👍 ❤️ 😂 😮 😢 🙏 🔥 👏"
+70.4s [main] saved room-request
+71.4s [main] saved send-pas
+72.5s [main] send strip: "Send 1.5 PAS to rubyfinch.23 Your ticket Amount 1.5 PAS Fee ≈ 0.0009 PAS Signs as pcdecejakd.11 Balance after: 35.0163 PAS Cancel Sign"
+73.5s [main] paid: "You requested 0.2 PAS e2e lunch Paid · in block #13629688"
+74.5s [main] saved room-request-paid
+76.1s [main] demo fixture requests: pcdguide.70, pcdmeter.01
+76.7s [main] demo intro: "Each one gets a chat request that says “Hi!”. They accept and answer within seconds. P pcdpirate.81 Assistant Captain Dot — a pirate who jokes Chatting P pcdguide.70 Assistant Guide — Polkadot support with buttons Sent P pcdmeter.01 Payments Meter — a paid assistant, 0.1 PAS per reply No answer yet P pcdflip.44 Game Flip — coin flips for 0.5 PAS P pcdfaucet.77 Utility Faucet bot — test funds P pcdpeer.47 Utility Echo — repeats what you say P pcdcolor.05 Utility Color — answers with a colour Start chats with all Skip"
+77.7s [main] saved demo-onboarding
+78.7s [main] saved settings-demo
+SCREENSHOTS_OK in 78.8 s
+PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run   25.40s user 6.75s system 40% cpu 1:18.89 total
+```
+
+I read these PNGs. From run 3: room-flip (night, the stake strip) and settings-diagnostics (night, "2.33 (7 / 3)"). From run 1 and the single-shot runs: room, room-seen (tooltip "Seen 11:28 PM"), room-tx (strip, "The test run passed."), room-tx-done (day and night: failed in the error colour, finalized with its action row, in block, submitted with the spinner; "with Meter: 4.9 PAS" in the header), room-typing ("working…" under pcdguide.70), room-group (three senders), room-flip-done ("Flip settled"), faucet (drip reference, "Balance now", the url strip), chat-menu (the row menu open), search (Bots, Global, Messages with the match in bold). In the first single-shot try the night keyboard buttons were caught mid-transition (dark text on a dark button); transitions are now off while the theme flips, and the night room-tx-done after that is clean. The request button reads "Pay 0.5 PAS" with no caption beside it (`request: "Requested 0.5 PAS · Concert tickets Pay 0.5 PAS Decline …"`).
+
+### npm run screenshots -- --only room-tx-done (timed)
+
+```
+0.5s built
+1.7s [main] seeded pcdecejakd.11
+2.4s [main] fixture written
+17.0s [main] header: "with Meter: 4.9 PAS (~49 replies)"
+18.0s [main] saved room-tx-done
+SCREENSHOTS_OK in 18.1 s
+```
+
+The 14.6 s between "fixture written" and the header line are the first Asset Hub connection of the main process (opened on first use) and the Meter read.
+
+### Not run
+
+- The carry items were not seen live in the app: no peer sent this identity a direct send during the run, and no over-limit keyboard came in. The specs above cover them.
+- The full screenshot run came before one last change to `useSentClock` (it now catches up on any list change, not only on request changes). `npm run check` and `npm run smoke` (SMOKE_OK) ran again after it; the screenshots did not.
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12h hand-off report.

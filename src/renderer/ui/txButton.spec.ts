@@ -27,6 +27,16 @@ describe('txButtonView (owner requirement, M11 step 3)', () => {
     expect(txButtonView(intent({ display: { title: 'Pay', description: '', amount: '5', asset: undefined } }), 1_000)?.caption).toBe('5');
   });
 
+  // M12g review: "Pay 0.5 PAS" beside a "0.5 PAS" caption shows one number
+  // twice. The amount must still be on the button: in the label, or else in
+  // the caption.
+  it('drops the caption when the label already shows the amount, and keeps it otherwise', () => {
+    const pay = intent({ display: { title: 'Pay', description: '', amount: '0.5', asset: 'PAS' } });
+    expect(txButtonView(pay, 1_000, 'Pay 0.5 PAS')?.caption).toBeNull();
+    expect(txButtonView(pay, 1_000, 'Pay')?.caption).toBe('0.5 PAS');
+    expect(txButtonView(pay, 1_000, 'Pay 0.5')?.caption).toBe('0.5 PAS');
+  });
+
   // An old offer must not be signed by accident: disabled, and the tooltip says why.
   it('is expired at and after expiresAt', () => {
     expect(txButtonView(intent(), 2_000)).toEqual({ caption: '1 PAS', expired: true, tooltip: TX_EXPIRED_TOOLTIP });

@@ -232,13 +232,15 @@ describe('RFC-0003 deletions (sender, local side)', () => {
 });
 
 describe('searchMessages', () => {
-  it('finds text and richText rows by case-insensitive substring, newest first, at most 20', async () => {
+  // A reply's text is what the person wrote: leaving it out hid half of a
+  // conversation from the search (M7b review carry).
+  it('finds text, richText and reply rows by case-insensitive substring, newest first, at most 20', async () => {
     await addMessage(row('old', { timestamp: 1, content: { type: 'text', text: 'Ask about the People chain' } }));
     await addMessage(row('rich', { timestamp: 2, content: { type: 'richText', text: 'people photos', attachments: [] } }));
     await addMessage(row('reply', { timestamp: 3, content: { type: 'reply', messageId: 'old', text: 'people again' } }));
     await addMessage(row('frame', { timestamp: 4, content: { type: 'text', text: '⏳ working · 3s\n▸ Reading people.md' } }));
     await addMessage(row('other', { timestamp: 5, content: { type: 'text', text: 'nothing here' } }));
-    expect((await searchMessages('  PEOPLE ')).map(hit => hit.messageId)).toEqual(['rich', 'old']);
+    expect((await searchMessages('  PEOPLE ')).map(hit => hit.messageId)).toEqual(['reply', 'rich', 'old']);
     expect(await searchMessages('   ')).toEqual([]);
 
     for (let i = 0; i < 25; i++) await addMessage(row(`m${i}`, { timestamp: 100 + i, content: { type: 'text', text: `people ${i}` } }));

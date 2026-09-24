@@ -540,6 +540,23 @@ describe('keyboardOf (what a received keyboard may contain)', () => {
     expect(label.endsWith('🔥…')).toBe(true);
   });
 
+  // M8 review ruling: over-limit keyboards are rejected, not cut. A cut
+  // keyboard shows a bot the person never saw (a missing "Cancel", a clipped
+  // amount); pca rejects the same bytes, so both clients show the same thing.
+  it('rejects a received keyboard over the limits as unsupported, and keeps one at the limits', () => {
+    const received = (rows: ReturnType<typeof command>[][]) => fromWire({ tag: 'buttons', value: { text: 'pick', rows, oneShot: false } });
+    const grid = (r: number, c: number) => Array.from({ length: r }, (_, i) => Array.from({ length: c }, (_, j) => command(i * 10 + j)));
+    const rejected = { kind: 'message', content: { type: 'unsupported', tag: 'buttons' } };
+    expect(received(grid(9, 1))).toEqual(rejected);
+    expect(received(grid(1, 5))).toEqual(rejected);
+    expect(received([[{ label: 'a'.repeat(41), action: { tag: 'command', value: 'x' } }]])).toEqual(rejected);
+    const atLimit = received([...grid(7, 4), [{ label: `${'a'.repeat(38)}🔥🔥`, action: { tag: 'command', value: 'x' } }]]);
+    expect(atLimit).toMatchObject({ kind: 'message', content: { type: 'buttons' } });
+    const rows = atLimit.kind === 'message' && atLimit.content.type === 'buttons' ? atLimit.content.rows : [];
+    expect(rows).toHaveLength(8);
+    expect(rows[7]?.[0]?.label).toBe(`${'a'.repeat(38)}🔥🔥`);
+  });
+
   it('disables what this client must not run: tx, links that are not https/polkadotapp, oversized callbacks', () => {
     const keyboard = keyboardOf([
       [
