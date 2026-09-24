@@ -12,13 +12,12 @@ import { BUILT_IN_DEMO_BOTS, DEMO_MANIFEST_LIMITS, parseDemoManifest } from './d
 const good = { username: 'pcdnew.12', tagline: 'New — a new bot', tag: 'game' };
 
 describe('demo bots manifest', () => {
-  it('holds the seven devnet bots with their numbers, and none on Paseo (the step is hidden there)', () => {
+  it('holds the six devnet bots (the Faucet is embedded in the app since M12, so no faucet bot) with their numbers, and none on Paseo (the step is hidden there)', () => {
     expect(BUILT_IN_DEMO_BOTS.devnet.map(bot => bot.username)).toEqual([
       'pcdpirate.81',
       'pcdguide.70',
       'pcdmeter.01',
       'pcdflip.44',
-      'pcdfaucet.77',
       'pcdpeer.47',
       'pcdcolor.05',
     ]);

@@ -31,9 +31,8 @@ export const BUILT_IN_DEMO_BOTS: DemoManifest = {
     { username: 'pcdguide.70', tagline: 'Guide — Polkadot support with buttons', tag: 'assistant' },
     { username: 'pcdmeter.01', tagline: 'Meter — a paid assistant, 0.1 PAS per reply', tag: 'payments' },
     { username: 'pcdflip.44', tagline: 'Flip — coin flips for 0.5 PAS', tag: 'game' },
-    { username: 'pcdfaucet.77', tagline: 'Faucet bot — test funds', tag: 'utility' },
     { username: 'pcdpeer.47', tagline: 'Echo — repeats what you say', tag: 'utility' },
-    { username: 'pcdcolor.05', tagline: 'Color — answers with a colour', tag: 'utility' },
+    { username: 'pcdcolor.05', tagline: 'Color — send a colour or a photo, get a swatch image back', tag: 'utility' },
   ],
   // No demo bots run on Paseo: the onboarding step and Settings › Demo are hidden.
   paseo: [],
