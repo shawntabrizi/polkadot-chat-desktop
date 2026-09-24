@@ -93,3 +93,4 @@ Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in t
 - Charge a metered turn only when the brain answered (failed turns are charged today).
 - `message-deletion.test.mjs` "no deletion goes out when the deleted extension is off" is timing-flaky in the full suite (5 ms wait).
 - pcdflip statement-ingress heartbeat recovery noise (76+ per hour) while still receiving.
+- 2026-09-24 morning (owner): the external faucet bot is out of date; the app's embedded Faucet replaces it in the demo list. `pcdfaucet` stays on the fleet only for the meter/flip/pay e2e drips; carry: switch those scripts to the in-app drip (devnet `faucet:drip` IPC) and retire the bot.
