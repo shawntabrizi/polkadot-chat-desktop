@@ -65,3 +65,7 @@ Development mode: sent freely. A client without `tx` support shows the button di
 ## Drawbacks and open points
 
 Fee payment by persons (PGAS allowance vs funded account) is outside this spec; devnet uses funded accounts. Multi-call intents with mixed kinds are allowed but clients may refuse them in v1. Final kind numbers upstream.
+
+### Person-to-person payments (M12g, 2026-09-24)
+
+No new wire kind. A **request** is a `buttons` message (0006) with one `tx` button whose intent is `Balances.transfer_keep_alive(requester, amount)` with `display.title = "Pay <requester> <amount> PAS"`, `expiresAt = now + 7 d`. A **payment** is the payer's `transactionReference` with `note = "req:<request messageId> <words>"`; the requester marks the request paid only when such a reference is in a block AND the chain shows the transfer to it for that amount. A **direct send** posts a reference with `note = "Sent <amount> PAS[ · <words>]"`; the receiver SHOULD verify the transfer on chain before presenting it as received. A "Decline" is a plain text "Declined: <title>". Unresolved: a second device may pay a request twice (v1 accepts this; the first paid reference wins).
