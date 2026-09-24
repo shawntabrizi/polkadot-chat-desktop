@@ -230,12 +230,12 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
   const streamed = useSyncExternalStore(subscribe, snapshot, snapshot);
   const text = streamed ?? textOf(row);
   const deleted = row.content.type === 'deleted';
-  const markdown = !own && (row.content.type === 'text' || row.content.type === 'buttons');
+  const markdown = row.content.type === 'text' || row.content.type === 'buttons';
   // A reply still arriving: a client directive fence (```buttons) is never shown raw.
   const view = markdown && streaming ? streamingView(text ?? '') : null;
   const painted = useTypingReveal({ text: view ? view.text : (text ?? ''), live, streaming }, reveal && !own);
-  // Incoming text (contacts, bots and the Assistant write markdown) renders as
-  // markdown, sanitized by renderMarkdown; parsed again only when the painted text changes.
+  // Text on both sides renders as markdown (own bubbles too, as a peer sees them),
+  // sanitized by renderMarkdown; parsed again only when the painted text changes.
   const html = useMemo(() => (markdown ? renderMarkdown(painted) : ''), [markdown, painted]);
   useLayoutEffect(() => {
     if (streamId) onGrow?.();
@@ -270,7 +270,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
     if (row.content.type === 'attachment') return <AttachmentBody row={row} own={own} />;
     if (row.content.type === 'transactionReference') return <ReferenceBody reference={row.content.reference} own={own} line={actions?.referenceText ?? null} />;
     // One element from the first streamed word to the finished reply (M12d): completion must not re-create it.
-    if (markdown) return <div className="md text-body-m" data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+    if (markdown) return <div className={cn('md text-body-m', own && 'md-inverted')} data-testid="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
     if (row.content.type === 'richText') {
       if (row.content.attachments.length > 0) return <HopAttachmentBody row={row} own={own} />;
       return row.content.text ? <p className="text-body-m whitespace-pre-wrap">{row.content.text}</p> : null;

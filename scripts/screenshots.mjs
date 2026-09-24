@@ -115,6 +115,9 @@
 //                   sender's node" with Ask to resend, one still downloading
 //                   (the sender's blurhash), one received with its text; a
 //                   video not yet downloaded above them
+//   room-own-markdown own markdown (fixture): a peer's message with bold,
+//                   inline code, a fenced block and a link, and the same
+//                   text sent by us, in the inverted bubble
 //   settings-storage  M15c Settings › Storage: the Bulletin authorization
 //                   left (live read on devnet), uploads today (fixture count)
 //                   against the daily share, local copies, Free space
@@ -187,7 +190,7 @@ const WORKER_SHOTS = {
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-tx-expired', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
-    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'settings-storage',
+    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'room-own-markdown', 'settings-storage',
     'settings-profiles', 'settings-security',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
@@ -1063,6 +1066,18 @@ const hopFixture = async () => {
   };
 };
 
+/** Own markdown: the same text from a fictional peer and from us, side by side. */
+const MATEO = { account: account('c5'), username: 'mateodev.31', at: Date.now() - 20 * 60_000 };
+const MARKDOWN_TEXT = 'The fix is **in**: call `renderMarkdown` on both sides.\n\n```ts\nconst html = renderMarkdown(text);\n```\n\nNotes in [the decisions](https://example.com/decisions).';
+const ownMarkdownFixture = () => ({
+  contacts: [contactRow(MATEO)],
+  rooms: [roomRow(MATEO, 'The fix is in', MATEO.at + 60_000)],
+  messages: [
+    messageRow('fixture-mateo-peer', MATEO, MATEO.at, 'incoming', { type: 'text', text: MARKDOWN_TEXT }),
+    messageRow('fixture-mateo-own', MATEO, MATEO.at + 60_000, 'outgoing', { type: 'text', text: MARKDOWN_TEXT }),
+  ],
+});
+
 /** The intent of the fixture tx button: 0.01 PAS from `selfHex` to itself, with call data the app builds. */
 /** The Meter's "Top up 1 PAS" as it offered it 3 h ago, expired 2 h ago. Never pressed (disabled), so the call data is a placeholder. */
 const expiredTopUpIntent = async () => {
@@ -1135,6 +1150,7 @@ const mainWorker = async () => {
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
     await writeRows(app, await hopFixture());
+    await writeRows(app, ownMarkdownFixture());
     await recordFixtureVoice(app, voiceRows);
     await recordFixtureVideo(app, videoRows);
     writeFileSync(join(profile, 'pick.png'), pick);
@@ -1384,6 +1400,17 @@ const attachmentShots = async (app, pickPath) => {
     if (!(await app.waitFor(shown, 15_000))) throw new Error('the HOP bubbles did not show: the photo, the download, "no longer available" and the video');
     await app.waitFor(`[...document.querySelectorAll('[data-via=hop] [data-testid=attachment-image]')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
     await app.evaluate(`document.querySelector('[data-message-id="fixture-priya-garden"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('room-own-markdown', async () => {
+    if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== MATEO.username) await openRow(app, MATEO.username);
+    const shown = [
+      app.exists('[data-message-id="fixture-mateo-peer"] [data-testid=markdown] pre'),
+      app.exists('[data-message-id="fixture-mateo-own"] .md-inverted pre'),
+      app.exists('[data-message-id="fixture-mateo-own"] .md-inverted a'),
+    ].join(' && ');
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('the own bubble did not render markdown next to the peer one');
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-mateo-own"]')?.scrollIntoView({ block: 'end' }); true`);
   });
 
   await app.shot('composer-attach', async () => {

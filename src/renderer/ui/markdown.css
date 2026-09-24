@@ -2,8 +2,8 @@
    changes: every colour, radius and type step is a design-system token (named
    type styles, no stock steps); rules for markup this app's renderer does not
    emit (highlight.js, KaTeX, spoilers, /commands, task lists, the code Copy
-   head, the scroll mask) are dropped; no inverted tone (own messages render
-   as plain text). The HTML is a sanitized string, so JSX classes cannot reach
+   head, the scroll mask) are dropped; own bubbles add `.md-inverted` (the
+   inverted surface) instead of Desktop's own-tone rules. The HTML is a sanitized string, so JSX classes cannot reach
    it: each rule styles what domain/markdown/markdown.ts emits. */
 
 .md {
@@ -84,4 +84,27 @@
 /* Tailwind's preflight removes link styling. */
 .md a {
   @apply text-fg-link underline transition-colors hover:text-fg-link-hover;
+}
+
+/* Own bubbles sit on the inverted surface: the normal surfaces, strokes and
+   the link blue lose contrast there, so each uses its inverted token. A link
+   takes the bubble's text colour and keeps the underline (no inverted link
+   token exists). */
+.md-inverted code,
+.md-inverted pre {
+  @apply bg-surface-nested-inverted;
+}
+.md-inverted pre code {
+  @apply bg-transparent;
+}
+.md-inverted blockquote {
+  @apply border-stroke-primary-inverted text-fg-secondary-inverted;
+}
+.md-inverted th,
+.md-inverted td,
+.md-inverted hr {
+  @apply border-stroke-primary-inverted;
+}
+.md-inverted a {
+  @apply text-fg-primary-inverted hover:text-fg-secondary-inverted-hover;
 }
