@@ -88,3 +88,9 @@ Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in t
 - The efficiency rule holds: one submission per group message.
 - Spec 0011 (research + RFC draft) in progress; build as M16, or earlier if the owner moves it up.
 - Privacy (owner, 2026-09-24): elevated privacy in the direction of Signal, Matrix and DarkFi. Groups v2 ships unlinkable per-epoch topics (level 1) and is designed for posting under Proof-of-Personhood contextual aliases (level 2: membership and sender hidden from the store while sybil resistance holds); anonymous transport without identities (level 3) is out of scope. DMs get the alias treatment in a follow-on RFC. Matrix Megolm is the prior art for the per-sender ratchet; epochs rotate on removal and on a timer.
+
+## pca fix round (queued 2026-09-24 night)
+- Charge a metered turn only when the brain answered (failed turns are charged today).
+- `message-deletion.test.mjs` "no deletion goes out when the deleted extension is off" is timing-flaky in the full suite (5 ms wait).
+- pcdflip statement-ingress heartbeat recovery noise (76+ per hour) while still receiving.
+- Rotate pcdmeter's identity (seed exposed in a transcript; devnet only).
