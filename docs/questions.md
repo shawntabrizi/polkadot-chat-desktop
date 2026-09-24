@@ -125,6 +125,9 @@ Write the question, what you did meanwhile, and the date.
 
 ## Morning review (coordinator, 2026-09-24 night)
 
+- **QUOTA, top item.** Live: identities that chatted with ~25 peers cannot post in any v2 group (`AccountFull`; 50-statement allowance, DM statements never expire). Decide: client-side slot GC (replace ACKed idle DM slots with short-expiry statements, lazily near the limit) and/or an upstream ask for a finite DM expiry and a larger allowance. See docs/review/M16.md.
+
+
 - **pcdmeter seed in a transcript.** Owner ruling 2026-09-24: testnet dev and bot account seeds are not a concern; no rotation needed.
 - **Failed turns are charged** by pcdmeter ("Sorry — I couldn't reach my agent" cost 0.1 PAS). Queued for the pca fix round: charge only when the brain produced an answer.
 - **Groups v2 defaults** (see `docs/review/0011-groups-v2.md`): level 1 now, cap 256, history on request. Overrule if you disagree.
