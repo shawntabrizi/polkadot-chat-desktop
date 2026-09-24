@@ -78,3 +78,11 @@ Later: chat folders and an unread filter; export chat; per-chat notification sou
 ## Meter pending debit in the header (owner report, 2026-09-24) → M12f (both repos)
 
 Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in the reply's batch. pca: meter sends it; vector `vectors-0008c.md`. Desktop: decode, header shows one number, `balance − pending`, with the split only in a tooltip; re-read after a charge reference. Also pca: the persisted pending debit (carry from M12c).
+
+## Groups v2 rulings (owner, 2026-09-24)
+
+- One group type, carrying Telegram's supergroup feature set (roles and permissions, invite links, join requests, history for late joiners, pinned messages, slow mode, topics later). No "basic vs super" split.
+- Public communities (anyone joins, 100k members) are a separate future "channel" design; out of scope for groups.
+- The north star is Signal, Telegram and WhatsApp. t3ams is a reference: adopt what is sound, improve or differ where a better design exists; interop with t3ams groups is never a requirement.
+- The efficiency rule holds: one submission per group message.
+- Spec 0011 (research + RFC draft) in progress; build as M16, or earlier if the owner moves it up.
