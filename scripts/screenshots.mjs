@@ -23,7 +23,8 @@
 //
 //     worker  identity                          shots
 //     signup  a fresh profile                   signup
-//     main    PCD_SCREENSHOT_IDENTITY (path)    everything else
+//     main    PCD_SCREENSHOT_IDENTITY (path,    everything else
+//             default .agent-runs/identity-pcde2e/identity.json)
 //     flip    PCD_SCREENSHOT_FLIP_IDENTITY      faucet, room-flip, room-flip-done
 //             (name, default pcdbenchzzlx) + the second player
 //             PCD_SCREENSHOT_FLIP_WITH (default pcdeceb, e2e-flip.mjs --role b)
@@ -72,8 +73,18 @@
 //                   is checked on the chain from .agent-runs/pay-last.json)
 //   demo-onboarding settings-demo   M12i demo bots (fixture requests)
 //
-//   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
-//   ... npm run screenshots -- --only room-tx-done,chat-menu
+// Every variable is an optional override; with none set the workers use the
+// defaults above (the identities live in .agent-runs/identity-<name>/):
+//   PCD_SCREENSHOT_IDENTITY        main worker, a path to identity.json
+//   PCD_SCREENSHOT_FLIP_IDENTITY   flip worker, a name (pcdbenchzzlx)
+//   PCD_SCREENSHOT_FLIP_WITH       second flip player, a name (pcdeceb)
+//   PCD_SCREENSHOT_GROUP_IDENTITY  group worker, a name (pcdbenchqmwk)
+//   PCD_SCREENSHOT_GROUP_WITH      group member, a name (pcdbenchfina)
+//   PCD_SCREENSHOT_ENGINE          the Assistant's engine in the profile (claude)
+//   PCD_SCREENSHOT_PORT            first CDP port (9335; the workers use it and the three after it)
+//
+//   npm run screenshots
+//   npm run screenshots -- --only room-tx-done,chat-menu
 //
 // `--only a,b` takes only those shots and starts only the workers they need.
 // Headless by default (PCD_HEADLESS=1: hidden window, no dock icon, no
@@ -95,7 +106,8 @@ const THEMES = ['berlin-day', 'berlin-night'];
 const WIDTH = 1280;
 const HEIGHT = 800;
 const BASE_PORT = Number(process.env.PCD_SCREENSHOT_PORT ?? 9335);
-const identitySource = process.env.PCD_SCREENSHOT_IDENTITY;
+// The check runs with no PCD_SCREENSHOT_* set: each worker has a default test identity.
+const identitySource = process.env.PCD_SCREENSHOT_IDENTITY ?? join(root, '.agent-runs', 'identity-pcde2e', 'identity.json');
 const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
 const flipIdentity = process.env.PCD_SCREENSHOT_FLIP_IDENTITY ?? 'pcdbenchzzlx';
 const flipWith = process.env.PCD_SCREENSHOT_FLIP_WITH ?? 'pcdeceb';
@@ -696,8 +708,8 @@ const signupWorker = async () => {
 
 const mainWorker = async () => {
   const log = logger('main');
-  if (!identitySource || !existsSync(identitySource)) {
-    for (const name of WORKER_SHOTS.main.filter(wanted)) miss(name, 'PCD_SCREENSHOT_IDENTITY not set');
+  if (!existsSync(identitySource)) {
+    for (const name of WORKER_SHOTS.main.filter(wanted)) miss(name, `no identity file at ${identitySource}`);
     return;
   }
   const source = JSON.parse(readFileSync(identitySource, 'utf8'));

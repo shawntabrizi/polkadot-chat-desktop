@@ -3113,3 +3113,9 @@ The 14.6 s between "fixture written" and the header line are the first Asset Hub
 ### git status --short
 
 This file is part of the commit, so the result is in the M12h hand-off report.
+
+### Follow-up: the workers default their identities (2026-09-24)
+
+`bash docs/milestones/M12h.check.sh` failed on main: it sets no `PCD_SCREENSHOT_IDENTITY`, so the main worker missed every shot. The main worker now defaults to `.agent-runs/identity-pcde2e/identity.json` (flip and group already defaulted to pcdbenchzzlx/pcdeceb and pcdbenchqmwk/pcdbenchfina); the variables stay as overrides and are listed at the top of `scripts/screenshots.mjs`.
+
+`env -i HOME=$HOME PATH=$PATH npm run screenshots` in the worktree: exit 0, 72 PNGs, `SCREENSHOTS_OK in 66.5 s` (67 s wall).
