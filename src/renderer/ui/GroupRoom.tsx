@@ -645,16 +645,11 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
           }
         : undefined;
     const proposal = proposals.get(row.messageId);
-    const below =
-      strip && strip.messageId === row.messageId ? (
-        <TxStrip intent={strip.intent} state={strip.state} signerName={username} outcome={null} onSign={() => void signStrip()} onCancel={() => setStrip(null)} />
-      ) : null;
     // M12e Forward: a copy of the text, captioned with its author on this device only.
     const author = row.direction === 'outgoing' ? 'you' : (senderOf(row) ?? group.name);
     const forward = forwardText(row) !== null ? (target: ForwardTarget) => chatActions.forward(target, row, author) : undefined;
     return {
       ...(keyboard ? { keyboard } : {}),
-      ...(below ? { below } : {}),
       ...(proposal ? { status: <ProposalStatus view={proposal} now={now} /> } : {}),
       ...(forward ? { forward } : {}),
       react: emoji => guarded(manager.react(peer, row.messageId, emoji, !row.reactions.some(r => r.emoji === emoji && r.by === 'me')), 'The reaction was not sent.'),
@@ -738,6 +733,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
           reveal={prefs.revealReplies}
           jumpTo={pinJump ?? (scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null)}
           senderOf={senderOf}
+          keepInView={strip?.messageId ?? null}
           empty={
             <div className="flex h-full flex-col items-center justify-center gap-1 text-center">
               <p className="text-heading-m text-fg-primary">No messages yet</p>
@@ -767,6 +763,14 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
           <Composer
             sendDisabled={slowWait > 0}
             quietSend={strip !== null}
+            // Esc in the field closes the open strip, unless it is signing.
+            onEscape={strip && strip.state.phase !== 'signing' ? () => setStrip(null) : undefined}
+            // The signing strip docks here, above the field: always in view (2026-09-24).
+            panel={
+              strip ? (
+                <TxStrip intent={strip.intent} state={strip.state} signerName={username} outcome={null} onSign={() => void signStrip()} onCancel={() => setStrip(null)} />
+              ) : null
+            }
             draft={draft}
             onDraft={text => {
               setDraft(text);

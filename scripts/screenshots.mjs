@@ -69,6 +69,9 @@
 //   keyboard        the shortcuts section
 //   chat-menu archived settings-privacy   M12e chat management (fixture)
 //   room-meter      M12f the Meter header with its tooltip (live balance)
+//   room-tx-last    the Meter room's last message is a tx button: pressed, the
+//                   strip docks above the composer and the message stays in
+//                   view (owner bug 2026-09-24; real dry-run, never signed)
 //   send-pas room-request room-request-paid   M12g payments (fixture; paid
 //                   is checked on the chain from .agent-runs/pay-last.json)
 //   demo-onboarding settings-demo   M12i demo bots (fixture requests)
@@ -167,7 +170,7 @@ const WORKER_SHOTS = {
   main: [
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
-    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
+    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
@@ -645,7 +648,7 @@ const DAO = {
   id: 'fixture-dao',
   name: 'Garden DAO',
   at: Date.now() - 50 * 60_000,
-  bot: { account: account('e1'), username: 'pcddao.07' },
+  bot: { account: account('e3'), username: 'pcddao.07' },  // Not e1: that is HELPER's account, and the DAO rows took over its room.
   ana: { account: account('e2'), username: 'anagrove.52', at: Date.now() - 3 * 3_600_000 },
 };
 const daoFixture = async self => {
@@ -800,6 +803,14 @@ const mainFixture = ({ txIntent, pay, self }) => {
       ...m.contacts.map(c => messageRow(`fixture-${c.username}`, c, c.at, 'incoming', { type: 'text', text: c.text })),
       { messageId: `bot-greeting:${METER.account}`, peerAccountId: METER.account, timestamp: METER.at, direction: 'system', status: 'received', content: { type: 'botGreeting', text: METER.info.greeting }, reactions: [], editedAt: null },
       messageRow('fixture-meter-question', METER, METER.at + 1, 'outgoing', { type: 'text', text: 'What is a parachain?' }),
+      // room-tx-last: the room's last message is a tx button (the owner's case, 2026-09-24).
+      messageRow('fixture-meter-tx', METER, METER.at + 2, 'incoming', {
+        type: 'buttons',
+        text: 'Try the signing strip: a test transfer of 0.01 PAS to yourself.',
+        rows: [[{ label: 'Send 0.01 PAS to yourself', action: { kind: 'tx', intent: bytes(txIntent) } }]],
+        oneShot: false,
+        pressed: null,
+      }),
       ...helperMessages,
       messageRow('fixture-pay-hello', pay.ask, pay.ask.at, 'incoming', { type: 'text', text: 'Got us two seats for Saturday!' }),
       messageRow('fixture-pay-ask', pay.ask, pay.ask.at + 1, 'incoming', { type: 'buttons', text: pay.ask.text, rows: pay.ask.rows, oneShot: false, pressed: null }),
@@ -1036,7 +1047,7 @@ const mainWorker = async () => {
     log('seeded', source.username);
     const pay = await paymentFixture(source.accountHex);
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
-    const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
+    const txIntent = ['room-tx', 'room-tx-last', 'room-meter'].some(wanted) ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
     await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
     await writeRows(app, await daoFixture({ account: source.accountHex, username: source.username }));
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
@@ -1383,12 +1394,14 @@ const mainShots = async (app, log, pay) => {
     await openHelper();
     const button = `${message('fixture-helper-tx')}?.querySelector('[data-action=tx]:not([disabled])')`;
     if (!(await app.waitFor(`${button} != null`, 10_000))) throw new Error('no tx button');
-    await app.evaluate(`${button}.click(); true`);
+    // A real mouse press: the strip then takes the focus without the keyboard's focus ring, as for a person.
+    await app.pressOn('[data-message-id="fixture-helper-tx"] [data-action=tx]');
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: HEIGHT - 1 });
     if (!(await app.waitFor(`['ready', 'refused'].includes(${txStrip}?.dataset.phase)`, 60_000))) throw new Error('the signing strip did not finish its dry-run');
     const strip = await app.evaluate(`${txStrip}.innerText.replace(/\\s+/g, ' ')`);
     log('strip:', JSON.stringify(strip));
     if ((await app.evaluate(`${txStrip}.dataset.phase`)) !== 'ready') throw new Error(`the dry-run refused it: ${strip}`);
-    await app.evaluate(`${txStrip}.scrollIntoView({ block: 'end' }); true`);
+    await checkDocked(app, log, 'fixture-helper-tx');
   });
   // Never signed: Cancel.
   await app.evaluate(`[...document.querySelectorAll('[data-testid=tx-strip] button')].find(b => b.textContent.trim() === 'Cancel')?.click(); true`);
@@ -1615,6 +1628,62 @@ const manageShots = async (app, log) => {
     { hover: true },
   );
   await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: HEIGHT - 1 });
+
+  const strip = `document.querySelector('[data-testid=tx-strip]')`;
+  let pressed = false;
+  await app.shot('room-tx-last', async () => {
+    if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== METER.username) await openRow(app, METER.username);
+    const button = `document.querySelector('[data-message-id="fixture-meter-tx"] [data-action=tx]:not([disabled])')`;
+    if (!(await app.waitFor(`${button} != null`, 10_000))) throw new Error('no tx button as the last message');
+    // Opened at the bottom, as a person sees the room.
+    await app.evaluate(`(el => { el.scrollTop = el.scrollHeight; })(document.querySelector('[data-testid=messages]')); true`);
+    await app.settle();
+    await app.pressOn('[data-message-id="fixture-meter-tx"] [data-action=tx]');
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: HEIGHT - 1 });
+    pressed = true;
+    if (!(await app.waitFor(`['ready', 'refused'].includes(${strip}?.dataset.phase)`, 60_000))) throw new Error('the signing strip did not finish its dry-run');
+    log('strip:', JSON.stringify(await app.evaluate(`${strip}.innerText.replace(/\\s+/g, ' ')`)));
+    if ((await app.evaluate(`${strip}.dataset.phase`)) !== 'ready') throw new Error('the dry-run refused it');
+    await checkDocked(app, log, 'fixture-meter-tx');
+  });
+  if (pressed) {
+    // Esc closes the strip only: the room stays open.
+    await app.esc();
+    if (!(await app.waitFor(`${strip} == null`, 5_000))) missing.push('room-tx-last Esc check (the strip did not close)');
+    else if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== METER.username) missing.push('room-tx-last Esc check (Esc closed the room, not the strip)');
+    else log('Esc closed the strip; the room stayed open');
+  }
+};
+
+/**
+ * The signing strip docks above the composer (2026-09-24): it is outside the
+ * scrolling flow, there is one, it sits under the flow, and the pressed
+ * message is fully in view above it. Real layout, so the check lives here.
+ */
+const checkDocked = async (app, log, messageId) => {
+  await app.settle();
+  const layout = await app.evaluate(`(() => {
+    const flow = document.querySelector('[data-testid=messages]');
+    const strips = document.querySelectorAll('[data-testid=tx-strip]');
+    const pressed = document.querySelector('[data-message-id=${JSON.stringify(messageId)}]');
+    const f = flow.getBoundingClientRect();
+    const s = strips[0].getBoundingClientRect();
+    const m = pressed.getBoundingClientRect();
+    return {
+      strips: strips.length,
+      inFlow: flow.contains(strips[0]),
+      stripBelowFlow: s.top >= f.bottom - 1,
+      messageInView: m.top >= f.top - 1 && m.bottom <= f.bottom + 1,
+      fromBottom: Math.round(flow.scrollHeight - flow.scrollTop - flow.clientHeight),
+      focus: strips[0].contains(document.activeElement),
+    };
+  })()`);
+  log('strip layout:', JSON.stringify(layout));
+  if (layout.strips !== 1) throw new Error(`${layout.strips} signing strips in the room (one per room)`);
+  if (layout.inFlow) throw new Error('the signing strip is inside the scrolling flow');
+  if (!layout.stripBelowFlow) throw new Error('the signing strip is not under the flow, above the composer');
+  if (!layout.messageInView) throw new Error('the pressed message is not fully in view above the strip');
+  if (!layout.focus) throw new Error('the strip did not take the focus (Esc would close the room)');
 };
 
 /** M12g: room-request, send-pas, room-request-paid. */

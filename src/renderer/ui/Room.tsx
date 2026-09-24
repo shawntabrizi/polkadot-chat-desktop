@@ -360,6 +360,11 @@ export const Room = (props: Props) => {
     if (!action || action.kind === 'unsupported') return;
     setError(null);
     if (action.kind === 'tx') {
+      // The strip docks above the composer, and a blocked room has none: say so, not nothing.
+      if (blocked) {
+        setError(`Unblock ${name} to sign its transactions.`);
+        return;
+      }
       openStrip(row.messageId, r, i, action.intent, paymentRequestOf(row));
       return;
     }
@@ -393,8 +398,9 @@ export const Room = (props: Props) => {
     if (!intent) return;
     const paymentNote = request && !request.own ? requestPaymentNote(request.messageId, request.note) : null;
     const opened: Strip = { messageId, row: r, index: i, bytes, intent, state: { phase: 'checking' }, outcome: null, paymentNote };
-    // One strip per room: a send's strip closes.
+    // One strip per room: a send's strip (and its amount row) closes.
     setSendStrip(null);
+    setPayment(null);
     setStrip(opened);
     const update = (next: Partial<Strip>) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, ...next } : current));
     const chain = window.desktop?.chain;
@@ -418,6 +424,15 @@ export const Room = (props: Props) => {
       })
       .catch((cause: unknown) => update({ state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } }));
   };
+
+  // Esc in the field closes the open strip, unless it is signing.
+  const closeStrip =
+    (strip && strip.state.phase !== 'signing') || (sendStrip && sendStrip.state.phase !== 'signing')
+      ? () => {
+          setStrip(null);
+          setSendStrip(null);
+        }
+      : undefined;
 
   const signStrip = async () => {
     if (!strip || strip.state.phase !== 'ready' || !transactions || !manager) return;
@@ -791,18 +806,7 @@ export const Room = (props: Props) => {
     const payments = paymentViewFor(row);
     // M15c: the peer asked us to resend one of our attachments: offer to store it again.
     const resendOf = row.direction === 'incoming' && row.content.type === 'text' ? parseResendRequest(row.content.text) : null;
-    const below = resendOf ? (
-      <ResendOffer messageId={resendOf} peer={peer} />
-    ) : strip && strip.messageId === row.messageId ? (
-        <TxStrip
-          intent={strip.intent}
-          state={strip.state}
-          signerName={self?.username ?? 'this account'}
-          outcome={strip.outcome}
-          onSign={() => void signStrip()}
-          onCancel={() => setStrip(null)}
-        />
-      ) : null;
+    const below = resendOf ? <ResendOffer messageId={resendOf} peer={peer} /> : null;
     const forward = forwardFor(row);
     return {
       ...(keyboard ? { keyboard } : {}),
@@ -976,6 +980,7 @@ export const Room = (props: Props) => {
         reveal={prefs.revealReplies}
         jumpTo={scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null}
         stream={assistant?.stream}
+        keepInView={strip?.messageId ?? null}
       />
       {error ? (
         <p role="alert" className="px-4 text-body-s text-fg-error">
@@ -1007,6 +1012,7 @@ export const Room = (props: Props) => {
           // Commands only for a new message: an edit or a reply is not one.
           commands={mode.mode !== 'new' ? [] : assistant ? ASSISTANT_COMMANDS : (botInfo?.commands ?? [])}
           quietSend={strip !== null || sendStrip !== null}
+          onEscape={closeStrip}
           plusMenu={
             chainForPayments
               ? [
@@ -1016,7 +1022,17 @@ export const Room = (props: Props) => {
               : []
           }
           panel={
-            payment ? (
+            // The signing strip docks here, above the field: always in view (2026-09-24).
+            strip ? (
+              <TxStrip
+                intent={strip.intent}
+                state={strip.state}
+                signerName={self?.username ?? 'this account'}
+                outcome={strip.outcome}
+                onSign={() => void signStrip()}
+                onCancel={() => setStrip(null)}
+              />
+            ) : payment ? (
               <AmountRow
                 key={payment}
                 kind={payment}

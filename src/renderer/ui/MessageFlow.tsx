@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/cn';
 
 import { type BubbleActions, DateSeparator, GreetingRow, MessageBubble, SystemRow, messagePreview, systemText } from './MessageBubble';
+import { scrollAfterResize } from './flowScroll';
 import { formatDay } from './format';
 import { createActionCache, createRowCache } from './stableProps';
 
@@ -46,6 +47,8 @@ type Props = {
   senderOf?: (row: MessageRow) => string | null;
   /** The Assistant's streaming replies, painted from memory (M12d). */
   stream?: ReplyStream;
+  /** The message whose `tx` button opened the signing strip: kept in view when the strip makes the flow shorter. */
+  keepInView?: string | null;
 };
 
 type DayGroup = { day: string; rows: MessageRow[] };
@@ -93,6 +96,7 @@ export const MessageFlow = ({
   jumpTo = null,
   senderOf,
   stream,
+  keepInView = null,
 }: Props) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -157,6 +161,34 @@ export const MessageFlow = ({
     };
     // checkSeen reads refs only.
   }, [hasRows]);
+
+  // The composer area grows (the signing strip docks there) and the flow gets
+  // shorter: keep the bottom, or the pressed message, in view.
+  const keepRef = useRef(keepInView);
+  useEffect(() => {
+    keepRef.current = keepInView;
+  });
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    let height = element.clientHeight;
+    const observer = new ResizeObserver(() => {
+      if (element.clientHeight === height) return;
+      height = element.clientHeight;
+      const target = keepRef.current ? element.querySelector(`[data-message-id="${CSS.escape(keepRef.current)}"]`) : null;
+      const box = element.getBoundingClientRect();
+      const rect = target?.getBoundingClientRect();
+      const top = rect ? rect.top - box.top + element.scrollTop : 0;
+      const next = scrollAfterResize(
+        { scrollTop: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight },
+        nearBottom.current,
+        rect ? { top, bottom: top + rect.height } : null,
+      );
+      if (next !== null) element.scrollTop = next;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   // A row that arrives while the end is already on screen is seen at once.
   useEffect(checkSeen, [followKey]);

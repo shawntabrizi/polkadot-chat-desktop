@@ -1,12 +1,12 @@
-// Spec 0007 in the room: the signing strip under a `tx` button's bubble, and
-// the reference bubble. The strip is inline, never a modal (design system
-// §10); amounts and the fee are shown plainly. The hash is an identifier:
+// Spec 0007 in the room: the signing strip, docked above the composer (not in
+// the scrolling flow, so it is always in view; 2026-09-24), and the reference
+// bubble. The strip is inline, never a modal (design system §10); amounts and the fee are shown plainly. The hash is an identifier:
 // short, in mono, as secondary text beside the bubble's actions, never the
 // label of a button (§11). Sign is the strip's primary action at
 // `rounded-medium` (a component's action, not the view's pill).
 
 import { Check, CheckCheck, CircleAlert, Copy, LoaderCircle } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { TxReference, TxStatus } from '../domain/chat/content';
 import { referenceLine } from '../domain/chat/content';
@@ -57,8 +57,27 @@ export const TxStrip = ({ intent, state, signerName, outcome, onSign, onCancel }
   const fee = dryRun?.fee ? `≈ ${formatUnits(BigInt(dryRun.fee))} PAS` : state.phase === 'checking' ? 'Checking…' : '—';
   // The amount is always stated: the intent's own words, else the value the calls move.
   const amount = amountText(intent) ?? (dryRun && BigInt(dryRun.value) > 0n ? `${formatUnits(BigInt(dryRun.value))} PAS` : dryRun ? 'No transfer' : '…');
+  // Focus comes here when the strip opens, so Esc closes the strip (not the room).
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => box.current?.focus({ preventScroll: true }), []);
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape') return;
+    // The strip only: the room stays open (Shell's Esc skips a handled event).
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.phase !== 'signing') onCancel();
+  };
   return (
-    <div className="flex w-full max-w-sm flex-col gap-2 rounded-nested bg-surface-container p-3 shadow-1" role="group" aria-label="Sign a transaction" data-testid="tx-strip" data-phase={state.phase}>
+    <div
+      ref={box}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="flex w-full max-w-sm flex-col gap-2 rounded-nested bg-surface-container p-3 shadow-1"
+      role="group"
+      aria-label="Sign a transaction"
+      data-testid="tx-strip"
+      data-phase={state.phase}
+    >
       <div className="flex flex-col gap-0.5">
         <p className="text-label-m text-fg-primary">{intent.display.title}</p>
         {intent.display.description ? <p className="text-body-s text-fg-secondary">{intent.display.description}</p> : null}

@@ -59,7 +59,7 @@ const shapeOf = (actions: BubbleActions): string =>
  * Per row, the same actions object while what the bubble shows of it stays
  * the same. Its functions call the closures of the latest render, so a press
  * never runs against old room state. Actions that carry React elements
- * (`below`: the signing strip; M12g `body` and a keyboard's `extra`; M14
+ * (`below`: the M15c resend offer; M12g `body` and a keyboard's `extra`; M14
  * `status`) are passed through as they are.
  */
 export const createActionCache = () => {

@@ -148,7 +148,7 @@ export type BubbleActions = {
   remove?: { label: string; run: () => void };
   /** Spec 0006: presses on this message's buttons. Absent: the buttons show disabled. */
   keyboard?: KeyboardActions;
-  /** Inline content under the bubble: the spec 0007 signing strip of a pressed `tx` button. */
+  /** Inline content under the bubble: the M15c resend offer. (The signing strip docks above the composer.) */
   below?: ReactNode;
   /** M12g: the bubble's content in place of its text and keyboard (the requester's own request). */
   body?: ReactNode;
