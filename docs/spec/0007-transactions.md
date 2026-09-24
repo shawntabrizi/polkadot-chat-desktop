@@ -21,7 +21,7 @@ TxIntent = {                          // SCALE payload of Action::tx(Bytes)
     calls: [Call]                     // 1..8, executed in order (batched by the client as utility.batchAll when >1)
     display: Display
     dryRunRequired: bool              // MUST be true in v1; a client MUST refuse to sign without a dry-run
-    expiresAt: u64                    // unix ms; the button is disabled after this
+    expiresAt: u64                    // unix ms; the button is disabled after this; 0 = never expires (2026-09-24)
 }
 Call = {
     kind: u8                          // 0 = raw extrinsic call data (pallet index, call index, args as SCALE)
@@ -76,3 +76,7 @@ A dry-run sizes one contract path; the extrinsic may run another (a reorg, or an
 - The **author** of a `tx` intent sets each kind-1 call's `storageDepositLimit`, `gasRefTime` and `gasProofSize` from the call's worst case over all contract paths: deposit limit = max(deposit × 1.5, deposit + 0.1 PAS); gas = measured × 1.5. These are caps; the signer pays only what the call uses.
 - The **signer** signs with, per field, the larger of the intent's value and its own estimate plus margin. For an intent without limits (a brain's buttons block), the signer floors the deposit at estimate + 0.1 PAS; gas stays at estimate + 20 %, so such intents remain exposed to path changes.
 - A reference's "in block" may name a best block later reorged away; the bubble tracks finality from the chain (M12c), so the final block can differ.
+
+### Non-expiring intents (2026-09-24)
+
+`expiresAt = 0` means the intent never expires: right for a fixed call whose bytes cannot go stale (a top-up, a fixed-price purchase). Authors SHOULD still set a finite expiry for state-dependent calls (a stake in a round, a vote before a deadline), where a stale label would mislead. The expiry is a client-side rule from the author, never an on-chain property; the signed extrinsic's own mortality starts at signing.
