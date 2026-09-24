@@ -587,9 +587,13 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
 };
 
 /** One line for the chat list. */
+/** M15c: an Ask to resend reads "Please resend the photo" in a preview, without its local link. */
+const withoutResendLinks = (text: string): string => text.replace(/\[([^\]]*)\]\(#resend\/[\w-]{1,64}\)/g, '$1');
+
 export const previewOf = (content: MessageContent): string => {
   switch (content.type) {
     case 'text':
+      return withoutResendLinks(content.text);
     case 'reply':
       return content.text;
     case 'richText':

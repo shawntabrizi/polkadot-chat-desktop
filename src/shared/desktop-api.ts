@@ -57,6 +57,7 @@ export const IPC = {
   bulletinStore: 'bulletin:store',
   bulletinProgress: 'bulletin:progress',
   bulletinFetch: 'bulletin:fetch',
+  bulletinAllowance: 'bulletin:allowance',
   fileOpen: 'file:open',
   fileSave: 'file:save',
   storageAtRestKey: 'storage:atRestKey',
@@ -401,8 +402,26 @@ export type DesktopAgentApi = {
   onProgress: (listener: (line: string) => void) => () => void;
 };
 
-/** Spec 0012: a running upload's steps ("storing k of n"). `uploadId` is the caller's. */
-export type BulletinProgress = { uploadId: string; stored: number; total: number };
+/**
+ * Spec 0012: a running upload's steps ("storing k of n"). `uploadId` is the
+ * caller's; `chunk` (M15c) is the index of the chunk this step stored.
+ */
+export type BulletinProgress = { uploadId: string; stored: number; total: number; chunk?: number };
+
+/** M15c: what a store call broadcast (chunks the chain had already cost nothing): the quota panel's day meter. */
+export type BulletinStoreResult = { submitted: number; submittedBytes: number };
+
+/** M15c: the account's Bulletin authorization at the best block (Settings › Storage). */
+export type BulletinQuota = {
+  address: string;
+  transactionsLeft: number;
+  bytesLeft: number;
+  transactionsTotal: number;
+  bytesTotal: number;
+  expiresAtBlock: number;
+  /** Estimate, ms since epoch (the expiry block × 6 s from the best block). */
+  refillsAt: number;
+};
 
 /**
  * Spec 0012 attachments (M15a). The main process holds the Bulletin signer
@@ -416,7 +435,7 @@ export type DesktopBulletinApi = {
    * of `//Eve` first; elsewhere a missing or spent budget rejects with the
    * reason. Progress arrives on `onProgress`.
    */
-  store: (uploadId: string, chunks: Uint8Array[]) => Promise<void>;
+  store: (uploadId: string, chunks: Uint8Array[]) => Promise<BulletinStoreResult>;
   onProgress: (listener: (progress: BulletinProgress) => void) => () => void;
   /**
    * One chunk by its content hash (0x-hex) on the Bulletin chain `genesis`:
@@ -426,6 +445,8 @@ export type DesktopBulletinApi = {
    * renderer checks again.
    */
   fetch: (genesis: string, hash: string, mirror: string | null, only?: 'bitswap' | 'mirror' | 'gateway', gatewayFirst?: boolean) => Promise<{ bytes: Uint8Array; source: string }>;
+  /** M15c: the authorization left, or null when the account has none. Never grants. */
+  allowance: () => Promise<BulletinQuota | null>;
 };
 
 /** Spec 0012: a decrypted attachment leaves the renderer only through these. */

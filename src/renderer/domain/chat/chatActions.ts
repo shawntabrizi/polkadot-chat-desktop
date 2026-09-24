@@ -10,6 +10,7 @@ import { type BlockedRow, type MessageRow, type PeerId, appDatabase, db, groupId
 
 import { buttonsFallbackText } from '../../../shared/buttonsBlock';
 
+import { deleteAttachmentKeys } from './attachmentKeyStore';
 import { previewOf } from './content';
 import { listMessages, markRoomRead } from './messages';
 
@@ -19,7 +20,12 @@ export const MAX_PINNED = 5;
 export const MAX_NICKNAME_CHARS = 64;
 
 /** Spec 0012: the local copies of the attachments of removed messages go too. */
-const dropAttachments = (messageIds: readonly string[]) => (messageIds.length === 0 ? Promise.resolve(0) : db.attachments.where('messageId').anyOf([...messageIds]).delete());
+const dropAttachments = async (messageIds: readonly string[]): Promise<void> => {
+  if (messageIds.length === 0) return;
+  await db.attachments.where('messageId').anyOf([...messageIds]).delete();
+  // M15c: their sealed keys too.
+  await deleteAttachmentKeys(messageIds);
+};
 
 const messagesUpTo = (peer: PeerId, at: number) => db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, at], true, true);
 
@@ -57,7 +63,7 @@ export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
 
 /** "Clear history" once its Undo time is up: messages up to `at`; the contact, the session and the room stay. */
 export const clearHistoryLocally = (peer: PeerId, at: number): Promise<void> =>
-  appDatabase.transaction('rw', db.rooms, db.messages, db.attachments, async () => {
+  appDatabase.transaction('rw', [db.rooms, db.messages, db.attachments, db.keys], async () => {
     await dropAttachments(await messagesUpTo(peer, at).primaryKeys());
     await messagesUpTo(peer, at).delete();
     await refreshRoom(peer, { unreadCount: 0, markedUnread: false });

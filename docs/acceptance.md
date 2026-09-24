@@ -3714,3 +3714,102 @@ The built bundle was never opened. LaunchServices had listed it on its own; it w
 ### Not run
 
 - Opening a `polkadotapp://g#…` link from another app into the packaged app: that needs the packaged app installed as the scheme's handler on the owner's Mac (see docs/questions.md "## M16b", first item). The routing is covered by `src/main/inviteLinks.spec.ts` and the paste path by the join view.
+
+## M15c — Attachments: video, resend on request, keys table, quota panel (2026-09-24)
+
+### npm run check (last lines)
+
+```
+ Test Files  89 passed (89)
+      Tests  779 passed (779)
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (187 files)
+```
+
+tsc, vitest, eslint and the token lint exit 0. New specs: `attachmentKeyStore.spec.ts` (a new attachment row holds no key or nonce, the `keys` row holds them sealed, a download gets them back; an album has one sealed key per item; the migration moves the keys of an M15b row once; a copied folder without the at-rest key opens nothing; a key moved to another message does not open; tombstone and Clear history take the keys, epoch keys stay), `storageQuota.spec.ts` (today's share is what was left at the start of the day over the days to the refill and does not shrink while uploading; the last day gets all that is left; only broadcast chunks count and a new day starts at zero; Free space drops old received copies, marks them `freed`, and never drops our own), `attachments.spec.ts` additions (an album is one store call with 4 keys and 4 nonces; resend re-stores the same chunk hashes the message names with no new statement and the peer fetches again; a resend of a live file broadcasts nothing; a changed local file is refused; Ask to resend sends `Please resend [plan v2.pdf](#resend/old-file)` and keeps retrying past the expiry; a video goes out with its size, duration and poster and does not auto-download; a retried attachment message carries the real key though the row holds none), `bulletin.spec.ts` (the quota numbers; the day meter counts only broadcast chunks), `content.spec.ts` (the preview of an Ask to resend), `botDescribe.spec.mjs` (`toolsOff` excuses only a tools-off refusal).
+
+### npm run smoke (PCD_HEADLESS=1, throwaway PCD_USER_DATA_DIR)
+
+```
+✓ built in 196ms
+SMOKE_OK
+```
+
+### npm run e2e:attach (devnet; a = pcde2e, b = pcdeceb; exit 0)
+
+`STORED` lines and the child's stderr are left out.
+
+```
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[b] READY username=pcdeceb.89 bulletin=5GEPcEE6F6dDEA2aST5AmkYzAzSWxHPjXFNd5tzCSSwb4n75
+[a] READY username=pcdecejakd.11 bulletin=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=4.1s
+[a] CHAT_REQUEST_SENT id=bb7b8bbc-f847-48ca-a632-568c0a965bca to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11
+[a] CONTACT pcdeceb.89 devices=1
+[a] AUTH_OK account=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT granted=no (had storage) transactions_left=72 bytes_left=55808159 expires_block=1172674
+[a] IMAGE bytes=303840 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] STORED bafk2bzacebqrdgveztwgxauk3bwmag2iq4a567tkcc5726kakdkgg7pk2mz2g block=972470 best=yes
+[a] SENT id=2e92bbd0-234e-4bf7-ae91-180445ce119b sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a statements_delta=1 messages_delta=1 bulletin_tx_delta=1 status=sent
+[b] FETCH_OK id=2e92bbd0-234e-4bf7-ae91-180445ce119b status=ready sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a chunks=1 cid0=bafk2bzacebqrdgveztwgxauk3bwmag2iq4a567tkcc5726kakdkgg7pk2mz2g
+[b] GATEWAY_OK id=2e92bbd0-234e-4bf7-ae91-180445ce119b status=ready sources=gateway sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] STORED bafk2bzacedcmqiw7mxmmcgaq7vli2ulggjpp243usdbfhsbsmkkn5itetb7hw block=972474 best=yes
+[a] STORED bafk2bzaceb3szt72266ca3robauwvck37zbonfh2efnrew7vrwrs2nqudfxyk block=972474 best=yes
+[a] FILE_SENT id=17b820a9-a4be-42d1-913d-348b2be161a6 sha256=e5c438377f408ceb44ea932b1484f584cc0ca3182db90789a061f64aaddc1163 size=2300000 name=m15b-e2e-archive.bin mime=application/octet-stream chunks=2 statements_delta=1 bulletin_tx_delta=2
+[b] FILE_OK id=17b820a9-a4be-42d1-913d-348b2be161a6 name=m15b-e2e-archive.bin media=file size=2300000 order=gateway-first,bitswap-first sources=gateway,bitswap sha256=e5c438377f408ceb44ea932b1484f584cc0ca3182db90789a061f64aaddc1163
+[a] STORED bafk2bzacec7lnp2atkkuphbkcy5mijzwqhezhramqjpfc3ipf74cgu3n52fhy block=972484 best=yes
+[a] STORED bafk2bzacebsehxaa64ne3ga646subqqbvcvgun3hppdpa5ydxjemuush5cqkk block=972484 best=yes
+[a] STORED bafk2bzacebsy2we6567hjpm5dilv7hc22bywuk4hzkmnxyuixz6sbrteozasq block=972484 best=yes
+[a] STORED bafk2bzacedgq7tbpapxeczftillfpenbjdqbngom2iuatk55pm7by5346hidm block=972484 best=yes
+[a] ALBUM_SENT id=bae61be6-092f-4340-9bff-3960aafdb263 sha256=b37080031ed4d58e3d79abdcceff0230f3443236bf3745fd93f4e8538da0afd4,810421120a7b917a8952434f8a6637156cc644562fbc25f8148d9c8a20fbfdff,8616167072ab7c08293f78eb04a67176264ef87d129227071e66212a4b4ce862,a6c3d73529834fdcdab0185748d46acf172c8d75bfa909d310b6b168eeda275a items=4 statements_delta=1 bulletin_tx_delta=4 store_calls=1
+[b] ALBUM_OK id=bae61be6-092f-4340-9bff-3960aafdb263 items=4 kinds=image,image,image,image caption="M15b: an album of four" sources=bitswap,bitswap,bitswap,bitswap ready=4
+[a] STORED bafk2bzacedjue7dcob6dmi2ufcm37jt454hyquah74whimbegkciadd4mqc4i block=972485 best=yes
+[a] VOICE_SENT id=d53e8a42-6620-436c-b754-9a882e24a6fc sha256=503c5b1b2fe747e3e7e0b76aeba77f19b1ea043811a35c220e00fabc3dcdd30a size=180000 duration_ms=60000 bars=32 mime="audio/webm; codecs=opus" over_5min_refused=yes statements_delta=1 bulletin_tx_delta=1
+[b] VOICE_OK id=d53e8a42-6620-436c-b754-9a882e24a6fc media=voice duration_ms=60000 bars=32 mime="audio/webm; codecs=opus" sources=bitswap sha256=503c5b1b2fe747e3e7e0b76aeba77f19b1ea043811a35c220e00fabc3dcdd30a
+[a] STORED bafk2bzacedmjqeeucdn43pn65rpmju7xoxdrfsbsfwawtlnly6hmyo74eldwe block=972487 best=yes
+[a] VIDEO_SENT id=2fc7a219-5a5c-4729-8cd2-3621e03f7ddd sha256=20326262cf202f0e3797b7d95f6f7e9e244a414fa1efc9a4cac1acc25e92ff37 size=900000 media=video 640x360 duration_ms=7500 chunks=1 statements_delta=1 bulletin_tx_delta=1
+[b] VIDEO_OK id=2fc7a219-5a5c-4729-8cd2-3621e03f7ddd media=video 640x360 duration_ms=7500 name=m15c-e2e-clip.webm poster=blurhash(28) order=gateway-first sources=gateway sha256=20326262cf202f0e3797b7d95f6f7e9e244a414fa1efc9a4cac1acc25e92ff37
+[b] RESEND_ASKED id=2e92bbd0-234e-4bf7-ae91-180445ce119b freed_files=8 freed_bytes=3737317 local=freed/no-bytes text="Please resend [the photo](#resend/2e92bbd0-234e-4bf7-ae91-180445ce119b)" statements_delta=1
+[a] STORED bafk2bzacebqrdgveztwgxauk3bwmag2iq4a567tkcc5726kakdkgg7pk2mz2g block=already-on-chain best=yes
+[a] RESENT id=2e92bbd0-234e-4bf7-ae91-180445ce119b request="Please resend [the photo](#resend/2e92bbd0-234e-4bf7-ae91-180445ce119b)" chunks=1 submitted=0 cids_same=yes cid0=bafk2bzacebqrdgveztwgxauk3bwmag2iq4a567tkcc5726kakdkgg7pk2mz2g statements_delta=0
+[b] RESEND_OK id=2e92bbd0-234e-4bf7-ae91-180445ce119b status=ready cid0=bafk2bzacebqrdgveztwgxauk3bwmag2iq4a567tkcc5726kakdkgg7pk2mz2g sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] BOT_CONTACT pcdguide.70 greeting_before_send=yes
+[a] STORED bafk2bzacedflr5g3s5ybqri4zjb2ijbhlfc5wytjbeb3ur2bnw3p7selvyrlk block=972495 best=yes
+[a] BOT_DESCRIBE_PENDING_OPERATOR tool_policy=none bot=pcdguide.70 attachment=fa9cde97-018a-4f49-861b-b454a4fca4a0 reply=D7EE9795-EE7D-47B2-A5FE-0AD75271DAEE reply_type=text text="I can't see images—tools are disabled. The operator can enable them with `/tools read,web`."
+WARNING BOT_DESCRIBE_FAILED treated as pending: the bot's tool policy is "none" (pcdguide.70); enable read tools on the fleet to pass it
+[a] EXIT
+[b] EXIT
+ATTACH_OK FILE_OK ALBUM_OK VOICE_OK VIDEO_OK RESEND_OK bot=pending-operator at=175.5s
+```
+
+VIDEO_OK: 900,000 bytes as `video/webm`, one chunk, fetched gateway first (over 512 KB). The album went out in one store call (`store_calls=1`, 4 Bulletin transactions). RESEND_OK: b's Free space (0 days) dropped 8 received copies, its image row became `freed`; the Ask to resend cost one statement; a found the request by its link and re-stored the image: the same chunk hash as the message (`cids_same=yes`), `submitted=0` because devnet still holds the chunk (14 days), no statement; b fetched it again by the same CID (bitswap) with the same SHA-256. The bot step: pcdguide.70 still answers "tools are disabled" (fleet tool policy "none", review M15b), so the run prints the warning and `bot=pending-operator`; the fleet was only read.
+
+### npm run screenshots -- --only room-video,settings-storage,room-attachment,room-album,room-file,composer-attach
+
+```
+PNGs:
+  .agent-runs/screens/berlin-day/room-attachment.png
+  .agent-runs/screens/berlin-night/room-attachment.png
+  .agent-runs/screens/berlin-day/room-file.png
+  .agent-runs/screens/berlin-night/room-file.png
+  .agent-runs/screens/berlin-day/room-album.png
+  .agent-runs/screens/berlin-night/room-album.png
+  .agent-runs/screens/berlin-day/room-video.png
+  .agent-runs/screens/berlin-night/room-video.png
+  .agent-runs/screens/berlin-day/composer-attach.png
+  .agent-runs/screens/berlin-night/composer-attach.png
+  .agent-runs/screens/berlin-day/settings-storage.png
+  .agent-runs/screens/berlin-night/settings-storage.png
+SCREENSHOTS_OK in 22.5 s
+```
+
+`room-video` was taken again after a layout change (`SCREENSHOTS_OK in 13.7 s`). Reviewed by the agent: room-video shows a received video's poster (WebP from a real recorded frame), play mark, 0:03 and "Download · 327 KB"; our sent video in the stock inline player (a real WebM/VP8 recorded in the page from a canvas); an expired PDF with "Attachment expired" and "Ask to resend"; the peer's "Please resend the photo" with our "Resend the photo". settings-storage shows the live devnet authorization of pcde2e's Bulletin account (49.4 MB of 64.0 MB, 62 of 100 transactions, refills 8 October 2026 at block #1,172,674), uploads today 3 (1.4 MB) of today's share 4 (3.6 MB) (fixture count), local copies and Free space. The fixture rows are written with inline keys, so the app's start migrated them (the bubbles opened their keys from the `keys` table).
+
+### Not run
+
+- `room-voice`: not captured on this machine. The page's AudioContext clock stood still (`currentTime` 0.008 s after 4 s), so the fixture recording was a 110-byte header. The script now records through a silent sink (`sinkId: { type: 'none' }`), which gives a real 12 KB WebM/Opus file, but the `<audio>` element's playback clock also stands still (`currentTime` 0 while playing, no output device), so the shot's "0:01 / 0:04" check fails. Nothing in the voice code changed in M15c; this is the Mac's audio output, not the app.
+- `prepareVideo` (the sender's poster, size and duration from a picked file) did not run: it needs a DOM `<video>` (not in vitest), and a send from the app would store on devnet for a fictional contact. The `room-video` fixture makes its poster in the page with the same steps (one frame, WebP ≤ 2 KB); the wire, the service and the receiver's player are tested (unit tests, VIDEO_OK, the screenshot).

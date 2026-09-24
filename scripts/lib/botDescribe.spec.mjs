@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { describesImage, refusesToLook, repliesAfter } from './botDescribe.mjs';
+import { describesImage, refusesToLook, repliesAfter, toolsOff } from './botDescribe.mjs';
 
 const SIZE = { width: 410, height: 310 };
 const GREETING = "Hello pcdecejakd.11! 👋 Welcome to the group. I'm **pcdguide**, your friendly Polkadot support guide. I'm here";
@@ -55,5 +55,20 @@ describe('repliesAfter', () => {
   it('accepts a quoted reply', () => {
     const rows = [{ messageId: 'r', direction: 'incoming', content: { type: 'reply', messageId: 'att', text: 'That picture is a red circle.' } }];
     expect(repliesAfter(rows, new Set()).map((r) => r.messageId)).toEqual(['r']);
+  });
+});
+
+describe('toolsOff (M15c)', () => {
+  // Why: while the fleet's tool policy is "none" (an operator decision), the e2e reports the bot step as
+  // pending instead of failing the desktop check; any other refusal or a wrong answer still fails it.
+  it('recognizes the live refusals of a bot whose tools are off', () => {
+    expect(toolsOff(REFUSED)).toBe(true);
+    expect(toolsOff("I can't view images without tools—the operator can enable them with `/tools read,web`.")).toBe(true);
+  });
+
+  it('does not excuse another refusal, a greeting or a description', () => {
+    expect(toolsOff('Sorry, I am unable to view the photo you sent.')).toBe(false);
+    expect(toolsOff(WELCOME)).toBe(false);
+    expect(toolsOff('A red circle. No tools were needed.')).toBe(false);
   });
 });

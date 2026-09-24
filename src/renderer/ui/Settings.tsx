@@ -30,6 +30,7 @@ import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '
 
 import { AgentSettings } from './AgentSettings';
 import { PeerAvatar } from './Avatar';
+import { StorageSettings } from './StorageSettings';
 import { type DemoRuntime, DemoSettings, useDemoBots } from './DemoBots';
 import { useChatActions } from './chatActions';
 import { Checkbox, Switch } from './controls';
@@ -643,6 +644,9 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
       <AppearanceSection />
       <ChatSection />
       <PrivacySection />
+      <Section title="Storage">
+        <StorageSettings attachmentsOn={NETWORK_PROFILES[profileId].bulletin !== null} />
+      </Section>
       {assistantApi ? (
         <AssistantSection api={assistantApi} />
       ) : (

@@ -670,6 +670,12 @@ describe('previewOf', () => {
     expect(previewOf({ type: 'deleted' })).toBe('Message deleted');
     expect(previewOf({ type: 'botGreeting', text: 'Hi!' })).toBe('Hi!');
   });
+
+  it('shows an Ask to resend (M15c) as words, without the local link that carries the message id', () => {
+    expect(previewOf({ type: 'text', text: 'Please resend [the photo](#resend/0b6e-11)' })).toBe('Please resend the photo');
+    // Any other link stays as written.
+    expect(previewOf({ type: 'text', text: 'see [docs](https://x.y)' })).toBe('see [docs](https://x.y)');
+  });
 });
 
 describe('kind 245 and the tx action: spec 0007', () => {

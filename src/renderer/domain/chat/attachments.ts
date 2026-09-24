@@ -10,15 +10,17 @@
  */
 
 import type { AttachmentRow, AttachmentStatus } from '../../app/database';
-import { appDatabase, db } from '../../app/database';
+import { appDatabase, db, isGroupPeer, isLocalPeer } from '../../app/database';
 import { type HexString, bytesToHex } from '../../app/bytes';
 
-import type { BulletinProgress, DesktopBulletinApi } from '../../../shared/desktop-api';
+import type { BulletinProgress, BulletinStoreResult, DesktopBulletinApi } from '../../../shared/desktop-api';
 
+import { itemWithKey } from './attachmentKeyStore';
 import { SENDER_CHUNK_SIZE, decryptChunk, encryptAttachment, freshKeyAndNonce, isAttachmentError } from './attachmentCrypto';
 import { type AttachmentItem, type AttachmentMedia, attachmentItemWire } from './content';
 import { ATTACHMENT_BOUNDS, attachmentContentLength } from './identityEvents';
 import type { ChatManager } from './manager';
+import { recordUploads } from './storageQuota';
 
 /** Spec 0012 "Limits". */
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -185,20 +187,37 @@ export const getAttachmentRow = (messageId: string, index: number): Promise<Atta
 const patchRow = (messageId: string, index: number, patch: Partial<AttachmentRow>): Promise<number> =>
   db.attachments.update([messageId, index], { ...patch, updatedAt: Date.now() });
 
-const uploadIdOf = (messageId: string, index: number): string => `${messageId}-${index}`;
-
 export type AttachmentDeps = {
   bulletin: Pick<DesktopBulletinApi, 'store' | 'onProgress' | 'fetch'> | null;
   /** The profile's Bulletin chain (genesis, gateway mirror to name in messages). */
   store: { genesis: HexString; mirror: string | null } | null;
+  /** M15c: sends the "Please resend" text of Ask to resend. */
+  chat?: Pick<ChatManager, 'sendMessage'> | null;
   now?: () => number;
 };
+
+/** M15c: what a resend stored again (chunks the chain still had cost nothing and keep their CIDs). */
+export type ResendResult = { chunks: number; submitted: number; hashes: HexString[] };
 
 export type AttachmentService = {
   /** Encrypts, stores and sends `files` to `peer` with `caption`: one message. */
   send: (manager: Pick<ChatManager, 'sendAttachment'>, peer: HexString, files: readonly PreparedFile[], caption: string | null) => Promise<void>;
   /** A failed upload: store the same chunks again from the local copy, then `manager.retry` sends the same message. */
   reupload: (manager: Pick<ChatManager, 'retry'>, peer: HexString, messageId: string) => Promise<void>;
+  /**
+   * M15c "Resend" (spec 0012 "Re-upload on request"): the sender stores the
+   * same ciphertext of its own message `messageId` again, from its local
+   * copy with the same key and nonce, so the CIDs the message names work
+   * again. No message is sent.
+   */
+  resend: (messageId: string) => Promise<ResendResult>;
+  /**
+   * M15c "Ask to resend": item `index` of the received `messageId` is
+   * expired or missing. Sends the peer "Please resend <name>" (one text
+   * message; the link carries the message id for the sender's client) and
+   * retries the download for 24 h.
+   */
+  askResend: (messageId: string, index: number) => Promise<void>;
   /** Fetches, checks and decrypts item `index` of `messageId` into the local store (at most once at a time). */
   fetch: (messageId: string, index: number, item: AttachmentItem, options?: { only?: 'bitswap' | 'mirror' | 'gateway' }) => Promise<AttachmentStatus>;
   dispose: () => void;
@@ -219,12 +238,40 @@ const blankRow = (messageId: string, index: number, item: AttachmentItem, status
   updatedAt: now,
 });
 
-export const createAttachmentService = ({ bulletin, store, now = Date.now }: AttachmentDeps): AttachmentService => {
-  const uploads = new Map<string, [string, number]>();
+/** "Please resend [photo](#resend/<id>)": the link's target is the message id; any client shows the words. */
+const RESEND_LINK = /\]\(#resend\/([\w-]{1,64})\)/;
+
+/** The name an Ask to resend uses: the file's name, else what it is. */
+export const resendName = (item: Pick<AttachmentItem, 'name' | 'media'>): string => {
+  if (item.name) return item.name.replace(/[[\]()]/g, '');
+  switch (item.media.kind) {
+    case 'image':
+      return 'the photo';
+    case 'video':
+      return 'the video';
+    case 'voice':
+      return 'the voice message';
+    case 'file':
+      return 'the file';
+  }
+};
+
+/** M15c: the text of an Ask to resend: a plain request with the original message id in a local link. */
+export const resendRequestText = (messageId: string, item: Pick<AttachmentItem, 'name' | 'media'>): string => `Please resend [${resendName(item)}](#resend/${messageId})`;
+
+/** The message id an Ask to resend names, or null. */
+export const parseResendRequest = (text: string): string | null => RESEND_LINK.exec(text)?.[1] ?? null;
+
+export const createAttachmentService = ({ bulletin, store, chat = null, now = Date.now }: AttachmentDeps): AttachmentService => {
+  const uploads = new Map<string, { messageId: string; itemOf: number[]; done: number[] }>();
   const stopProgress =
-    bulletin?.onProgress(({ uploadId, stored }: BulletinProgress) => {
+    bulletin?.onProgress(({ uploadId, chunk }: BulletinProgress) => {
       const target = uploads.get(uploadId);
-      if (target) void patchRow(target[0], target[1], { done: stored });
+      if (!target || chunk === undefined) return;
+      const index = target.itemOf[chunk];
+      if (index === undefined) return;
+      target.done[index] = (target.done[index] ?? 0) + 1;
+      void patchRow(target.messageId, index, { done: target.done[index] });
     }) ?? (() => undefined);
   const inFlight = new Map<string, Promise<AttachmentStatus>>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -234,26 +281,31 @@ export const createAttachmentService = ({ bulletin, store, now = Date.now }: Att
     return { bulletin, store };
   };
 
-  const storeItems = async (messageId: string, ciphertexts: readonly Uint8Array[][]): Promise<void> => {
+  /**
+   * Every chunk of every item in one store call (review M15b answer 5): main
+   * gives them nonces in sequence and keeps them in flight together, and
+   * the budget is checked once for the message. Each item keeps its own key
+   * and nonce, so the chunks of two items never share an AEAD nonce.
+   */
+  const storeItems = async (messageId: string, ciphertexts: readonly Uint8Array[][]): Promise<BulletinStoreResult> => {
     const { bulletin: chain } = requireBulletin();
+    const uploadId = `${messageId}-all`;
+    const itemOf = ciphertexts.flatMap((chunks, index) => chunks.map(() => index));
+    uploads.set(uploadId, { messageId, itemOf, done: ciphertexts.map(() => 0) });
     try {
-      for (const [index, chunks] of ciphertexts.entries()) {
-        const uploadId = uploadIdOf(messageId, index);
-        uploads.set(uploadId, [messageId, index]);
-        await patchRow(messageId, index, { status: 'uploading', done: 0, error: null });
-        try {
-          await chain.store(uploadId, [...chunks]);
-        } finally {
-          uploads.delete(uploadId);
-        }
-        await patchRow(messageId, index, { status: 'ready', done: chunks.length });
-      }
+      for (const index of ciphertexts.keys()) await patchRow(messageId, index, { status: 'uploading', done: 0, error: null });
+      const result = await chain.store(uploadId, ciphertexts.flat());
+      for (const [index, chunks] of ciphertexts.entries()) await patchRow(messageId, index, { status: 'ready', done: chunks.length });
+      await recordUploads(result, now());
+      return result;
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       await db.attachments.where('messageId').equals(messageId).modify(row => {
         if (row.status === 'uploading') Object.assign(row, { status: 'uploadFailed', error: text, updatedAt: Date.now() });
       });
       throw error;
+    } finally {
+      uploads.delete(uploadId);
     }
   };
 
@@ -271,36 +323,78 @@ export const createAttachmentService = ({ bulletin, store, now = Date.now }: Att
     });
   };
 
-  const reupload: AttachmentService['reupload'] = async (manager, peer, messageId) => {
+  /** The ciphertext of each item of our own `messageId`, again, from the local copy; checked against the CIDs the message names. */
+  const ciphertextsAgain = async (messageId: string): Promise<{ ciphertexts: Uint8Array[][]; hashes: HexString[] }> => {
     const row = await db.messages.get(messageId);
     if (!row || row.content.type !== 'attachment') throw new Error('This message has no attachment.');
     const ciphertexts: Uint8Array[][] = [];
-    for (const [index, item] of row.content.items.entries()) {
+    const hashes: HexString[] = [];
+    for (const [index, stored] of row.content.items.entries()) {
       const local = await getAttachmentRow(messageId, index);
       if (!local?.bytes) throw new Error('The file is no longer on this computer.');
+      const item = await itemWithKey(messageId, index, stored);
       // Same key, nonce and file: the same chunks and CIDs, so the message stays valid (spec 0012).
       const encrypted = await encryptAttachment(local.bytes, item.key, item.nonce, item.chunkSize);
       if (encrypted.hashes.some((hash, i) => bytesToHex(hash) !== bytesToHex(item.chunks[i] as Uint8Array))) throw new Error('The file on this computer changed.');
       ciphertexts.push(encrypted.ciphertexts);
+      hashes.push(...item.chunks.map(hash => bytesToHex(hash)));
     }
+    return { ciphertexts, hashes };
+  };
+
+  const reupload: AttachmentService['reupload'] = async (manager, peer, messageId) => {
+    const { ciphertexts } = await ciphertextsAgain(messageId);
     await storeItems(messageId, ciphertexts);
     await manager.retry(peer, messageId);
   };
 
-  const classify = (error: unknown, item: AttachmentItem): AttachmentStatus => {
-    if (isAttachmentError(error) && error.reason !== 'hash') return 'damaged';
-    return now() > item.expiresAt ? 'expired' : 'failed';
+  const resend: AttachmentService['resend'] = async messageId => {
+    const row = await db.messages.get(messageId);
+    if (!row || row.direction !== 'outgoing') throw new Error('Only your own attachment can be resent.');
+    const { ciphertexts, hashes } = await ciphertextsAgain(messageId);
+    const result = await storeItems(messageId, ciphertexts);
+    return { chunks: hashes.length, submitted: result.submitted, hashes };
   };
 
-  const runFetch = async (messageId: string, index: number, item: AttachmentItem, only?: 'bitswap' | 'mirror' | 'gateway'): Promise<AttachmentStatus> => {
+  const askResend: AttachmentService['askResend'] = async (messageId, index) => {
+    if (!chat) throw new Error('Chat is not running.');
+    const row = await db.messages.get(messageId);
+    const item = row?.content.type === 'attachment' ? row.content.items[index] : undefined;
+    if (!row || row.direction !== 'incoming' || !item || isGroupPeer(row.peerAccountId) || isLocalPeer(row.peerAccountId)) throw new Error('Only an attachment a contact sent you can be asked for again.');
+    await chat.sendMessage(row.peerAccountId, { type: 'text', text: resendRequestText(messageId, item) });
+    // Spec 0012: the asking client retries for 24 h, expired or not.
+    const at = now();
+    const existing = await getAttachmentRow(messageId, index);
+    await db.attachments.put({ ...(existing ?? blankRow(messageId, index, item, 'failed', at)), status: 'failed', attempts: 0, firstFailedAt: at, resendAskedAt: at, error: null, updatedAt: at });
+    schedule(messageId, index, item, 1);
+  };
+
+  const classify = (error: unknown, item: AttachmentItem, local: AttachmentRow): AttachmentStatus => {
+    if (isAttachmentError(error) && error.reason !== 'hash') return 'damaged';
+    const asked = local.resendAskedAt !== undefined && now() - local.resendAskedAt < RETRY_FOR_MS;
+    return now() > item.expiresAt && !asked ? 'expired' : 'failed';
+  };
+
+  const schedule = (messageId: string, index: number, item: AttachmentItem, attempts: number) => {
+    const delay = Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (attempts - 1));
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      void fetch(messageId, index, item);
+    }, delay);
+    timers.add(timer);
+  };
+
+  const runFetch = async (messageId: string, index: number, stored: AttachmentItem, only?: 'bitswap' | 'mirror' | 'gateway'): Promise<AttachmentStatus> => {
     const existing = await getAttachmentRow(messageId, index);
     if (existing?.status === 'ready' && existing.bytes && !only) return 'ready';
-    const base = existing ?? blankRow(messageId, index, item, 'downloading', now());
-    await db.attachments.put({ ...base, status: 'downloading', done: 0, total: item.chunks.length, error: null, updatedAt: now() });
+    const base = existing ?? blankRow(messageId, index, stored, 'downloading', now());
+    await db.attachments.put({ ...base, status: 'downloading', done: 0, total: stored.chunks.length, error: null, updatedAt: now() });
     try {
       const target = requireBulletin();
       // Spec 0012: `store.genesis` names the chain; a client on another network refuses.
-      if (item.store.genesis.toLowerCase() !== target.store.genesis.toLowerCase()) throw new Error('This attachment is on another network.');
+      if (stored.store.genesis.toLowerCase() !== target.store.genesis.toLowerCase()) throw new Error('This attachment is on another network.');
+      // M15c: the key and nonce come from the sealed `keys` table.
+      const item = await itemWithKey(messageId, index, stored);
       const out = new Uint8Array(item.size);
       let offset = 0;
       for (const [i, hash] of item.chunks.entries()) {
@@ -315,20 +409,13 @@ export const createAttachmentService = ({ bulletin, store, now = Date.now }: Att
       await patchRow(messageId, index, { status: 'ready', bytes: out, attempts: 0, firstFailedAt: null, error: null });
       return 'ready';
     } catch (error) {
-      const status = classify(error, item);
+      const status = classify(error, stored, base);
       const attempts = base.attempts + 1;
       const firstFailedAt = base.firstFailedAt ?? now();
       const text = status === 'damaged' ? 'Attachment is damaged.' : error instanceof Error ? error.message : String(error);
       await patchRow(messageId, index, { status, attempts, firstFailedAt, error: text });
-      // Before expiry, try again later with backoff, for a day (spec 0012 "Download flow" 6).
-      if (status === 'failed' && now() - firstFailedAt < RETRY_FOR_MS && !only) {
-        const delay = Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (attempts - 1));
-        const timer = setTimeout(() => {
-          timers.delete(timer);
-          void fetch(messageId, index, item);
-        }, delay);
-        timers.add(timer);
-      }
+      // Before expiry (or within a day of an Ask to resend), try again later with backoff, for a day (spec 0012 "Download flow" 6).
+      if (status === 'failed' && now() - firstFailedAt < RETRY_FOR_MS && !only) schedule(messageId, index, stored, attempts);
       return status;
     }
   };
@@ -345,6 +432,8 @@ export const createAttachmentService = ({ bulletin, store, now = Date.now }: Att
   return {
     send,
     reupload,
+    resend,
+    askResend,
     fetch,
     dispose: () => {
       stopProgress();

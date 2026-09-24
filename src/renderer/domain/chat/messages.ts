@@ -8,6 +8,7 @@
 import type { HexString } from '../../app/bytes';
 import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
 
+import { deleteAttachmentKeys, splitAttachmentKeys } from './attachmentKeyStore';
 import { type MessageContent, type TxReference, isLiveFrame, previewOf, referenceRank } from './content';
 
 export const listRooms = async (): Promise<RoomRow[]> =>
@@ -50,17 +51,22 @@ const tombstone = (row: MessageRow): MessageRow => ({ ...row, content: { type: '
  * An incoming row the peer already deleted (RFC-0003 unknown target) is
  * stored as a tombstone and never shown.
  */
-export const addMessage = (row: MessageRow, options: { read?: boolean } = {}): Promise<boolean> =>
-  appDatabase.transaction('rw', db.messages, db.rooms, db.pendingDeletions, async () => {
+export const addMessage = async (row: MessageRow, options: { read?: boolean } = {}): Promise<boolean> => {
+  // M15c: an attachment's keys go sealed to `keys`, never into the message row. Sealed first: Web Crypto would end the transaction.
+  const split = await splitAttachmentKeys(row);
+  const tables = split.keys.length > 0 ? [db.messages, db.rooms, db.pendingDeletions, db.keys] : [db.messages, db.rooms, db.pendingDeletions];
+  return appDatabase.transaction('rw', tables, async () => {
     if (await db.messages.get(row.messageId)) return false;
     const pendingKey: [PeerId, string] = [row.peerAccountId, row.messageId];
     const deleted = row.direction === 'incoming' && (await db.pendingDeletions.get(pendingKey)) !== undefined;
     if (deleted) await db.pendingDeletions.delete(pendingKey);
-    const stored = deleted ? tombstone(row) : row;
+    const stored = deleted ? tombstone(row) : split.row;
     await db.messages.add(stored);
+    if (!deleted && split.keys.length > 0) await db.attachmentKeys.bulkPut(split.keys);
     await touchRoom(row.peerAccountId, stored, row.direction === 'incoming' && !options.read && !deleted ? 1 : 0, deleted);
     return true;
   });
+};
 
 /** Make sure a room exists for a contact with nothing said yet (the chat list shows it). */
 export const ensureRoom = (peerAccountId: PeerId): Promise<void> =>
@@ -235,14 +241,15 @@ const refreshPreview = async (row: MessageRow): Promise<void> => {
  * already tombstoned is left alone (idempotent). `false` when there is no row.
  */
 export const tombstoneMessage = (messageId: string): Promise<boolean> =>
-  appDatabase.transaction('rw', db.messages, db.rooms, db.attachments, async () => {
+  appDatabase.transaction('rw', [db.messages, db.rooms, db.attachments, db.keys], async () => {
     const row = await db.messages.get(messageId);
     if (!row) return false;
     if (row.content.type === 'deleted') return true;
     const deleted = tombstone(row);
     await db.messages.put(deleted);
-    // Spec 0012: an attachment's local copy goes with the content.
+    // Spec 0012: an attachment's local copy goes with the content, and (M15c) its keys.
     await db.attachments.where('messageId').equals(messageId).delete();
+    await deleteAttachmentKeys([messageId]);
     await refreshPreview(deleted);
     return true;
   });
@@ -259,7 +266,7 @@ export type DeletionResult = 'tombstoned' | 'pending' | 'ignored';
  * room) `sender` must also be the author of the message.
  */
 export const applyDeletion = (peer: PeerId, messageId: string, now: number = Date.now(), sender?: HexString): Promise<DeletionResult> =>
-  appDatabase.transaction('rw', [db.messages, db.rooms, db.pendingDeletions, db.attachments], async () => {
+  appDatabase.transaction('rw', [db.messages, db.rooms, db.pendingDeletions, db.attachments, db.keys], async () => {
     const row = await db.messages.get(messageId);
     if (row) {
       if (row.peerAccountId !== peer || row.direction !== 'incoming') return 'ignored';

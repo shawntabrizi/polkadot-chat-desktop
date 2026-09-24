@@ -21,6 +21,8 @@ import {
   type AssistantSendRequest,
   type AssistantSettings,
   type AssistantSettingsUpdate,
+  type BulletinQuota,
+  type BulletinStoreResult,
   type ChainTransfer,
   type CreateIdentityRequest,
   type CreateIdentityResponse,
@@ -42,7 +44,7 @@ import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines'
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
 import { type AssetHubChain, type TxService, createTxService, openAssetHub } from './chain/assetHub';
-import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin } from './chain/bulletin';
+import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin, quotaOf, storeResultOf } from './chain/bulletin';
 import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
@@ -155,7 +157,8 @@ const bulletinFor = (onTransaction: () => void): Promise<BulletinService> => {
   return service;
 };
 /** Spec 0012 limits the main process checks again: 14 chunks of at most 2 MiB. */
-const MAX_CHUNKS = 14;
+/** M15c: one call stores every chunk of a message (an album: 4 items, each up to 14 chunks, 25 MiB in all). */
+const MAX_CHUNKS = 4 * 14;
 const MAX_CHUNK_BYTES = 2 * 1024 * 1024;
 const UPLOAD_ID = /^[\w-]{1,64}$/;
 const CONTENT_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -494,14 +497,19 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     const win = getWindow();
     if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.diagnosticsChanged, totals);
   };
-  ipcMain.handle(IPC.bulletinStore, async (event, uploadId: unknown, chunks: unknown): Promise<void> => {
+  ipcMain.handle(IPC.bulletinStore, async (event, uploadId: unknown, chunks: unknown): Promise<BulletinStoreResult> => {
     if (typeof uploadId !== 'string' || !UPLOAD_ID.test(uploadId)) throw new Error('Invalid upload.');
-    if (!Array.isArray(chunks) || chunks.length < 1 || chunks.length > MAX_CHUNKS) throw new Error('An attachment has 1 to 14 chunks.');
+    if (!Array.isArray(chunks) || chunks.length < 1 || chunks.length > MAX_CHUNKS) throw new Error('A message has 1 to 56 chunks.');
     if (chunks.some(chunk => !(chunk instanceof Uint8Array) || chunk.length < 1 || chunk.length > MAX_CHUNK_BYTES)) throw new Error('A chunk is at most 2 MiB.');
     const service = await bulletinFor(countBulletin);
-    await service.store(chunks as Uint8Array[], ({ stored, total }) => {
-      if (!event.sender.isDestroyed()) event.sender.send(IPC.bulletinProgress, { uploadId, stored, total });
+    const stored = await service.store(chunks as Uint8Array[], ({ stored: done, total, chunk }) => {
+      if (!event.sender.isDestroyed()) event.sender.send(IPC.bulletinProgress, { uploadId, stored: done, total, chunk });
     });
+    return storeResultOf(stored, chunks as Uint8Array[]);
+  });
+  ipcMain.handle(IPC.bulletinAllowance, async (): Promise<BulletinQuota | null> => {
+    const service = await bulletinFor(countBulletin);
+    return quotaOf(service.address, await service.allowance());
   });
   ipcMain.handle(IPC.bulletinFetch, async (_event, genesis: unknown, hash: unknown, mirror: unknown, only: unknown, gatewayFirst: unknown): Promise<{ bytes: Uint8Array; source: string }> => {
     if (typeof genesis !== 'string' || !GENESIS.test(genesis)) throw new Error('Invalid chain id.');

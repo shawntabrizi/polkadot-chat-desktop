@@ -46,11 +46,12 @@ import { BotBadge } from './BotBadge';
 import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
-import { AttachRow, VoiceRecorderStrip } from './Attachments';
+import { AttachRow, ResendOffer, VoiceRecorderStrip } from './Attachments';
 import { readSetting, writeSetting } from '../app/settings';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { type PreparedFile, addPicked, isImageType, prepareFile } from '../domain/chat/attachments';
+import { type PreparedFile, addPicked, isImageType, parseResendRequest, prepareFile } from '../domain/chat/attachments';
 import { prepareImage } from '../domain/chat/attachmentImage';
+import { isVideoType, prepareVideo } from '../domain/chat/attachmentVideo';
 import { prepareVoice } from '../domain/chat/voice';
 import { type VoiceRecording, startVoiceRecording } from '../domain/chat/voiceRecorder';
 import { RoomHeader, TypingLine } from './RoomHeader';
@@ -617,7 +618,11 @@ export const Room = (props: Props) => {
     forwardText(row) !== null && row.status !== 'streaming' ? (target: ForwardTarget) => chatActions.forward(target, row, authorOf(row)) : undefined;
 
   const prepared = async (file: File): Promise<PreparedFile> =>
-    isImageType(file.type) ? prepareImage(file) : prepareFile({ bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, type: file.type });
+    isImageType(file.type)
+      ? prepareImage(file)
+      : isVideoType(file.type)
+        ? prepareVideo(file)
+        : prepareFile({ bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, type: file.type });
 
   const sendAttachment = async (files: File[], caption: string | null) => {
     const service = attachmentService();
@@ -785,8 +790,11 @@ export const Room = (props: Props) => {
     }
     const keyboard = keyboardFor(row);
     const payments = paymentViewFor(row);
-    const below =
-      strip && strip.messageId === row.messageId ? (
+    // M15c: the peer asked us to resend one of our attachments: offer to store it again.
+    const resendOf = row.direction === 'incoming' && row.content.type === 'text' ? parseResendRequest(row.content.text) : null;
+    const below = resendOf ? (
+      <ResendOffer messageId={resendOf} peer={peer} />
+    ) : strip && strip.messageId === row.messageId ? (
         <TxStrip
           intent={strip.intent}
           state={strip.state}

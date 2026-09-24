@@ -10,6 +10,7 @@ import { type ReferenceFollower, createReferenceFollower } from '../domain/chain
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import { createAttachmentService } from '../domain/chat/attachments';
+import { migrateAttachmentKeys } from '../domain/chat/attachmentKeyStore';
 import { attachmentService, setAttachmentService } from '../domain/chat/attachmentRuntime';
 import { forwardCounts } from '../domain/chat/submissions';
 import { ensureFaucet } from '../domain/faucet/faucet';
@@ -162,8 +163,15 @@ export const App = () => {
           createAttachmentService({
             bulletin: window.desktop?.bulletin ?? null,
             store: bulletin ? { genesis: bulletin.genesis as `0x${string}`, mirror: null } : null,
+            chat: created,
           }),
         );
+        // M15c: attachment keys still inline in message rows (before M15c) move to the sealed `keys` table, once.
+        migrateAttachmentKeys()
+          .then(moved => {
+            if (moved > 0) console.info(`[attachments] moved the keys of ${moved} messages to the keys table`);
+          })
+          .catch((cause: unknown) => console.warn('[attachments] key migration failed', cause));
         setRuntime({ manager: created, lookup, resolveUsername, transactions });
       })
       .catch((cause: unknown) => {

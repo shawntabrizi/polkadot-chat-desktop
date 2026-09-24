@@ -37,6 +37,7 @@ import { sendChatRequest, subscribeToIncomingRequests } from '../requests/gatewa
 import { intakeRequestStatement } from '../requests/intake';
 import { addRequest, getRequest, listRequests, setRequestStatus } from '../requests/repository';
 
+import { withAttachmentKeys } from './attachmentKeyStore';
 import { deleteChatLocally, isBlocked, withdrawRequestLocally } from './chatActions';
 import {
   type AttachmentItem,
@@ -1108,8 +1109,10 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     retry: async (peer, messageId) => {
-      const row = await getMessage(messageId);
-      if (!row || row.peerAccountId !== peer || row.direction !== 'outgoing' || row.status !== 'failed') return;
+      const stored = await getMessage(messageId);
+      if (!stored || stored.peerAccountId !== peer || stored.direction !== 'outgoing' || stored.status !== 'failed') return;
+      // M15c: an attachment's keys are sealed in `keys`; the same message goes out with them again.
+      const row = await withAttachmentKeys(stored);
       if (row.content.type !== 'text' && row.content.type !== 'reply' && row.content.type !== 'attachment') throw new Error('Only a text message can be sent again.');
       // An attachment's chunks are stored again by the caller first (attachments.ts); the message is the same.
       const content: OutgoingContent =

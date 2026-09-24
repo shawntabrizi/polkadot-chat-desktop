@@ -22,6 +22,7 @@ import { getTxCreator } from 'polkadot-api/tx-creator';
 import { getWsProvider } from 'polkadot-api/ws';
 
 import { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } from '../../shared/chainRead';
+import type { BulletinQuota, BulletinStoreResult } from '../../shared/desktop-api';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 import { deriveSr25519PairFromSeed } from '../identity/crypto';
 import { metadataCache } from '../metadataCache';
@@ -123,6 +124,9 @@ export const cidOf = (hash: Uint8Array): string => {
 export type BulletinAllowance = {
   transactionsLeft: number;
   bytesLeft: bigint;
+  /** M15c: the whole grant (the quota line says "12 of 64 MB left"). */
+  transactionsTotal: number;
+  bytesTotal: bigint;
   /** The block the authorization expires at, and an estimate of when (ms since epoch). */
   expiresAtBlock: number;
   refillsAt: number;
@@ -142,10 +146,32 @@ export const allowanceOf = (raw: RawAuthorization | undefined, bestBlock: number
   return {
     transactionsLeft: Math.max(0, raw.transactions_allowance - raw.transactions_used),
     bytesLeft,
+    transactionsTotal: raw.transactions_allowance,
+    bytesTotal: raw.bytes_allowance,
     expiresAtBlock: raw.expires_at,
     refillsAt: now + Math.max(0, raw.expires_at - bestBlock) * BLOCK_MS,
   };
 };
+
+/** M15c: the renderer's view of the authorization (numbers: a Bulletin grant is far below 2^53 bytes). */
+export const quotaOf = (address: string, allowance: BulletinAllowance | null): BulletinQuota | null =>
+  allowance
+    ? {
+        address,
+        transactionsLeft: allowance.transactionsLeft,
+        bytesLeft: Number(allowance.bytesLeft),
+        transactionsTotal: allowance.transactionsTotal,
+        bytesTotal: Number(allowance.bytesTotal),
+        expiresAtBlock: allowance.expiresAtBlock,
+        refillsAt: allowance.refillsAt,
+      }
+    : null;
+
+/** M15c: what a store call broadcast, for the day meter: chunks the chain already had cost nothing. */
+export const storeResultOf = (stored: readonly StoredChunk[], ciphertexts: readonly Uint8Array[]): BulletinStoreResult => ({
+  submitted: stored.filter(chunk => chunk.submitted).length,
+  submittedBytes: stored.reduce((sum, chunk, i) => sum + (chunk.submitted ? (ciphertexts[i]?.length ?? 0) : 0), 0),
+});
 
 const megabytes = (bytes: bigint): string => (Number(bytes) / (1024 * 1024)).toFixed(1);
 
@@ -242,9 +268,14 @@ const httpGet = async (url: string): Promise<Uint8Array> => {
 
 // ── The service ─────────────────────────────────────────────────────────────
 
-export type StoreProgress = { stored: number; total: number };
-/** Where a chunk is: the best block whose `Stored` event named it, or null when the chain had it already. */
-export type StoredChunk = { hash: `0x${string}`; block: number | null };
+/** `chunk`: the index of the chunk this step is about (M15c: an album's chunks go in one call, the renderer maps them to items). */
+export type StoreProgress = { stored: number; total: number; chunk?: number };
+/**
+ * Where a chunk is: the best block whose `Stored` event named it, or null
+ * when the chain had it already. `submitted`: this call broadcast a store
+ * for it (false when the chain had it before, as for a resend of a live file).
+ */
+export type StoredChunk = { hash: `0x${string}`; block: number | null; submitted: boolean };
 
 export type BulletinService = {
   address: string;
@@ -367,15 +398,14 @@ export function createBulletinService(
     if (ciphertexts.length === 0) return [];
     if (ciphertexts.some(c => c.length < 1 || c.length > MAX_CHUNK_BYTES)) throw new Error('A chunk is empty or larger than 2 MiB.');
     const hashes = ciphertexts.map(c => hex(contentHash(c)));
-    const result: StoredChunk[] = hashes.map(hash => ({ hash, block: null }));
+    const result: StoredChunk[] = hashes.map(hash => ({ hash, block: null, submitted: false }));
     const total = ciphertexts.length;
     let stored = 0;
     onProgress({ stored, total });
     // Chunks the chain has already (a retry, or a re-store of the same file) are done.
     const present = await Promise.all(hashes.map(isStored));
     const missing = ciphertexts.map((_c, i) => i).filter(i => !present[i]);
-    stored = total - missing.length;
-    onProgress({ stored, total });
+    for (const [chunk, here] of present.entries()) if (here) onProgress({ stored: ++stored, total, chunk });
     if (missing.length === 0) return result;
     await ensureBudget(missing.map(i => (ciphertexts[i] as Uint8Array).length));
     const base = await nextNonce();
@@ -383,6 +413,7 @@ export function createBulletinService(
       missing.map(async (index, k) => {
         const hash = hashes[index] as `0x${string}`;
         const tx = chain.api.tx.TransactionStorage.store({ data: ciphertexts[index] as Uint8Array });
+        result[index] = { hash, block: null, submitted: true };
         let first = true;
         await storeWithRetry({
           submit: async () => {
@@ -390,14 +421,14 @@ export function createBulletinService(
             const nonce = first ? base + k : await nextNonce();
             first = false;
             return submitOnce(tx as never, nonce, storedEventFor(hash), block => {
-              result[index] = { hash, block };
+              result[index] = { hash, block, submitted: true };
             });
           },
           isStored: () => isStored(hash),
           sleep: ms => new Promise(done => setTimeout(done, ms)),
         });
         stored += 1;
-        onProgress({ stored, total });
+        onProgress({ stored, total, chunk: index });
       }),
     );
     return result;

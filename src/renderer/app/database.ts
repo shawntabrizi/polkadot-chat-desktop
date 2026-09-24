@@ -64,7 +64,9 @@ export type SettingKey =
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session'
   /** `seen` once the first attachment went out: its notice (spec 0012 review) shows once. */
-  | 'chat.attachmentNotice';
+  | 'chat.attachmentNotice'
+  /** M15c JSON `{ day, transactions, bytes }`: Bulletin stores this device submitted on its local day `day` (the quota panel). */
+  | 'bulletin.uploads';
 
 export type SettingRow = {
   key: SettingKey;
@@ -254,6 +256,22 @@ export type GroupKeyRow = {
 };
 
 /**
+ * M15c: one attachment item's key and nonce at rest, in the same `keys`
+ * table as the epoch keys (review M16b ruling 2). `sealed` is key (32
+ * bytes) ‖ nonce (12 bytes) sealed with the app's at-rest key; the row id
+ * `att:<messageId>:<index>` is its additional data. The message row keeps
+ * the item with an empty key and nonce (`attachmentKeyStore.ts`).
+ */
+export type AttachmentKeyRow = {
+  /** `att:<messageId>:<index>` */
+  id: string;
+  messageId: string;
+  index: number;
+  nonce: Uint8Array;
+  sealed: Uint8Array;
+};
+
+/**
  * M16b: our own request to join a group by an invite link (0011 "Invite
  * link"), until the admin's `welcome` arrives. `requested`: the chat request
  * (or the `joinRequest`) went to `admin`; `pending`: the admin answered
@@ -350,8 +368,10 @@ export type GroupRow = {
  * message. `bytes` is the plaintext: the sender keeps it (the source for a
  * re-store), a recipient stores it once fetched, checked and decrypted.
  * `done`/`total` count chunks stored (upload) or fetched (download).
+ * M15c `freed`: Settings › Storage › Free space dropped the decrypted copy;
+ * it downloads again on a tap, never on its own.
  */
-export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged';
+export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged' | 'freed';
 
 export type AttachmentRow = {
   messageId: string;
@@ -367,6 +387,8 @@ export type AttachmentRow = {
   firstFailedAt: number | null;
   error: string | null;
   updatedAt: number;
+  /** M15c: when this device asked the sender to resend it; the download retries for 24 h after, expired or not. */
+  resendAskedAt?: number;
 };
 
 export const DB_NAME = 'polkadot-chat-web';
@@ -428,6 +450,8 @@ export const db: {
   blocked: Table<BlockedRow, HexString>;
   attachments: Table<AttachmentRow, [string, number]>;
   keys: Table<GroupKeyRow, string>;
+  /** M15c: the attachment rows of the same `keys` table (ids `att:…`, no `groupId`). */
+  attachmentKeys: Table<AttachmentKeyRow, string>;
   groupJoins: Table<GroupJoinRow, string>;
 } = {
   device: dexie.table('device'),
@@ -445,5 +469,6 @@ export const db: {
   blocked: dexie.table('blocked'),
   attachments: dexie.table('attachments'),
   keys: dexie.table('keys'),
+  attachmentKeys: dexie.table('keys'),
   groupJoins: dexie.table('groupJoins'),
 };

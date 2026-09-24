@@ -19,6 +19,7 @@ import {
   Pause,
   Paperclip,
   Play,
+  RefreshCcw,
   RotateCw,
   SendHorizontal,
   Trash2,
@@ -28,7 +29,9 @@ import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, 
 
 import type { AttachmentRow, MessageRow } from '../app/database';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { autoDownloads, formatSize, getAttachmentRow, isImageType } from '../domain/chat/attachments';
+import { autoDownloads, formatSize, getAttachmentRow, isImageType, resendName } from '../domain/chat/attachments';
+import { isVideoType } from '../domain/chat/attachmentVideo';
+import { getMessage } from '../domain/chat/messages';
 import { decodeBlurhash } from '../domain/chat/blurhash';
 import type { AttachmentItem } from '../domain/chat/content';
 import { MAX_VOICE_MS, clockOf } from '../domain/chat/voice';
@@ -217,8 +220,22 @@ const StateChip = ({ children, tone = 'info' }: { children: ReactNode; tone?: 'i
   </span>
 );
 
-const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: boolean, onFetch: () => void) => {
-  if (!local) {
+/** M15c: under an expired or missing download, ask the sender to store it again (one text message). */
+const AskResend = ({ local, onAsk }: { local: AttachmentRow; onAsk: () => void }) =>
+  local.resendAskedAt !== undefined ? (
+    <StateChip>
+      <Loader2 className="size-3.5 animate-spin" aria-hidden /> Asked to resend · waiting
+    </StateChip>
+  ) : (
+    <button type="button" className="cursor-pointer" onClick={onAsk} data-testid="attachment-ask-resend">
+      <StateChip>
+        <RefreshCcw className="size-3.5" aria-hidden /> Ask to resend
+      </StateChip>
+    </button>
+  );
+
+const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: boolean, onFetch: () => void, onAsk: () => void) => {
+  if (!local || local.status === 'freed') {
     return own ? null : (
       <button type="button" className="cursor-pointer" onClick={onFetch} data-testid="attachment-download">
         <StateChip>
@@ -243,15 +260,24 @@ const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: 
         </StateChip>
       );
     case 'failed':
+      if (!own && local.resendAskedAt !== undefined) return <AskResend local={local} onAsk={onAsk} />;
       return (
-        <button type="button" className="cursor-pointer" onClick={onFetch} data-testid="attachment-retry">
-          <StateChip tone="error">
-            Download failed · <RotateCw className="size-3.5" aria-hidden /> Retry
-          </StateChip>
-        </button>
+        <span className="inline-flex flex-wrap gap-1">
+          <button type="button" className="cursor-pointer" onClick={onFetch} data-testid="attachment-retry">
+            <StateChip tone="error">
+              Download failed · <RotateCw className="size-3.5" aria-hidden /> Retry
+            </StateChip>
+          </button>
+          {own ? null : <AskResend local={local} onAsk={onAsk} />}
+        </span>
       );
     case 'expired':
-      return <StateChip tone="error">Attachment expired</StateChip>;
+      return (
+        <span className="inline-flex flex-wrap gap-1">
+          <StateChip tone="error">Attachment expired</StateChip>
+          {own ? null : <AskResend local={local} onAsk={onAsk} />}
+        </span>
+      );
     case 'damaged':
       return <StateChip tone="error">Attachment is damaged</StateChip>;
     case 'ready':
@@ -269,6 +295,11 @@ const useItem = (messageId: string, index: number, item: AttachmentItem) => {
   const ready = local?.status === 'ready' && local.bytes ? local.bytes : null;
   const [actionError, setActionError] = useState<string | null>(null);
   const fetchNow = () => void service?.fetch(messageId, index, item);
+  const askResend = () => {
+    if (!service) return;
+    setActionError(null);
+    service.askResend(messageId, index).catch((cause: unknown) => setActionError(cause instanceof Error ? cause.message : 'The request was not sent.'));
+  };
 
   // Auto-download (spec 0012): images and voice notes of at most 5 MiB, once the row is known to be missing.
   useEffect(() => {
@@ -283,7 +314,7 @@ const useItem = (messageId: string, index: number, item: AttachmentItem) => {
     const work = what === 'open' ? files.open(ready, item.name, item.mime) : files.save(ready, item.name, item.mime);
     void work.catch((cause: unknown) => setActionError(cause instanceof Error ? cause.message : 'That did not work.'));
   };
-  return { local, ready, fetchNow, act, actionError };
+  return { local, ready, fetchNow, askResend, act, actionError };
 };
 
 const ActionError = ({ text }: { text: string | null }) => (text ? <p className="text-caption text-fg-error">{text}</p> : null);
@@ -315,8 +346,8 @@ const ImageFrame = ({ item, ready, className }: { item: AttachmentItem; ready: U
 type ItemProps = { messageId: string; index: number; item: AttachmentItem; own: boolean };
 
 const ImageItem = ({ messageId, index, item, own }: ItemProps) => {
-  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
-  const line = stateLine(local, item, own, fetchNow);
+  const { local, ready, fetchNow, askResend, act, actionError } = useItem(messageId, index, item);
+  const line = stateLine(local, item, own, fetchNow, askResend);
   return (
     <div className="flex flex-col gap-1" data-testid="attachment-item" data-status={local?.status ?? 'none'}>
       <div className="relative max-h-80 w-60 max-w-full overflow-hidden rounded-medium bg-surface-container">
@@ -331,8 +362,8 @@ const ImageItem = ({ messageId, index, item, own }: ItemProps) => {
 
 /** One square of an album: click opens it with the default app; a small Save… in the corner. */
 const AlbumTile = ({ messageId, index, item, own }: ItemProps) => {
-  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
-  const line = stateLine(local, item, own, fetchNow);
+  const { local, ready, fetchNow, askResend, act, actionError } = useItem(messageId, index, item);
+  const line = stateLine(local, item, own, fetchNow, askResend);
   return (
     <div className="group/tile relative aspect-square overflow-hidden bg-surface-container" data-testid="attachment-item" data-status={local?.status ?? 'none'} title={actionError ?? undefined}>
       <button type="button" className="absolute inset-0 cursor-pointer disabled:cursor-default" disabled={!ready} onClick={() => act('open')} aria-label={`Open photo ${index + 1}`}>
@@ -369,8 +400,8 @@ const AlbumGrid = ({ row, items, own }: { row: MessageRow; items: readonly Attac
 
 /** M15b: a file row: type icon, name, size and type; Download for a received one, then Open and Save…. */
 const FileItem = ({ messageId, index, item, own }: ItemProps) => {
-  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
-  const line = ready ? null : stateLine(local, item, own, fetchNow);
+  const { local, ready, fetchNow, askResend, act, actionError } = useItem(messageId, index, item);
+  const line = ready ? null : stateLine(local, item, own, fetchNow, askResend);
   return (
     <div className="flex w-72 max-w-full flex-col gap-1" data-testid="attachment-item" data-kind="file" data-status={local?.status ?? 'none'}>
       <div className={cn('flex items-center gap-3 rounded-medium py-2 ps-2 pe-3', own ? 'bg-surface-nested-inverted' : 'bg-surface-container')}>
@@ -428,7 +459,7 @@ const Waveform = ({ samples, progress, own }: { samples: readonly number[]; prog
  * MediaRecorder's WebM has no duration in its header.
  */
 const VoiceItem = ({ messageId, index, item, own }: ItemProps) => {
-  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
+  const { local, ready, fetchNow, askResend, act, actionError } = useItem(messageId, index, item);
   const url = useObjectUrl(ready, item.mime.split(';')[0] ?? item.mime);
   const audio = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -436,7 +467,7 @@ const VoiceItem = ({ messageId, index, item, own }: ItemProps) => {
   const durationMs = item.media.kind === 'voice' ? item.media.durationMs : 0;
   const waveform = item.media.kind === 'voice' ? item.media.waveform : [];
   const progress = durationMs > 0 ? Math.min(1, position / durationMs) : 0;
-  const line = ready ? null : stateLine(local, item, own, fetchNow);
+  const line = ready ? null : stateLine(local, item, own, fetchNow, askResend);
 
   const toggle = () => {
     const player = audio.current;
@@ -505,6 +536,115 @@ const VoiceItem = ({ messageId, index, item, own }: ItemProps) => {
   );
 };
 
+/**
+ * M15c: a video. Before the download: its poster (thumbnail over the
+ * blurhash), a play mark, its duration, and the state chip (with the size). After:
+ * inline playback with the stock controls, then Open and Save…. Videos
+ * download on a tap (spec 0012: only images and voice notes go on their own).
+ */
+const VideoItem = ({ messageId, index, item, own }: ItemProps) => {
+  const { local, ready, fetchNow, askResend, act, actionError } = useItem(messageId, index, item);
+  const url = useObjectUrl(ready, item.mime);
+  const poster = useObjectUrl(item.thumbnail, 'image/webp');
+  const line = ready ? null : stateLine(local, item, own, fetchNow, askResend);
+  const durationMs = item.media.kind === 'video' ? item.media.durationMs : 0;
+  return (
+    <div className="flex w-72 max-w-full flex-col gap-1" data-testid="attachment-item" data-kind="video" data-status={local?.status ?? 'none'}>
+      <div className="relative w-72 max-w-full overflow-hidden rounded-medium bg-surface-container">
+        {url ? (
+          <video
+            src={url}
+            poster={poster ?? undefined}
+            controls
+            preload="metadata"
+            className="block h-auto max-h-80 w-full"
+            data-testid="attachment-video"
+            onLoadedMetadata={event => {
+              // A MediaRecorder WebM has no duration in its header: seek to the end once so the controls learn it.
+              const player = event.currentTarget;
+              if (Number.isFinite(player.duration)) return;
+              player.addEventListener('durationchange', () => (player.currentTime = 0), { once: true });
+              player.currentTime = Number.MAX_SAFE_INTEGER;
+            }}
+          />
+        ) : (
+          <>
+            <Placeholder item={item} />
+            {poster ? <img src={poster} alt="" className="absolute inset-0 size-full object-cover" /> : null}
+            <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+              <span className="flex size-12 items-center justify-center rounded-full bg-surface-container text-fg-primary shadow-1">
+                <Play className="size-6" />
+              </span>
+            </span>
+            <span className="absolute end-2 bottom-2">
+              <StateChip>
+                <span className="tabular-nums" data-testid="video-duration">
+                  {clockOf(durationMs)}
+                </span>
+              </StateChip>
+            </span>
+            {line ? <div className="absolute start-2 bottom-2">{line}</div> : null}
+          </>
+        )}
+      </div>
+      {ready ? <OpenSave own={own} act={act} /> : null}
+      <ActionError text={actionError} />
+    </div>
+  );
+};
+
+/**
+ * M15c: under the peer's "Please resend …" (spec 0012 "Re-upload on
+ * request"): our client offers to store the same ciphertext again from the
+ * local copy. The original message's CIDs then work again; no message is sent.
+ */
+export const ResendOffer = ({ messageId, peer }: { messageId: string; peer: string }) => {
+  const service = useService();
+  const target = useLiveQuery(async () => {
+    const row = await getMessage(messageId);
+    if (!row || row.peerAccountId !== peer || row.direction !== 'outgoing' || row.content.type !== 'attachment') return { row: null, copies: false };
+    const locals = await Promise.all(row.content.items.map((_item, index) => getAttachmentRow(messageId, index)));
+    return { row, copies: locals.every(local => local?.bytes) };
+  }, [messageId, peer]);
+  const [state, setState] = useState<{ phase: 'idle' | 'busy' | 'done' | 'error'; text: string | null }>({ phase: 'idle', text: null });
+  if (!target?.row || target.row.content.type !== 'attachment') return null;
+  const [first] = target.row.content.items;
+  const what = first ? resendName(first) : 'the attachment';
+  if (!target.copies) {
+    return (
+      <p className="text-caption text-fg-tertiary" data-testid="resend-offer">
+        The file is no longer on this computer, so it cannot be resent.
+      </p>
+    );
+  }
+  const run = () => {
+    if (!service) return;
+    setState({ phase: 'busy', text: null });
+    service
+      .resend(messageId)
+      .then(result =>
+        setState({
+          phase: 'done',
+          text: result.submitted === 0 ? 'Still on the Bulletin chain: nothing to store again.' : `Stored again (${result.submitted} of ${result.chunks} chunks). Their copy works for 14 days.`,
+        }),
+      )
+      .catch((cause: unknown) => setState({ phase: 'error', text: cause instanceof Error ? cause.message : 'That did not work.' }));
+  };
+  return (
+    <div className="flex flex-col items-start gap-1" data-testid="resend-offer">
+      <Button size="sm" variant="secondary" className="h-7 rounded-full px-3 font-normal" disabled={!service || state.phase === 'busy'} onClick={run} data-testid="resend-run">
+        {state.phase === 'busy' ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <RefreshCcw className="size-3.5" aria-hidden />}
+        {state.phase === 'busy' ? 'Storing again…' : `Resend ${what}`}
+      </Button>
+      {state.text ? (
+        <p className={cn('text-caption', state.phase === 'error' ? 'text-fg-error' : 'text-fg-secondary')} data-testid="resend-result">
+          {state.text}
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
 /** The body of a kind-250 bubble: an album grid, or each item by its kind; then the caption. */
 export const AttachmentBody = ({ row, own }: { row: MessageRow; own: boolean }) => {
   if (row.content.type !== 'attachment') return null;
@@ -516,7 +656,7 @@ export const AttachmentBody = ({ row, own }: { row: MessageRow; own: boolean }) 
         <AlbumGrid row={row} items={items} own={own} />
       ) : (
         items.map((item, index) => {
-          const View = item.media.kind === 'image' ? ImageItem : item.media.kind === 'voice' ? VoiceItem : FileItem;
+          const View = item.media.kind === 'image' ? ImageItem : item.media.kind === 'voice' ? VoiceItem : item.media.kind === 'video' && isVideoType(item.mime) ? VideoItem : FileItem;
           return <View key={index} messageId={row.messageId} index={index} item={item} own={own} />;
         })
       )}

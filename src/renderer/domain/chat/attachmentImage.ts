@@ -31,15 +31,16 @@ const draw = (bitmap: ImageBitmap, size: { width: number; height: number }): Off
 
 const bytesOf = async (blob: Blob): Promise<Uint8Array> => new Uint8Array(await blob.arrayBuffer());
 
-const blurhashOf = (bitmap: ImageBitmap): string => {
+/** The 4×3 blurhash of a picture (M15c: a video's poster frame too). */
+export const blurhashOf = (bitmap: ImageBitmap): string => {
   const size = fit(bitmap.width, bitmap.height, BLURHASH_SIDE);
   const pixels = draw(bitmap, size).getContext('2d')?.getImageData(0, 0, size.width, size.height).data;
   if (!pixels) throw new Error('This computer cannot read the image.');
   return encodeBlurhash(pixels, size.width, size.height, 4, 3);
 };
 
-/** The largest WebP thumbnail of at most 2 KB, or null (the blurhash is enough). */
-const thumbnailOf = async (bitmap: ImageBitmap): Promise<Uint8Array | null> => {
+/** The largest WebP thumbnail of at most 2 KB, or null (the blurhash is enough). M15c: a video's poster. */
+export const thumbnailOf = async (bitmap: ImageBitmap): Promise<Uint8Array | null> => {
   for (const side of THUMBNAIL_SIDES) {
     const canvas = draw(bitmap, fit(bitmap.width, bitmap.height, side));
     for (const quality of THUMBNAIL_QUALITIES) {

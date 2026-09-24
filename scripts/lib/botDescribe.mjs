@@ -41,3 +41,7 @@ export function repliesAfter(rows, before) {
       row.direction === 'incoming' && !before.has(row.messageId) && (row.content.type === 'text' || row.content.type === 'reply') && !PROGRESS.test(row.content.text),
   );
 }
+
+/** M15c: the bot says it cannot look because its tools are off (the fleet's tool policy "none", review M15b). */
+const TOOLS_OFF = /\btools? (?:are |is )?(?:disabled|off|turned off|not enabled|unavailable)\b|\bwithout (?:any )?tools\b|\bno tools\b/i;
+export const toolsOff = (text) => refusesToLook(text) && TOOLS_OFF.test(String(text));

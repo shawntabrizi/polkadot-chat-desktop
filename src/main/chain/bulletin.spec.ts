@@ -15,7 +15,9 @@ import {
   contentHash,
   fetchVerified,
   httpsPrefix,
+  quotaOf,
   sourceOrder,
+  storeResultOf,
   storeWithRetry,
 } from './bulletin';
 
@@ -58,6 +60,29 @@ describe('the budget check', () => {
     expect(budgetProblem(allowance, [500_000, 10])).toMatch(/^Not enough Bulletin storage left: 1\.0 MB\. It refills on 2026-09-25\.$/);
     expect(budgetProblem(allowance, [2_000_016])).toMatch(/^Not enough Bulletin storage left/);
     expect(budgetProblem(null, [1])).toBe('This account has no Bulletin storage yet.');
+  });
+});
+
+describe('the quota panel (M15c)', () => {
+  it('shows the whole grant next to what is left, and none without a grant', () => {
+    const now = Date.UTC(2026, 8, 24);
+    const allowance = allowanceOf({ expires_at: 1_000 + 14_400, bytes_allowance: 64n * 1024n * 1024n, bytes_used: 52n * 1024n * 1024n, transactions_allowance: 100, transactions_used: 30 }, 1_000, now);
+    expect(quotaOf('5x', allowance)).toEqual({
+      address: '5x',
+      transactionsLeft: 70,
+      bytesLeft: 12 * 1024 * 1024,
+      transactionsTotal: 100,
+      bytesTotal: 64 * 1024 * 1024,
+      expiresAtBlock: 15_400,
+      refillsAt: now + 14_400 * 6_000,
+    });
+    expect(quotaOf('5x', null)).toBeNull();
+  });
+
+  it('counts for the day meter only the chunks a store broadcast: a resend of a live file costs nothing', () => {
+    const chunks = [new Uint8Array(2_000_016), new Uint8Array(300_016)];
+    expect(storeResultOf([{ hash: '0x01', block: null, submitted: false }, { hash: '0x02', block: 7, submitted: true }], chunks)).toEqual({ submitted: 1, submittedBytes: 300_016 });
+    expect(storeResultOf([{ hash: '0x01', block: null, submitted: false }, { hash: '0x02', block: null, submitted: false }], chunks)).toEqual({ submitted: 0, submittedBytes: 0 });
   });
 });
 

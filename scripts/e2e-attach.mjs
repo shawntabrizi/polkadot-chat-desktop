@@ -22,11 +22,20 @@
 //     stores) and a 60 s voice note (duration, 32-bar waveform); b fetches
 //     and verifies each (FILE_OK, ALBUM_OK, VOICE_OK). A voice note over
 //     5 minutes is refused before anything is stored (in VOICE_SENT).
+//  4b. M15c: a 900 KB video (media = video: size, duration, poster blurhash;
+//     b checks them and the bytes: VIDEO_OK); the album's 4 items go in one
+//     store call; "Ask to resend": b frees its decrypted copy of the image and
+//     sends "Please resend …" (one text), a's client sees the request and
+//     stores the same ciphertext again (the chain still has it on devnet, so
+//     nothing is broadcast), b fetches again by the same CIDs (RESEND_OK).
 //  5. the bot step (BOT_DESCRIBE_OK) runs only when the pca fleet already runs
 //     the pca half of M15a; else BOT_DESCRIBE_SKIPPED with the reason. The
 //     fleet is read (its REVISION file), never changed. M15b: the bot's first
 //     text after the attachment message must talk about the image
-//     (scripts/lib/botDescribe.mjs); a greeting fails it.
+//     (scripts/lib/botDescribe.mjs); a greeting fails it. M15c: when the bot's
+//     reply says its tools are off (the fleet's tool policy is "none", an
+//     operator decision, review M15b), the step is a warning
+//     (BOT_DESCRIBE_PENDING_OPERATOR) and ATTACH_OK says bot=pending-operator.
 // Exit 0 ATTACH_OK; 13 E2E_TIMEOUT <stage>; 3 PEER_KEY_UNSUPPORTED; 1 any
 // other failure. Prints no secret (keys stay in the processes).
 
@@ -37,7 +46,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { describesImage, refusesToLook, repliesAfter } from './lib/botDescribe.mjs';
+import { describesImage, refusesToLook, repliesAfter, toolsOff } from './lib/botDescribe.mjs';
 import { drawScene, drawTestImage, shrink } from './lib/testImage.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -186,10 +195,25 @@ async function parent() {
   if (!voiceSent) return;
   if (!(await step('b', `FETCH_VOICE ${field(voiceSent, 'id')} ${field(voiceSent, 'sha256')}`, /^VOICE_OK /, 'fetch the voice note'))) return;
 
+  // 4b. M15c: a video; then Ask to resend the image and the sender's re-store.
+  const videoSent = await step('a', 'SEND_VIDEO', /^VIDEO_SENT /, 'store and send the video');
+  if (!videoSent) return;
+  if (!(await step('b', `FETCH_VIDEO ${field(videoSent, 'id')} ${field(videoSent, 'sha256')}`, /^VIDEO_OK /, 'fetch the video'))) return;
+  if (!(await step('b', `ASK_RESEND ${messageId}`, /^RESEND_ASKED /, 'ask to resend'))) return;
+  if (!(await step('a', `RESEND ${messageId}`, /^RESENT /, 'resend on request'))) return;
+  if (!(await step('b', `REFETCH ${messageId} ${sha}`, /^RESEND_OK /, 'fetch again by the same CIDs'))) return;
+
   // 5. The bot, only when its half runs on the fleet.
   const bot = botReadiness();
+  let botResult = 'skipped';
   if (!bot.ready) console.log(`BOT_DESCRIBE_SKIPPED ${bot.reason}`);
-  else if (!(await step('a', `BOT ${BOT}`, /^BOT_DESCRIBE_OK /, 'bot describes the image', 6 * 60_000))) return;
+  else {
+    const line = await step('a', `BOT ${BOT}`, /^BOT_DESCRIBE_OK |^BOT_DESCRIBE_PENDING_OPERATOR /, 'bot describes the image', 6 * 60_000);
+    if (!line) return;
+    botResult = line.startsWith('BOT_DESCRIBE_OK') ? 'ok' : 'pending-operator';
+    // The owner has not yet allowed read tools on the fleet's guide bot (review M15b): a warning, not a failure.
+    if (botResult === 'pending-operator') console.log(`WARNING BOT_DESCRIBE_FAILED treated as pending: the bot's tool policy is "none" (${BOT}); enable read tools on the fleet to pass it`);
+  }
 
   for (const person of Object.values(people)) {
     person.done = true;
@@ -197,7 +221,8 @@ async function parent() {
   }
   await delay(1_000);
   stopAll();
-  console.log(`ATTACH_OK FILE_OK ALBUM_OK VOICE_OK ${bot.ready ? 'BOT_DESCRIBE_OK' : 'BOT_DESCRIBE_SKIPPED'} at=${at()}`);
+  const botWord = botResult === 'ok' ? 'BOT_DESCRIBE_OK' : botResult === 'pending-operator' ? 'bot=pending-operator' : 'BOT_DESCRIBE_SKIPPED';
+  console.log(`ATTACH_OK FILE_OK ALBUM_OK VOICE_OK VIDEO_OK RESEND_OK ${botWord} at=${at()}`);
   process.exit(0);
 }
 
@@ -240,7 +265,9 @@ async function child(name) {
   const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
   const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
   const { openBulletin, createBulletinService, bulletinSigner, cidOf } = await load('src/main/chain/bulletin.ts');
-  const { createAttachmentService, getAttachmentRow } = await load('src/renderer/domain/chat/attachments.ts');
+  const { createAttachmentService, getAttachmentRow, parseResendRequest } = await load('src/renderer/domain/chat/attachments.ts');
+  const { freeLocalCopies } = await load('src/renderer/domain/chat/storageQuota.ts');
+  const { storeResultOf } = await load('src/main/chain/bulletin.ts');
   const { encodeBlurhash } = await load('src/renderer/domain/chat/blurhash.ts');
   const { prepareFile, gatewayFirst } = await load('src/renderer/domain/chat/attachments.ts');
   const { prepareVoice, waveformOf, MAX_VOICE_MS, VOICE_MIME } = await load('src/renderer/domain/chat/voice.ts');
@@ -293,12 +320,15 @@ async function child(name) {
   const progress = new Set();
   const sources = [];
   const orders = [];
+  let storeCalls = 0;
   const bulletinApi = {
     store: async (uploadId, chunks) => {
+      storeCalls += 1;
       const stored = await service.store(chunks, (step) => {
         for (const listener of progress) listener({ uploadId, ...step });
       });
-      for (const entry of stored) console.log(`STORED ${cidOf(bytesOf(entry.hash))} block=${entry.block ?? 'found-by-content-hash'} best=yes`);
+      for (const entry of stored) console.log(`STORED ${cidOf(bytesOf(entry.hash))} block=${entry.block ?? (entry.submitted ? 'found-by-content-hash' : 'already-on-chain')} best=yes`);
+      return storeResultOf(stored, chunks);
     },
     onProgress: (listener) => {
       progress.add(listener);
@@ -312,7 +342,6 @@ async function child(name) {
       return result;
     },
   };
-  attachments = createAttachmentService({ bulletin: bulletinApi, store: { genesis, mirror: null } });
 
   await seedSelfIdentity(
     { statementSeed: selfKeys.walletSecret64, chatPrivateKey: selfKeys.chatPrivateKey, deviceEncryptionPrivateKey: selfKeys.deviceEncryptionPrivateKey },
@@ -322,6 +351,8 @@ async function child(name) {
   if (!identity) finish(1, 'SEED_FAIL no identity row after seeding');
   const lookup = createIdentityLookup(connection);
   manager = await createChatManager({ identity, deviceKeys, statementStore: connection.adapter, lookup, onConnectionStatus: connection.onStatus, username: saved.username });
+  // As App.tsx: the manager sends the text of an Ask to resend (M15c).
+  attachments = createAttachmentService({ bulletin: bulletinApi, store: { genesis, mirror: null }, chat: manager });
   console.log(`READY username=${saved.username} bulletin=${service.address}`);
 
   const image = drawTestImage();
@@ -363,15 +394,20 @@ async function child(name) {
   const VOICE_MS = 60_000;
   const voiceBytes = seeded((VOICE_MS / 1000) * 3_000, 0x15b0c0de);
   const voiceWaveform = waveformOf(Float32Array.from({ length: 4_800 }, (_, i) => Math.sin(i / 40) * (0.2 + 0.8 * Math.abs(Math.sin(i / 700)))));
+  // M15c: 900 KB of seeded bytes as a WebM video (Node cannot encode one; playback is checked in the app by the
+  // room-video screenshot). One chunk, over 512 KB: fetched gateway first.
+  const VIDEO = { bytes: seeded(900_000, 0x15c0f11e), width: 640, height: 360, durationMs: 7_500, name: 'm15c-e2e-clip.webm' };
+  const videoScene = drawScene(64, 36, { top: [20, 60, 110], bottom: [240, 170, 90], sun: [255, 220, 150], sea: [30, 70, 100] });
   /** Sends `files` and checks the one-statement rule; resolves with the sent row and the counts. */
   const sendCounted = async (files, caption) => {
     const before = manager.submissions.snapshot();
     const transactionsBefore = bulletinTransactions;
+    const callsBefore = storeCalls;
     await attachments.send(manager, otherHex, files, caption);
     const row = (await listMessages(otherHex)).filter((r) => r.direction === 'outgoing' && r.content.type === 'attachment').at(-1);
     await waitFor(async () => manager.submissions.snapshot().submissions > before.submissions, 30_000);
     const statements = manager.submissions.snapshot().submissions - before.submissions;
-    return { row, statements, transactions: bulletinTransactions - transactionsBefore };
+    return { row, statements, transactions: bulletinTransactions - transactionsBefore, calls: storeCalls - callsBefore };
   };
   /** b: every item of `messageId` fetched, checked and compared with a's SHA-256 list. */
   const fetchAll = async (messageId, expected) => {
@@ -476,10 +512,11 @@ async function child(name) {
         console.log(same && ordered && item.name === 'm15b-e2e-archive.bin' && item.media.kind === 'file' ? `FILE_OK ${line}` : `FETCH_FILE_FAILED ${line} error=${results[0].error}`);
       }
       if (command === 'SEND_ALBUM') {
-        const { row, statements, transactions } = await sendCounted(albumImages.map(sceneFile), 'M15b: an album of four');
+        const { row, statements, transactions, calls } = await sendCounted(albumImages.map(sceneFile), 'M15b: an album of four');
         const shas = albumImages.map((scene) => sha256(scene.png));
-        const line = `id=${row.messageId} sha256=${shas.join(',')} items=${row.content.items.length} statements_delta=${statements} bulletin_tx_delta=${transactions}`;
-        console.log(statements === 1 && row.content.items.length === 4 ? `ALBUM_SENT ${line}` : `SEND_ALBUM_FAILED ${line} (expected one statement for 4 items)`);
+        const line = `id=${row.messageId} sha256=${shas.join(',')} items=${row.content.items.length} statements_delta=${statements} bulletin_tx_delta=${transactions} store_calls=${calls}`;
+        // M15c: the 4 items' chunks go in one store call (in flight together; each item has its own key and nonce).
+        console.log(statements === 1 && row.content.items.length === 4 && calls === 1 ? `ALBUM_SENT ${line}` : `SEND_ALBUM_FAILED ${line} (expected one statement and one store call for 4 items)`);
       }
       if (command === 'FETCH_ALBUM') {
         const expected = rest[1].split(',');
@@ -507,6 +544,63 @@ async function child(name) {
         const matches = item.media.kind === 'voice' && item.media.durationMs === VOICE_MS && wave.length === 32 && wave.join(',') === voiceWaveform.join(',') && item.mime === VOICE_MIME && item.name === null;
         const line = `id=${row.messageId} media=${item.media.kind} duration_ms=${item.media.durationMs} bars=${wave.length} mime="${item.mime}" sources=${sources.join(',')} sha256=${results[0].sha}`;
         console.log(same && matches ? `VOICE_OK ${line}` : `FETCH_VOICE_FAILED ${line} error=${results[0].error}`);
+      }
+      if (command === 'SEND_VIDEO') {
+        const small = shrink(videoScene.rgba, videoScene.width, videoScene.height);
+        const video = {
+          bytes: VIDEO.bytes,
+          mime: 'video/webm',
+          name: VIDEO.name,
+          media: { kind: 'video', width: VIDEO.width, height: VIDEO.height, durationMs: VIDEO.durationMs },
+          blurhash: encodeBlurhash(small.pixels, small.w, small.h, 4, 3),
+          thumbnail: null,
+        };
+        const { row, statements, transactions } = await sendCounted([video], 'M15c: a short clip');
+        const item = row.content.items[0];
+        const line = `id=${row.messageId} sha256=${sha256(VIDEO.bytes)} size=${VIDEO.bytes.length} media=${item.media.kind} ${item.media.width}x${item.media.height} duration_ms=${item.media.durationMs} chunks=${item.chunks.length} statements_delta=${statements} bulletin_tx_delta=${transactions}`;
+        console.log(statements === 1 && item.media.kind === 'video' ? `VIDEO_SENT ${line}` : `SEND_VIDEO_FAILED ${line}`);
+      }
+      if (command === 'FETCH_VIDEO') {
+        const { row, results, same } = await fetchAll(rest[0], [rest[1]]);
+        const item = row.content.items[0];
+        const matches = item.media.kind === 'video' && item.media.width === VIDEO.width && item.media.height === VIDEO.height && item.media.durationMs === VIDEO.durationMs && item.name === VIDEO.name && item.mime === 'video/webm' && typeof item.blurhash === 'string';
+        const line = `id=${row.messageId} media=${item.media.kind} ${item.media.width}x${item.media.height} duration_ms=${item.media.durationMs} name=${item.name} poster=blurhash(${item.blurhash?.length ?? 0}) order=${orders.join(',')} sources=${sources.join(',')} sha256=${results[0].sha}`;
+        console.log(same && matches ? `VIDEO_OK ${line}` : `FETCH_VIDEO_FAILED ${line} error=${results[0].error}`);
+      }
+      if (command === 'ASK_RESEND') {
+        const row = await incomingAttachment(otherHex, rest[0]);
+        if (!row) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the attachment message`);
+        // "Free space" with 0 days: every decrypted copy of a received attachment goes (b's copy of the image too).
+        const freed = await freeLocalCopies(0);
+        const local = await getAttachmentRow(rest[0], 0);
+        const before = manager.submissions.snapshot().submissions;
+        await attachments.askResend(rest[0], 0);
+        const asked = (await listMessages(otherHex)).filter((r) => r.direction === 'outgoing' && r.content.type === 'text').at(-1);
+        await waitFor(async () => manager.submissions.snapshot().submissions > before, 30_000);
+        const line = `id=${rest[0]} freed_files=${freed.files} freed_bytes=${freed.bytes} local=${local?.status}/${local?.bytes ? 'bytes' : 'no-bytes'} text="${asked?.content.text}" statements_delta=${manager.submissions.snapshot().submissions - before}`;
+        console.log(local?.status === 'freed' && !local.bytes && parseResendRequest(asked?.content.text ?? '') === rest[0] ? `RESEND_ASKED ${line}` : `ASK_RESEND_FAILED ${line}`);
+      }
+      if (command === 'RESEND') {
+        // a's client sees the request (an incoming text whose link names our message) and stores the same ciphertext again.
+        const request = await waitFor(async () => (await listMessages(otherHex)).find((r) => r.direction === 'incoming' && r.content.type === 'text' && parseResendRequest(r.content.text) === rest[0]) ?? null);
+        if (!request) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the resend request`);
+        const own = await db.messages.get(rest[0]);
+        const named = own.content.items.flatMap((item) => item.chunks.map((hash) => hexOf(hash)));
+        const before = manager.submissions.snapshot().submissions;
+        const result = await attachments.resend(rest[0]);
+        const same = result.hashes.join(',') === named.join(',');
+        const line = `id=${rest[0]} request="${request.content.text}" chunks=${result.chunks} submitted=${result.submitted} cids_same=${same ? 'yes' : 'no'} cid0=${cidOf(bytesOf(result.hashes[0]))} statements_delta=${manager.submissions.snapshot().submissions - before}`;
+        console.log(same && manager.submissions.snapshot().submissions === before ? `RESENT ${line}` : `RESEND_FAILED ${line}`);
+      }
+      if (command === 'REFETCH') {
+        const row = await incomingAttachment(otherHex, rest[0]);
+        const item = row.content.items[0];
+        sources.length = 0;
+        const status = await attachments.fetch(row.messageId, 0, item);
+        const local = await getAttachmentRow(row.messageId, 0);
+        const got = local?.bytes ? sha256(local.bytes) : 'none';
+        const line = `id=${row.messageId} status=${status} cid0=${cidOf(item.chunks[0])} sources=${sources.join(',')} sha256=${got}`;
+        console.log(status === 'ready' && got === rest[1] ? `RESEND_OK ${line}` : `REFETCH_FAILED ${line} error=${local?.error}`);
       }
       if (command === 'BOT') {
         const username = rest[0];
@@ -547,7 +641,10 @@ async function child(name) {
             console.log(`BOT_ROW ${row.direction} at=${new Date(row.timestamp).toISOString()} id=${row.messageId}${before.has(row.messageId) ? ' (before)' : ''} "${body}"`);
           }
         }
-        console.log(`${ok ? 'BOT_DESCRIBE_OK' : 'BOT_DESCRIBE_FAILED'} bot=${username} attachment=${sent?.messageId} reply=${reply.messageId} reply_type=${reply.content.type} text="${text}"`);
+        // M15c: a refusal that says the bot's tools are off is the fleet's tool policy "none" (an operator decision), not a desktop fault.
+        const pending = !ok && toolsOff(reply.content.text);
+        const verdict = ok ? 'BOT_DESCRIBE_OK' : pending ? 'BOT_DESCRIBE_PENDING_OPERATOR tool_policy=none' : 'BOT_DESCRIBE_FAILED';
+        console.log(`${verdict} bot=${username} attachment=${sent?.messageId} reply=${reply.messageId} reply_type=${reply.content.type} text="${text}"`);
       }
     } catch (error) {
       console.log(`${command}_FAILED ${error instanceof Error ? error.message : String(error)}`);

@@ -212,3 +212,10 @@ Write the question, what you did meanwhile, and the date.
 - **The history line**: "History shared by <name>" (the brief) or "<admitter> shared recent messages" (the spec)? The brief's is built.
 - **Slow mode at the receiver hides only carriers more than 2 s early** (network delay); pca hides at the exact interval. Should both use a grace?
 - **A contact made only by a join request stays a stranger for welcomes** (`joinedVia`), even after the two chat. Should a message the person sends that contact clear the mark?
+
+## M15c (2026-09-24)
+
+- **Free space keeps the sender's own copies.** They are the only source of a resend with the same CIDs, so a heavy sender frees little. Should Free space offer "also my sent files older than N days" (resend then impossible for those)?
+- **The daily client budget is a meter, not a wall.** Spec 0012 has no day cap and the client refuses only beyond the authorization. The panel shows today's share (what is left, spread over the days to the refill) and warns past it. Should the client refuse past the share instead?
+- **A video's name goes on the wire** (a video is a file, review M15b answer 4), unlike a photo's. A phone's "IMG_1234.MOV" says little, but a named file may say more than meant. Keep, or send videos nameless like photos?
+- **The "Ask to resend" link is a fragment (`#resend/<id>`).** It is inert on click. A phone app that renders markdown shows a link that does nothing. Should the spec name this form (so pca and the phone apps can offer "Resend" too), or use a plain `replyTo` as spec 0012 suggests?

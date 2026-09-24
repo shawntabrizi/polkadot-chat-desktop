@@ -23,18 +23,22 @@ import {
   type PreparedFile,
   MAX_CONTENT_BYTES,
   addPicked,
+  autoDownloads,
   buildAttachment,
   createAttachmentService,
   fitToBudget,
   gatewayFirst,
   getAttachmentRow,
+  parseResendRequest,
   prepareFile,
+  resendRequestText,
   wireFileName,
 } from './attachments';
 import { type AttachmentItem, fromWire, toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
 import { type IdentityChannelEvent, attachmentContentLength } from './identityEvents';
 import { type ChatManager, createChatManager } from './manager';
+import { addMessage } from './messages';
 import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
 import { MAX_VOICE_MS, prepareVoice } from './voice';
@@ -110,10 +114,13 @@ const fakeBulletin = () => {
   const chunks = new Map<string, Uint8Array>();
   const listeners = new Set<(progress: BulletinProgress) => void>();
   const log: string[] = [];
+  /** Chunks per store call: an album's chunks go in one call (M15c). */
+  const calls: number[] = [];
   let failing = 0;
   return {
     chunks,
     log,
+    calls,
     failNext: (count: number) => {
       failing = count;
     },
@@ -123,11 +130,21 @@ const fakeBulletin = () => {
           failing -= 1;
           throw new Error('Upload failed: a chunk did not reach the Bulletin chain.');
         }
+        let submitted = 0;
+        let submittedBytes = 0;
         list.forEach((chunk, i) => {
-          chunks.set(bytesToHex(contentHash(chunk)), chunk);
-          log.push(`stored ${bytesToHex(contentHash(chunk))}`);
-          for (const listener of listeners) listener({ uploadId, stored: i + 1, total: list.length });
+          const hash = bytesToHex(contentHash(chunk));
+          // As main: a chunk the chain has already is not stored again (and costs nothing).
+          if (!chunks.has(hash)) {
+            submitted += 1;
+            submittedBytes += chunk.length;
+            log.push(`stored ${hash}`);
+          }
+          chunks.set(hash, chunk);
+          for (const listener of listeners) listener({ uploadId, stored: i + 1, total: list.length, chunk: i });
         });
+        calls.push(list.length);
+        return { submitted, submittedBytes };
       },
       onProgress: (listener: (progress: BulletinProgress) => void) => {
         listeners.add(listener);
@@ -232,6 +249,10 @@ describe('sending an image', () => {
     if (effect.kind !== 'message' || effect.content.type !== 'attachment') throw new Error('not an attachment');
     // Same key, nonce and file: the chunks stored now are the ones the message names.
     expect(chain.chunks.has(bytesToHex(effect.content.items[0]?.chunks[0] as Uint8Array))).toBe(true);
+    // M15c: the row holds no key (sealed in `keys`), yet the resent message carries the real one: the peer can decrypt.
+    const recipient = createAttachmentService({ bulletin: chain.api, store: STORE });
+    expect(await recipient.fetch('retried', 0, effect.content.items[0] as AttachmentItem)).toBe('ready');
+    recipient.dispose();
     expect(manager.submissions.snapshot().submissions - before.submissions).toBe(1);
   });
 });
@@ -344,6 +365,10 @@ describe('albums (M15b)', () => {
     // Four stores (one chunk each), each item its own key.
     expect(chain.log.filter(line => line.startsWith('stored'))).toHaveLength(4);
     expect(new Set(content.items.map(item => bytesToHex(item.key))).size).toBe(4);
+    // M15c (review M15b answer 5): all four in one store call, in flight together; safe because no two
+    // items share a key and nonce, so no AEAD nonce repeats under one key.
+    expect(chain.calls).toEqual([4]);
+    expect(new Set(content.items.map(item => bytesToHex(item.nonce))).size).toBe(4);
     for (const [index, file] of photos.entries()) expect((await getAttachmentRow(messageId, index))?.bytes).toEqual(file.bytes);
   });
 
@@ -382,5 +407,88 @@ describe('voice notes (M15b)', () => {
     expect(item.mime).toBe('audio/webm; codecs=opus');
     expect(item.name).toBeNull();
     expect(item.media).toEqual({ kind: 'voice', durationMs: 42_000, waveform: voice(0).waveform });
+  });
+});
+
+describe('resend on request (M15c)', () => {
+  it('stores the same ciphertext again from the local copy: the CIDs the message names work again, and no message is sent', async () => {
+    const { manager, transport, peerKey, chain, service } = await setup();
+    const file = photo(3_000);
+    await service.send(manager, peerKey, [file], null);
+    const { messageId, content } = await receivedAttachment(transport);
+    const [item] = content.items as [AttachmentItem];
+    // 14 days later the chain dropped the chunks: the recipient cannot fetch.
+    chain.chunks.clear();
+    const recipient = createAttachmentService({ bulletin: chain.api, store: STORE });
+    expect(await recipient.fetch('copy-1', 0, item)).toBe('failed');
+    recipient.dispose();
+
+    const before = manager.submissions.snapshot();
+    const result = await service.resend(messageId);
+    // Same key, nonce and file: the same chunk hashes as the message (spec 0012: a re-store yields the same CIDs).
+    expect(result.hashes).toEqual(item.chunks.map(hash => bytesToHex(hash)));
+    expect(result.submitted).toBe(1);
+    expect(manager.submissions.snapshot().submissions).toBe(before.submissions);
+    expect(transport.received.filter(m => m.content.tag === 'attachment')).toHaveLength(1);
+
+    const again = createAttachmentService({ bulletin: chain.api, store: STORE });
+    await db.attachments.delete(['copy-1', 0]);
+    expect(await again.fetch('copy-1', 0, item)).toBe('ready');
+    expect((await getAttachmentRow('copy-1', 0))?.bytes).toEqual(file.bytes);
+    again.dispose();
+  });
+
+  it('broadcasts nothing when the chain still has every chunk, and refuses when the local file changed', async () => {
+    const { manager, peerKey, service } = await setup();
+    await service.send(manager, peerKey, [photo(2_000)], null);
+    const own = (await db.messages.toArray()).find(r => r.content.type === 'attachment' && r.direction === 'outgoing');
+    expect((await service.resend(own!.messageId)).submitted).toBe(0);
+    // A changed copy would give other CIDs than the message names: never store those.
+    await db.attachments.update([own!.messageId, 0], { bytes: fill(2_000) });
+    await expect(service.resend(own!.messageId)).rejects.toThrow(/changed/);
+  });
+
+  it('asks with one text that names the message in a local link, then keeps retrying past the expiry for a day', async () => {
+    const sent: { peer: string; text: string }[] = [];
+    const chat = { sendMessage: async (peer: string, content: { type: string; text: string }) => void sent.push({ peer, text: content.text }) };
+    const chain = fakeBulletin();
+    const built = await buildAttachment([prepareFile({ bytes: fill(500), name: 'plan [v2].pdf', type: 'application/pdf' })], null, STORE, Date.now() - 15 * 24 * 60 * 60 * 1000);
+    const [item] = built.items as [AttachmentItem];
+    const peer = `0x${'cd'.repeat(32)}` as HexString;
+    await addMessage({ messageId: 'old-file', peerAccountId: peer, timestamp: 1, direction: 'incoming', status: 'received', content: { type: 'attachment', items: [item], caption: null }, reactions: [], editedAt: null });
+    const service = createAttachmentService({ bulletin: chain.api, store: STORE, chat: chat as never });
+    expect(await service.fetch('old-file', 0, item)).toBe('expired');
+
+    await service.askResend('old-file', 0);
+    expect(sent).toEqual([{ peer, text: 'Please resend [plan v2.pdf](#resend/old-file)' }]);
+    expect(parseResendRequest(sent[0]!.text)).toBe('old-file');
+    expect(resendRequestText('m-1', { name: null, media: { kind: 'video', width: 1, height: 1, durationMs: 1 } })).toBe('Please resend [the video](#resend/m-1)');
+    // Still missing: after the ask it is "failed" (retried), not "expired" (given up).
+    expect(await service.fetch('old-file', 0, item)).toBe('failed');
+    // The sender stores it again; the next retry gets it.
+    built.ciphertexts[0]?.forEach((chunk, i) => chain.chunks.set(bytesToHex(item.chunks[i] as Uint8Array), chunk));
+    expect(await service.fetch('old-file', 0, item)).toBe('ready');
+    service.dispose();
+  });
+});
+
+describe('video (M15c)', () => {
+  it('goes out as a file with its poster, size and duration; the peer gets the same bytes', async () => {
+    const { manager, transport, peerKey, chain, service } = await setup();
+    const bytes = fill(90_000);
+    const video: PreparedFile = { bytes, mime: 'video/webm', name: 'ferry.webm', media: { kind: 'video', width: 640, height: 360, durationMs: 12_345 }, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', thumbnail: fill(1_500) };
+    await service.send(manager, peerKey, [video], null);
+    const { content } = await receivedAttachment(transport);
+    const [item] = content.items as [AttachmentItem];
+    expect(item.media).toEqual({ kind: 'video', width: 640, height: 360, durationMs: 12_345 });
+    expect(item.name).toBe('ferry.webm');
+    expect(item.thumbnail?.length).toBe(1_500);
+    // Spec 0012: only images and voice notes download on their own; a video waits for a tap.
+    expect(autoDownloads(item)).toBe(false);
+    const recipient = createAttachmentService({ bulletin: chain.api, store: STORE });
+    await db.attachments.clear();
+    expect(await recipient.fetch('video-1', 0, item)).toBe('ready');
+    expect((await getAttachmentRow('video-1', 0))?.bytes).toEqual(bytes);
+    recipient.dispose();
   });
 });

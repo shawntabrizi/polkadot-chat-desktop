@@ -91,6 +91,14 @@
 //   room-voice      M15b voice notes (fixture bytes recorded in the page by
 //                   MediaRecorder, WebM/Opus): a received one playing
 //                   (progress on the waveform) and a sent one
+//   room-video      M15c videos (fixture bytes recorded in the page from a
+//                   canvas by MediaRecorder, WebM/VP8): a received one not yet
+//                   downloaded (poster, duration, Download) and a sent one in
+//                   the inline player; an expired file with "Ask to resend";
+//                   the peer's "Please resend" with our "Resend the photo"
+//   settings-storage  M15c Settings › Storage: the Bulletin authorization
+//                   left (live read on devnet), uploads today (fixture count)
+//                   against the daily share, local copies, Free space
 //   settings-agent  M13 Settings › Agent, published for real on devnet with
 //                   PCD_SCREENSHOT_AGENT_IDENTITY (a path, default
 //                   .agent-runs/identity-pcdbenchcold/identity.json) as the
@@ -160,7 +168,7 @@ const WORKER_SHOTS = {
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned',
     'settings-agent', 'demo-onboarding', 'settings-demo',
-    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice',
+    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
@@ -840,10 +848,20 @@ const attachmentFixture = async () => {
   const albumItems = images => images.map(image => item(image, 1));
   const voiceIn = voiceItem(4_000, 13, 0x51);
   const voiceOut = voiceItem(4_000, 61, 0x52);
+  // M15c: videos. The poster (thumbnail) and the sent one's bytes are made in the page (recordFixtureVideo).
+  const clip = scene(480, 270, { top: [30, 70, 130], bottom: [250, 180, 110], sun: [255, 225, 160], sea: [20, 80, 120] });
+  const videoItem = (name, byte) => ({
+    ...plain(1_400_000, byte),
+    mime: 'video/webm',
+    name,
+    blurhash: clip.blurhash,
+    media: { kind: 'video', width: 480, height: 270, durationMs: 3_000 },
+  });
+  const expired = { ...fileItem('Ferry timetable.pdf', 'application/pdf', 180_000, 0x43), expiresAt: Date.now() - 2 * 24 * 3_600_000 };
   const album = (id, images, status) => images.map((image, index) => ({ ...local(id, image, status, 1, 1), index }));
   return {
     contacts: [contactRow(SOFIA)],
-    rooms: [roomRow(SOFIA, 'Voice message (0:04)', t(12))],
+    rooms: [roomRow(SOFIA, 'Please resend the photo', t(16))],
     messages: [
       messageRow('fixture-sofia-hello', SOFIA, t(0), 'incoming', { type: 'text', text: 'Back from the islands! Photos coming.' }),
       messageRow('fixture-sofia-harbour', SOFIA, t(1), 'outgoing', attachment(harbour, 1, 'Ours from the harbour')),
@@ -856,6 +874,10 @@ const attachmentFixture = async () => {
       messageRow('fixture-sofia-album-out', SOFIA, t(9), 'outgoing', { type: 'attachment', items: albumItems(albumOut), caption: 'And ours' }),
       messageRow('fixture-sofia-voice-in', SOFIA, t(11), 'incoming', { type: 'attachment', items: [voiceIn], caption: null }),
       messageRow('fixture-sofia-voice-out', SOFIA, t(12), 'outgoing', { type: 'attachment', items: [voiceOut], caption: null }),
+      messageRow('fixture-sofia-video-in', SOFIA, t(13), 'incoming', { type: 'attachment', items: [videoItem('ferry-wake.webm', 0x61)], caption: 'The wake behind the ferry' }),
+      messageRow('fixture-sofia-video-out', SOFIA, t(14), 'outgoing', { type: 'attachment', items: [videoItem('harbour-sunset.webm', 0x62)], caption: null }),
+      messageRow('fixture-sofia-expired', SOFIA, t(15), 'incoming', { type: 'attachment', items: [expired], caption: null }),
+      messageRow('fixture-sofia-resend', SOFIA, t(16), 'incoming', { type: 'text', text: 'Please resend [the photo](#resend/fixture-sofia-harbour)' }),
     ],
     attachments: [
       local('fixture-sofia-sunset', sunset, 'ready', 1, 1),
@@ -865,7 +887,11 @@ const attachmentFixture = async () => {
       { ...local('fixture-sofia-zip', beach, 'ready', 1, 1), bytes: bytes(archiveBytes), mime: 'application/zip' },
       ...album('fixture-sofia-album-in', albumIn, 'ready'),
       ...album('fixture-sofia-album-out', albumOut, 'ready'),
+      { ...local('fixture-sofia-expired', dusk, 'expired', 0, 1), mime: 'application/pdf', expiresAt: expired.expiresAt, attempts: 3, firstFailedAt: Date.now() - 3_600_000, error: 'No source had the chunk.' },
     ],
+    // M15c: today's uploads for the quota panel (3 stores, 1.4 MB).
+    settings: [{ key: 'bulletin.uploads', value: JSON.stringify({ day: localDayOf(Date.now()), transactions: 3, bytes: 1_450_000 }) }],
+    videoRows: { poster: ['fixture-sofia-video-in', 'fixture-sofia-video-out'], bytes: ['fixture-sofia-video-out'] },
     // The voice rows' bytes are recorded in the page (recordFixtureVoice): a real WebM/Opus file.
     voiceRows: ['fixture-sofia-voice-in', 'fixture-sofia-voice-out'],
     // The image the composer shot picks with the Paperclip.
@@ -927,9 +953,10 @@ const mainWorker = async () => {
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
     await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
-    const { pick, voiceRows, ...attachRows } = await attachmentFixture();
+    const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
     await recordFixtureVoice(app, voiceRows);
+    await recordFixtureVideo(app, videoRows);
     writeFileSync(join(profile, 'pick.png'), pick);
     await app.reload(app.exists('[data-testid=chat-row-assistant]'));
     log('fixture written');
@@ -953,7 +980,10 @@ const mainWorker = async () => {
  */
 const recordFixtureVoice = (app, messageIds) =>
   app.evaluate(`(async () => {
-    const context = new AudioContext({ sampleRate: 48000 });
+    // No output device: with none (a Mac with its audio asleep) a normal context's clock stands still and the
+    // recording is a 110-byte header. The silent sink renders on its own clock.
+    const context = new AudioContext({ sampleRate: 48000, sinkId: { type: 'none' } });
+    await context.resume();
     const tone = context.createOscillator();
     const gain = context.createGain();
     const wobble = context.createOscillator();
@@ -992,6 +1022,98 @@ const recordFixtureVoice = (app, messageIds) =>
       };
     });
     return bytes.length;
+  })()`);
+
+/** The local calendar day, as storageQuota.ts `localDay` counts uploads. */
+const localDayOf = at => {
+  const date = new Date(at);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * M15c: a real video for the fixture: the page draws 3 s of a sunset over
+ * moving water on a canvas, records it with MediaRecorder (WebM/VP8), stores
+ * it as the local copy of the `bytes` rows, and writes a WebP poster (as
+ * attachmentVideo.ts makes one) into the `poster` rows' message content.
+ */
+const recordFixtureVideo = (app, { poster, bytes }) =>
+  app.evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 480;
+    canvas.height = 270;
+    const context = canvas.getContext('2d');
+    let frame = 0;
+    const draw = () => {
+      const sky = context.createLinearGradient(0, 0, 0, 170);
+      sky.addColorStop(0, 'rgb(30, 70, 130)');
+      sky.addColorStop(1, 'rgb(250, 180, 110)');
+      context.fillStyle = sky;
+      context.fillRect(0, 0, 480, 170);
+      context.fillStyle = 'rgb(255, 225, 160)';
+      context.beginPath();
+      context.arc(240, 150 - frame * 0.4, 38, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = 'rgb(20, 80, 120)';
+      context.fillRect(0, 170, 480, 100);
+      context.strokeStyle = 'rgba(255, 230, 190, 0.7)';
+      context.lineWidth = 3;
+      for (let row = 0; row < 6; row++) {
+        context.beginPath();
+        for (let x = 0; x <= 480; x += 12) context.lineTo(x, 185 + row * 15 + Math.sin(x / 30 + frame / 4 + row) * 4);
+        context.stroke();
+      }
+      frame += 1;
+    };
+    draw();
+    const stream = canvas.captureStream(25);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: 1500000 });
+    const parts = [];
+    recorder.ondataavailable = event => parts.push(event.data);
+    const stopped = new Promise(done => { recorder.onstop = done; });
+    const timer = setInterval(draw, 40);
+    recorder.start();
+    await new Promise(done => setTimeout(done, 3000));
+    recorder.stop();
+    await stopped;
+    clearInterval(timer);
+    const video = new Uint8Array(await new Blob(parts).arrayBuffer());
+    // The poster, as the app makes one: one frame, WebP, at most 2 KB.
+    let thumbnail = null;
+    for (const [w, h] of [[96, 54], [72, 41], [48, 27]]) {
+      const small = new OffscreenCanvas(w, h);
+      small.getContext('2d').drawImage(canvas, 0, 0, w, h);
+      for (const quality of [0.6, 0.4, 0.25]) {
+        const blob = await small.convertToBlob({ type: 'image/webp', quality });
+        if (blob.size <= 2048) { thumbnail = new Uint8Array(await blob.arrayBuffer()); break; }
+      }
+      if (thumbnail) break;
+    }
+    const posterIds = ${JSON.stringify(poster)};
+    const byteIds = ${JSON.stringify(bytes)};
+    await new Promise((done, fail) => {
+      const open = indexedDB.open('polkadot-chat-web');
+      open.onerror = () => fail(open.error);
+      open.onsuccess = () => {
+        const tx = open.result.transaction(['attachments', 'messages'], 'readwrite');
+        const messages = tx.objectStore('messages');
+        for (const messageId of posterIds) {
+          const get = messages.get(messageId);
+          get.onsuccess = () => {
+            const row = get.result;
+            row.content.items[0].thumbnail = thumbnail;
+            row.content.items[0].size = video.length;
+            messages.put(row);
+          };
+        }
+        for (const messageId of byteIds) {
+          tx.objectStore('attachments').put({ messageId, index: 0, status: 'ready', done: 1, total: 1, bytes: video, mime: 'video/webm',
+            expiresAt: Date.now() + 13 * 24 * 3600000, attempts: 0, firstFailedAt: null, error: null, updatedAt: Date.now() });
+        }
+        tx.oncomplete = () => { open.result.close(); done(true); };
+        tx.onerror = () => fail(tx.error);
+      };
+    });
+    return video.length;
   })()`);
 
 /** M15a: the image bubble states and the composer's attach row (fixture rows, no chain). */
@@ -1034,9 +1156,25 @@ const attachmentShots = async (app, pickPath) => {
     // Play the received one: its waveform fills as the audio plays (proves the WebM/Opus copy plays).
     await app.evaluate(`${play}.click(); true`);
     if (!(await app.waitFor(`/^0:0[1-3] \\/ 0:04$/.test(document.querySelector('[data-message-id="fixture-sofia-voice-in"] [data-testid=voice-duration]')?.textContent ?? '')`, 8_000))) {
-      throw new Error('the voice note did not play (no progress)');
+      throw new Error(`the voice note did not play (no progress): ${await app.evaluate(`(() => { const a = document.querySelector('[data-message-id="fixture-sofia-voice-in"] audio'); const d = document.querySelector('[data-message-id="fixture-sofia-voice-in"] [data-testid=voice-duration]')?.textContent; return JSON.stringify({ d, paused: a?.paused, t: a?.currentTime, rs: a?.readyState, err: a?.error?.message, dur: a?.duration, src: !!a?.src }); })()`)}`);
     }
     await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-voice-in"] audio')?.pause(); true`);
+  });
+
+  await app.shot('room-video', async () => {
+    await openSofia();
+    const shown = [
+      app.exists('[data-message-id="fixture-sofia-video-in"] [data-kind=video] [data-testid=attachment-download]'),
+      app.exists('[data-message-id="fixture-sofia-video-out"] [data-testid=attachment-video]'),
+      app.exists('[data-message-id="fixture-sofia-expired"] [data-testid=attachment-ask-resend]'),
+      app.exists('[data-message-id="fixture-sofia-resend"] [data-testid=resend-run]'),
+    ].join(' && ');
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('no video poster, inline player, Ask to resend or Resend offer');
+    // The inline player has its frames and knows its duration (a MediaRecorder WebM learns it by one seek to the end and back).
+    const player = `document.querySelector('[data-testid=attachment-video]')`;
+    if (!(await app.waitFor(`${player}?.readyState >= 2 && !${player}.seeking && Number.isFinite(${player}.duration) && ${player}.currentTime === 0`, 10_000))) throw new Error('the inline video did not load');
+    await sleep(500);
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-resend"]')?.scrollIntoView({ block: 'end' }); true`);
   });
 
   await app.shot('composer-attach', async () => {
@@ -1049,6 +1187,16 @@ const attachmentShots = async (app, pickPath) => {
     if (!(await app.waitFor(`${app.exists('[data-testid=attach-row]')} && ${app.exists('[data-testid=attach-notice]')}`, 10_000))) throw new Error('no attach row with its notice');
     await app.type('textarea[aria-label=Message]', 'For the trip album');
   });
+
+  await app.shot('settings-storage', async () => {
+    if (!(await app.evaluate(app.exists('[data-testid=storage]')))) await app.click('[aria-label=Settings]');
+    if (!(await app.waitFor(app.exists('[data-testid=storage]'), 20_000))) throw new Error('no Storage section in Settings');
+    // The authorization is read live (devnet, the seeded identity's Bulletin account); the day's count is the fixture's.
+    const answered = `${app.exists('[data-testid=quota-today]')} || ${app.exists('[data-testid=quota-none]')}`;
+    if (!(await app.waitFor(answered, 30_000))) throw new Error(`the quota did not load: ${await app.evaluate(`document.querySelector('[data-testid=storage]')?.innerText ?? ''`)}`);
+    await app.evaluate(`document.querySelector('[data-testid=storage]').closest('section').scrollIntoView({ block: 'start' }); true`);
+  });
+  if (await app.evaluate(app.exists('[data-testid=storage]'))) await app.esc();
 };
 
 const mainShots = async (app, log, pay) => {
