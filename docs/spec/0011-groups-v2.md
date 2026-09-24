@@ -244,6 +244,16 @@ newcomer derives `Topic_e`, fetches the state statement, checks `stateHash`.
 - **Bots as admitters.** A pca bot with `add members` is an always-online
   admitter; the link can list it first.
 
+### History on request (reviewer change, 2026-09-24)
+
+Any member MAY ask any other member over the DM session for group messages
+since a `messageId` or a timestamp (`history` request in kind 249); the
+provider answers with pages of at most 4 KB, newest first, from its local
+store, up to 100 messages per request. A returning member that finds a gap
+(the 0009 gap rule) asks a bot admin first when the state lists one (bots are
+always online), else the most recently active admin, else any member. The
+newcomer history below is the same mechanism with "since = join".
+
 ### History for late joiners
 
 The admitting client sends, over the DM session, the last `historyShare`
@@ -275,7 +285,7 @@ sync channel (mds.md, "Synchronization between devices").
 
 | Item | Limit |
 |---|---|
-| Members | 1024 (owner decision pending, see Unresolved) |
+| Members | 256 in v2 (reviewer default; the format allows 1024; owner decision pending, see Unresolved) |
 | `GroupMessages` plaintext | 4096 bytes; a single larger message is refused, as in DMs |
 | Carry window | own messages of the last 24 h, within the 4096 bytes |
 | Statements per member per group | 1 (messages); admins +1 state, +1 rekey |

@@ -26,7 +26,7 @@ The earlier "receive always, send only after evidence" rule and the
 identifier-key capability bitmap are recorded in `docs/roadmap.md` as options
 for the upstream submission, when legacy clients will exist.
 
-Provisional kind numbers are in the range 240–249 (`kinds.md`); RFC-0003 takes 21.
+Provisional kind numbers are in the range 240–254 (`kinds.md`); RFC-0003 takes 21.
 
 ## Documents
 
@@ -40,3 +40,4 @@ Provisional kind numbers are in the range 240–249 (`kinds.md`); RFC-0003 takes
 | `0007-transactions.md` | draft complete 2026-09-23; `tx` action + `transactionReference`; revised 2026-09-23 (one reference per transaction) | desktop M11/M12c, pca `desktop/rfc-0003` |
 | `0008-bot-info.md` | v2 (balance hint) complete 2026-09-23 | desktop M10 + M11b, pca `desktop/rfc-0003` |
 | `0009-groups.md` | draft complete 2026-09-23 (fan-out v1) | desktop M12, pca `desktop/rfc-0003` |
+| `0011-groups-v2.md` | draft 2026-09-24 (private groups: epoch key, one statement per message, privacy levels); review in `docs/review/0011-groups-v2.md` | M16 |
