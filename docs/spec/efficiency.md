@@ -33,3 +33,7 @@ The owner's rule: decide by arithmetic now, while no client in the field sends t
 
 - The desktop counts submissions and messages sent per session and shows the ratio in Settings › Diagnostics ("submissions per message").
 - `scripts/probe-statements.mjs` submits statements from a test identity at rising rates on devnet and reports propagation time to a second client (p50/p95) and any rejection, so the Statement Store's practical ceiling is a number, not a guess.
+
+## Allowance facts (pca finding 2026-09-24, devnet)
+
+A chat identity's statement allowance is set by the identity backend's attestation (`Resources.Consumers`): `:statement_allowance:<account>` = 50 statements and 512 000 bytes live per account; nothing else grants it. It arrives 20–65 s after registration; submissions before that are rejected with `noAllowance` (a client must wait for `Consumers` before its first submit; bot-core's 9 s retry was too short). The allowance caps live statements, not submissions per hour: a DM peer holds up to 2, a v2 group 1–3, a bot's heartbeat 1. So a chat identity on devnet is limited to about 25 active DM peers today (persons on Paseo People: 200 / 1 MiB). Heartbeat default lowered from 30 s to 120 s (120 → 30 submissions per hour per bot).
