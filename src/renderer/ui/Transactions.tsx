@@ -118,7 +118,7 @@ export const TxStatusIcon = ({ status, className }: { status: TxStatus; classNam
 };
 
 /** `copied` is true for 1.5 s after each `copy` (owner-reported bug: it never reset). */
-const useCopied = (): [boolean, (text: string) => void] => {
+export const useCopied = (): [boolean, (text: string) => void] => {
   const [copied, setCopied] = useState(false);
   const [flag] = useState(() => createCopyFlag(setCopied));
   useEffect(() => () => flag.dispose(), [flag]);

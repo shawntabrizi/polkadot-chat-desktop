@@ -20,6 +20,7 @@ import { formatPas } from '../../shared/balanceHint';
 import { accountLink } from '../../shared/explorers';
 
 import { ExplorerButton, useExplorer } from './ExplorerButton';
+import { useCopied } from './Transactions';
 import { QrCode } from './QrCode';
 import { useAssetHubBalance, useBestBlock } from './useChain';
 
@@ -72,7 +73,7 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
   const assetHub = useAssetHubBalance();
   const block = useBestBlock();
   const [people, setPeople] = useState<{ free: bigint | null; error: boolean }>({ free: null, error: false });
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopied();
   const explorer = useExplorer();
   // The account page on Asset Hub, where the PAS this app moves lives.
   const assetHubGenesis = NETWORK_PROFILES[profileId].assetHub?.genesis ?? null;
@@ -137,7 +138,7 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
                   className="w-fit cursor-pointer rounded-medium text-label-m"
                   data-testid="pocket-copy"
                   onClick={() => {
-                    void navigator.clipboard.writeText(address).then(() => setCopied(true));
+                    copy(address);
                   }}
                 >
                   {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
