@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
 import { isHeadless } from './headless';
+import { runAgentSelftest } from './agent/service';
 import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
@@ -90,7 +91,16 @@ function watchSmoke(win: BrowserWindow): void {
 let mainWindow: BrowserWindow | null = null;
 const getWindow = (): BrowserWindow | null => mainWindow;
 
-void app.whenReady().then(() => {
+// M13: --agent-selftest proves the published agent's utility process can load
+// bot-core (smoke-packaged.sh runs it against the packaged app), then exits.
+const agentSelftest = process.argv.includes('--agent-selftest');
+
+void app.whenReady().then(async () => {
+  if (agentSelftest) {
+    app.dock?.hide();
+    app.exit(await runAgentSelftest());
+    return;
+  }
   setMetadataCacheDir(join(app.getPath('userData'), 'metadata'));
   // Before the window exists, so macOS never gives the app a dock icon or the front.
   if (headless) app.dock?.hide();

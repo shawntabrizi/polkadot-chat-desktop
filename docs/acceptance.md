@@ -3257,3 +3257,69 @@ FLIP_OK at=24.5s
 ```
 
 `npm run check`: 74 files, 614 tests passed; eslint clean; `check:tokens: clean (158 files)`. `PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run smoke`: `SMOKE_OK`.
+## M13 (follow-up) (2026-09-24)
+
+### npm run check (last lines)
+
+```
+ Test Files  74 passed (74)
+      Tests  607 passed (607)
+   Start at  01:08:40
+   Duration  16.32s (transform 2.73s, setup 1.16s, import 11.36s, tests 35.46s, environment 4ms)
+
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (158 files)
+```
+
+Exit 0. tsc and eslint print nothing when clean. After the rebase onto main (3ec6c0c, tx limits) the rerun is green again: `Test Files  74 passed (74)`, `Tests  615 passed (615)`, `check:tokens: clean (158 files)`.
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<temp> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run package, then npm run smoke:packaged
+
+```
+profile /var/folders/…/T/pcd-smoke.25AUDs7K7n
+SMOKE_OK
+AGENT_SELFTEST_OK bot-core started from /Users/shawntabrizi/Documents/GitHub/pcd-m13b/dist/mac-arm64/Polkadot Chat.app/Contents/Resources/app.asar/node_modules/polkadot-chat-agents/index.mjs
+```
+
+### npm run e2e:agent:packaged (the package built from this commit's tree)
+
+```
+
+0.3s packaged app /Users/shawntabrizi/Documents/GitHub/pcd-m13b/dist/mac-arm64/Polkadot Chat.app/Contents/MacOS/Polkadot Chat
+0.8s claim pcdagentqayd on devnet (engine: fake OpenAI server)
+24.1s AGENT_PUBLISHED pcdagentqayd.35 confirmed=true
+25.1s AGENT_RUNNING
+25.1s SENDER pcdeceb.89
+29.0s REQUEST_SENT (no text)
+86.1s ACCEPTED devices=1
+86.1s BOTINFO kind=1 name=pcdagentqayd.35 commands=help,about,stop
+87.1s GREETED "Hello! I am a test agent. Ask me anything."
+95.6s ANSWER "Pick a colour." keyboard=[Red, Blue] submissions=1 replies=1
+95.6s ANSWER_KEYBOARD
+104.2s PRESS_ANSWERED "You picked red." submissions=1 replies=1
+104.2s TOTALS replies=3 submissions=4 (the accept and the greeting included) typing=0
+104.2s BUDGET_OK one submission per reply
+AGENT_OK
+```
+
+A first run against a package built from main before any change of this follow-up also printed AGENT_OK (accept at 49 s, same budget), so the asar needed no fix. The accept took 57 s in the run above (the identifier-key wait for a new sender), within the stage limit.
+
+### node scripts/screenshots.mjs --only signup (free port, no PCD_SCREENSHOT_PORT)
+
+```
+4.8s [signup] saved signup
+SCREENSHOTS_OK in 4.9 s
+```
+
+### Not run
+
+- `npm run e2e:agent` (dev) was not rerun: the dev path is unchanged except the /about text and the operator context's model line, which the brain spec covers; the packaged run drives the same steps.
+- The full `npm run screenshots` was not rerun (only `--only signup` to prove the free-port path).

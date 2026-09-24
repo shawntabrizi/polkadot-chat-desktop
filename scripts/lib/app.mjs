@@ -67,7 +67,7 @@ const freePort = () =>
     });
   });
 
-const answers = async port => {
+export const portAnswers = async port => {
   try {
     await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) });
     return true;
@@ -76,11 +76,26 @@ const answers = async port => {
   }
 };
 
-/** Starts the app on `profile` and connects to its page. `env` adds to the environment. */
-export const launch = async (profile, { env = {}, log = null } = {}) => {
+/** A free debugging port, checked again (nothing answers on it). The e2e scripts and screenshots.mjs use it. */
+export const debugPort = async () => {
   const port = await freePort();
-  if (await answers(port)) throw new Error(`port ${port} is taken`);
-  const child = spawn(electronBin, ['.', `--remote-debugging-port=${port}`], {
+  if (await portAnswers(port)) throw new Error(`port ${port} is taken`);
+  return port;
+};
+
+/** The packaged app's binary (npm run package). */
+export const packagedBin = join(root, 'dist/mac-arm64/Polkadot Chat.app/Contents/MacOS/Polkadot Chat');
+
+/**
+ * Starts the app on `profile` and connects to its page. `env` adds to the
+ * environment. `packaged` runs the packaged binary (dist/) instead of the
+ * dev build (out/ through node_modules' Electron).
+ */
+export const launch = async (profile, { env = {}, log = null, packaged = false } = {}) => {
+  const port = await debugPort();
+  const [bin, args] = packaged ? [packagedBin, []] : [electronBin, ['.']];
+  if (packaged && !existsSync(bin)) throw new Error(`no packaged app at ${bin} (run npm run package)`);
+  const child = spawn(bin, [...args, `--remote-debugging-port=${port}`], {
     cwd: root,
     env: { ...process.env, ...env, PCD_HEADLESS: '1', PCD_USER_DATA_DIR: profile },
     stdio: ['ignore', log ?? 'ignore', log ?? 'ignore'],

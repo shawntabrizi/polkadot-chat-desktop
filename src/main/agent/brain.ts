@@ -37,6 +37,8 @@ const COMMAND_RE = /^\/([a-z][a-z0-9_-]*)(?:\s+(\S+))?\s*$/i;
 
 /** The text of a buttons message that came with no words of its own. */
 export const EMPTY_BUTTONS_TEXT = 'Choose one:';
+/** What the operator context says for the model: strangers talk to this agent. */
+export const UNDISCLOSED_MODEL = 'not disclosed';
 export const NO_ANSWER_TEXT = '(no answer)';
 export const FAILED_TEXT = 'Sorry, I could not answer just now. Please try again in a moment.';
 
@@ -85,7 +87,8 @@ export const systemPromptFor = ({ username, owner, engine }: { username: string;
       username,
       transport: 'polkadot-app',
       policy: { capabilities: [] },
-      model: engine.model ?? engine.label,
+      // Not the model's name: the model would repeat it to a stranger who asks (/about hides it too).
+      model: UNDISCLOSED_MODEL,
       modelPolicy: [],
       commands: AGENT_COMMANDS.map(command => ({ command: `/${command.name}`, meaning: command.description })),
       // With tools the buttons come as a tool call; the fenced wording is for text-only engines.
@@ -109,12 +112,12 @@ export const createAgentBrain = (deps: AgentBrainDeps): AgentBrain => {
   const commandReply = (name: string): string => {
     const username = deps.username();
     const owner = deps.owner();
-    const engine = deps.engine();
     switch (name) {
       case 'help':
         return ['Commands:', ...AGENT_COMMANDS.filter(c => c.name !== 'help').map(c => `/${c.name} — ${c.description.toLowerCase()}`)].join('\n');
       case 'about':
-        return `I am ${username}, ${owner ? `the agent of ${owner}` : 'an agent'} on Polkadot Chat Desktop. I answer with ${engine.model ?? engine.label} while that app runs, and I cannot act on chain for you: a transaction I offer is signed in your own app.`;
+        // The engine kind only: strangers read this, and the model name is the owner's business.
+        return `I am ${username}, ${owner ? `the agent of ${owner}` : 'an agent'}: an AI assistant run from a Polkadot Chat desktop while that app runs. I cannot act on chain for you: a transaction I offer is signed in your own app.`;
       case 'stop':
         return 'Nothing is running.';
       default:

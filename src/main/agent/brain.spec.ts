@@ -24,6 +24,17 @@ describe('the published agent\'s brain (M13)', () => {
     expect(turns).toHaveLength(0);
   });
 
+  // Strangers can type /about or ask the model: neither may learn which model the owner pays for.
+  it('never names the model to a peer: /about says the engine kind, the prompt hides the model', async () => {
+    const turns: AgentTurn[] = [];
+    const brain = brainWith(proxy, async turn => (turns.push(turn), { text: 'x' }));
+    const about = (await brain.answer('p', '/about'))?.text ?? '';
+    expect(about).toContain('an AI assistant run from a Polkadot Chat desktop');
+    expect(about).not.toContain('auto/test');
+    await brain.answer('p', 'hello');
+    expect(turns[0]?.systemPrompt).not.toContain('auto/test');
+  });
+
   it('greets an empty chat request through the engine, in its persona', async () => {
     const turns: AgentTurn[] = [];
     const brain = brainWith(proxy, async turn => (turns.push(turn), { text: 'Hello there!' }));

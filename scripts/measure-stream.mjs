@@ -26,9 +26,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { debugPort } from './lib/app.mjs';
+
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const electronBin = join(root, 'node_modules/.bin/electron');
-const PORT = 9337;
 const DELTAS_PER_SECOND = 50;
 const ROOM_MESSAGES = 60;
 const SHRINK_SLACK = 10;
@@ -165,6 +166,8 @@ log('seeded', JSON.parse(readFileSync(identitySource, 'utf8')).username);
 // ── The app over CDP ─────────────────────────────────────────────────────
 
 const env = { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile, LLM_PROXY_KEY: 'local-fake-proxy' };
+// A free port: a fixed one (9337) once drove another agent's app.
+const PORT = await debugPort();
 const child = spawn(electronBin, ['.', `--remote-debugging-port=${PORT}`], { cwd: root, env, stdio: ['ignore', 'ignore', 'ignore'] });
 let target;
 for (let i = 0; i < 60 && !target; i++) {

@@ -6,7 +6,8 @@
  * Electron utility process while the toggle is on.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
@@ -111,6 +112,53 @@ const spawnBotCore = (env: Record<string, string>): BotProcess => {
     kill: () => child.kill(),
   };
 };
+
+const SELFTEST_MS = 30_000;
+
+/**
+ * `--agent-selftest` (smoke-packaged.sh): starts bot-core in the utility
+ * process exactly as the agent does, with a throwaway random key and state
+ * folder, and waits for its BOT_STARTING line. bot-core logs it after its
+ * whole module graph (nested node_modules, inside app.asar when packaged)
+ * has loaded and its settings and keys are read, and before any network
+ * call. Resolves with the exit code; prints AGENT_SELFTEST_OK or _FAIL.
+ */
+export const runAgentSelftest = (): Promise<number> =>
+  new Promise(done => {
+    const dir = mkdtempSync(join(app.getPath('userData'), 'agent-selftest-'));
+    const entry = botCoreEntry();
+    let finished = false;
+    const proc = spawnBotCore({
+      ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+      ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
+      BOT_BRAIN: 'bridge',
+      BOT_BRIDGE_HOST: '127.0.0.1',
+      BOT_BRIDGE_PORT: '0',
+      BOT_BRIDGE_TOKEN: randomBytes(32).toString('hex'),
+      // A key made for this run only: nothing is registered or sent with it.
+      BOT_SEED_HEX: randomBytes(32).toString('hex'),
+      BOT_USERNAME: 'selftest',
+      BOT_STATE_DIR: join(dir, 'bot-core'),
+      BOT_AI_CONTEXT: '0',
+      PCA_METADATA_CACHE_DIR: join(dir, 'metadata'),
+      BOT_ALLOWED_PEERS: '00'.repeat(32),
+    });
+    const finish = (code: number, line: string) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      console.log(line);
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+      done(code);
+    };
+    const timer = setTimeout(() => finish(1, 'AGENT_SELFTEST_FAIL no BOT_STARTING in 30 s'), SELFTEST_MS);
+    proc.onLine(line => {
+      if (line.includes('"BOT_STARTING"')) finish(0, `AGENT_SELFTEST_OK bot-core started from ${entry}`);
+      else if (line.includes('"BOT_STDERR_ERROR"')) console.log(`agent stderr: ${line}`);
+    });
+    proc.onExit(code => finish(1, `AGENT_SELFTEST_FAIL the utility process ended (code ${code})`));
+  });
 
 export type AgentService = {
   status: () => AgentStatus;

@@ -86,7 +86,7 @@
 //   PCD_SCREENSHOT_GROUP_WITH      group member, a name (pcdbenchfina)
 //   PCD_SCREENSHOT_ENGINE          the Assistant's engine in the profile (claude)
 //   PCD_SCREENSHOT_AGENT_IDENTITY  settings-agent, a path to the agent's identity.json (pcdbenchcold)
-//   PCD_SCREENSHOT_PORT            first CDP port (9335; the workers use it and the three after it)
+//   PCD_SCREENSHOT_PORT            first CDP port (the workers use it and the three after it); unset: a free port per app
 //
 //   npm run screenshots
 //   npm run screenshots -- --only room-tx-done,chat-menu
@@ -94,7 +94,8 @@
 // `--only a,b` takes only those shots and starts only the workers they need.
 // Headless by default (PCD_HEADLESS=1: hidden window, no dock icon, no
 // focus) with a throwaway PCD_USER_DATA_DIR per app; `--visible` shows the
-// windows. Ports PCD_SCREENSHOT_PORT (default 9335) and the three after it.
+// windows. Each app gets a free debugging port, checked before launch (a fixed
+// port once drove another agent's app); PCD_SCREENSHOT_PORT fixes them instead.
 // What cannot be captured is reported and the exit code is 1. The time of the
 // whole pass is printed with the result. Prints no secret.
 
@@ -104,13 +105,17 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { debugPort, portAnswers } from './lib/app.mjs';
+
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const electronBin = join(root, 'node_modules/.bin/electron');
 const outDir = join(root, '.agent-runs/screens');
 const THEMES = ['berlin-day', 'berlin-night'];
 const WIDTH = 1280;
 const HEIGHT = 800;
-const BASE_PORT = Number(process.env.PCD_SCREENSHOT_PORT ?? 9335);
+const BASE_PORT = process.env.PCD_SCREENSHOT_PORT ? Number(process.env.PCD_SCREENSHOT_PORT) : null;
+/** Worker `n`'s debugging port: PCD_SCREENSHOT_PORT + n when set, else a free one. */
+const portFor = async n => (BASE_PORT === null ? debugPort() : BASE_PORT + n);
 // The check runs with no PCD_SCREENSHOT_* set: each worker has a default test identity.
 const identitySource = process.env.PCD_SCREENSHOT_IDENTITY ?? join(root, '.agent-runs', 'identity-pcde2e', 'identity.json');
 const engine = process.env.PCD_SCREENSHOT_ENGINE ?? 'claude';
@@ -176,6 +181,8 @@ for (const theme of THEMES) mkdirSync(join(outDir, theme), { recursive: true });
 // ── One app run over CDP ─────────────────────────────────────────────────
 
 const launch = async (profile, port, log) => {
+  // Another app on this port would be driven instead of ours.
+  if (await portAnswers(port)) throw new Error(`port ${port} is taken`);
   const child = spawn(electronBin, ['.', `--remote-debugging-port=${port}`], {
     cwd: root,
     env: { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile },
@@ -704,7 +711,7 @@ const signupWorker = async () => {
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-signup-'));
   let app = null;
   try {
-    app = await launch(profile, BASE_PORT, log);
+    app = await launch(profile, await portFor(0), log);
     await app.shot('signup', async () => {
       if (!(await app.waitFor(app.exists('#signup-username'), 30_000))) throw new Error('no sign-up screen');
       await app.type('#signup-username', 'polkadotfan');
@@ -731,7 +738,7 @@ const mainWorker = async () => {
   let app = null;
   let profile = null;
   try {
-    ({ app, profile } = await openSeeded(identitySource, BASE_PORT + 1, log));
+    ({ app, profile } = await openSeeded(identitySource, await portFor(1), log));
     log('seeded', source.username);
     const pay = await paymentFixture(source.accountHex);
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
@@ -1202,7 +1209,7 @@ const flipWorker = async () => {
   let app = null;
   let profile = null;
   try {
-    ({ app, profile } = await openSeeded(identityFile(flipIdentity), BASE_PORT + 2, log));
+    ({ app, profile } = await openSeeded(identityFile(flipIdentity), await portFor(2), log));
     await connected(app);
     log('seeded', flipIdentity);
     await faucetShot(app, log);
@@ -1380,7 +1387,7 @@ const groupWorker = async () => {
   let app = null;
   let profile = null;
   try {
-    ({ app, profile } = await openSeeded(identityFile(groupIdentity), BASE_PORT + 3, log));
+    ({ app, profile } = await openSeeded(identityFile(groupIdentity), await portFor(3), log));
     await connected(app);
     log('seeded', groupIdentity);
     // The member's slow steps (connect, its bot chat, its request) run while the app opens its bot room.

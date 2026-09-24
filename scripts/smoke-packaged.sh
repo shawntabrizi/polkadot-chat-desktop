@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs the packaged app (npm run package) with --smoke: it loads the renderer
-# hidden and prints SMOKE_OK.
+# hidden and prints SMOKE_OK. Then with --agent-selftest (M13): the published
+# agent's utility process loads bot-core from inside the package and prints
+# AGENT_SELFTEST_OK.
 #
 # It runs against a throwaway profile (PCD_USER_DATA_DIR, a new temp folder
 # unless set). The packaged app has its own profile ("Polkadot Chat"), apart
@@ -17,6 +19,9 @@ if [ ! -x "$bin" ]; then
 fi
 profile="${PCD_USER_DATA_DIR:-$(mktemp -d -t pcd-smoke)}"
 echo "profile $profile"
-out=$(PCD_USER_DATA_DIR="$profile" "$bin" --smoke 2>&1) || true
+out=$(PCD_HEADLESS=1 PCD_USER_DATA_DIR="$profile" "$bin" --smoke 2>&1) || true
 echo "$out"
 echo "$out" | grep -q '^SMOKE_OK' || exit 1
+agent=$(PCD_HEADLESS=1 PCD_USER_DATA_DIR="$profile" "$bin" --agent-selftest 2>&1) || true
+echo "$agent"
+echo "$agent" | grep -q '^AGENT_SELFTEST_OK' || exit 1

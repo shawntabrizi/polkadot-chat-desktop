@@ -30,6 +30,7 @@
     "e2e:demo": "node scripts/e2e-demo.mjs",
     "e2e:pay": "node scripts/e2e-pay.mjs",
     "e2e:agent": "node scripts/e2e-agent.mjs",
+    "e2e:agent:packaged": "node scripts/e2e-agent.mjs --packaged",
     "e2e:tools": "node scripts/e2e-tools.mjs",
     "probe:statements": "node scripts/probe-statements.mjs",
     "screenshots": "node scripts/screenshots.mjs"

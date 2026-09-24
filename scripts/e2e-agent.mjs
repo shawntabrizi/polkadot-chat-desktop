@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // M13 e2e: publish the desktop's agent and chat with it from another identity.
-//   npm run e2e:agent [-- --identity pcdeceb] [--real-proxy]
+//   npm run e2e:agent [-- --identity pcdeceb] [--real-proxy] [--packaged]
+//   npm run e2e:agent:packaged   (the same steps against the packaged app)
+// --packaged runs dist/mac-arm64/Polkadot Chat.app (npm run package first):
+// bot-core then loads from app.asar(.unpacked) in the packaged utility
+// process, which the dev run (out/ + node_modules) cannot show.
 // 1. The engine: by default a fake OpenAI-style server (scripts/lib/fake-openai.mjs),
 //    so the answers are known: the greeting, then "Pick a colour." with a
 //    `send_buttons` tool call (Red, Blue), then "You picked red." With
@@ -35,7 +39,7 @@ import { pathToFileURL } from 'node:url';
 import { paseoPeopleNext, productsDevnetPeople } from '@polkadot-api/descriptors';
 import { register } from 'tsx/esm/api';
 
-import { build, launch, root, writeAssistantSettings } from './lib/app.mjs';
+import { build, launch, packagedBin, root, writeAssistantSettings } from './lib/app.mjs';
 import { startFakeOpenAi } from './lib/fake-openai.mjs';
 
 register();
@@ -44,6 +48,7 @@ const load = path => import(pathToFileURL(join(root, path)).href);
 const args = process.argv.slice(2);
 const identityName = args.includes('--identity') ? args[args.indexOf('--identity') + 1] : 'pcdeceb';
 const realProxy = args.includes('--real-proxy');
+const packaged = args.includes('--packaged');
 const profile = 'devnet';
 const STAGE_MS = 180_000;
 const POLL_MS = 1_000;
@@ -134,12 +139,15 @@ const finish = async (code, line) => {
 
 // ── 1. Publish the agent ────────────────────────────────────────────────────
 
-build();
-say('built');
+if (packaged) say(`packaged app ${packagedBin}`);
+else {
+  build();
+  say('built');
+}
 appProfile = mkdtempSync(join(tmpdir(), 'pcd-e2e-agent-'));
 if (fake) writeAssistantSettings(appProfile, { engine: 'proxy', baseUrl: fake.baseUrl });
 else writeAssistantSettings(appProfile, { engine: 'proxy' });
-app = await launch(appProfile, { env: fake ? { LLM_PROXY_KEY: 'fake-key-for-e2e' } : {} });
+app = await launch(appProfile, { env: fake ? { LLM_PROXY_KEY: 'fake-key-for-e2e' } : {}, packaged });
 if (!(await app.waitFor('!!window.desktop?.agent', 60_000))) await finish(1, 'AGENT_FAIL the app has no agent API');
 const status = () => app.evaluate('window.desktop.agent.status()');
 await app.evaluate(`window.desktop.agent.update({ audience: 'anyone' }).then(() => true)`);
