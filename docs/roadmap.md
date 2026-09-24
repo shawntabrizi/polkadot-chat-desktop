@@ -72,4 +72,4 @@ Later: chat folders and an unread filter; export chat; per-chat notification sou
 
 ## Meter pending debit in the header (owner report, 2026-09-24) → M12f (both repos)
 
-Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in the reply's batch. pca: meter sends it; vector `vectors-0008c.md`. Desktop: decode, header shows `balance − pending` and "0.3 owed", re-read after a charge reference. Also pca: the persisted pending debit (carry from M12c).
+Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in the reply's batch. pca: meter sends it; vector `vectors-0008c.md`. Desktop: decode, header shows one number, `balance − pending`, with the split only in a tooltip; re-read after a charge reference. Also pca: the persisted pending debit (carry from M12c).
