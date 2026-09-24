@@ -93,7 +93,7 @@ from          topic=None  count=1  the opaque message
 ```
 
 AAD = `b"grp" : A : u32 1 : 00` =
-`6772700101010101010101010101010101010101010101010101010101010101010101010100000000`.
+`67727001010101010101010101010101010101010101010101010101010101010101010100000000`.
 Nonce = `0x22 × 12`.
 
 `GroupData` (statement data, 91 bytes):
@@ -254,5 +254,3 @@ runs; one run:
 
 A checker verifies the signature over `signature_material` with the signer
 key and compares everything else byte for byte.
-
-> Reviewer note 2026-09-24: in vector (b) the printed AAD is 41 bytes; both codecs compute and use the 40-byte AAD `b"grp" : signer : encode(e) : variant`, which is authoritative. pca to reprint the line.
