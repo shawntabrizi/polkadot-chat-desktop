@@ -125,6 +125,9 @@ Write the question, what you did meanwhile, and the date.
 
 ## Morning review (coordinator, 2026-09-24 night)
 
+- **Guide bot image understanding:** approve `BOT_AI_TOOL_CAPABILITIES=read` + `BOT_AI_TOOL_SCOPE=workspace` on pcdguide.70 (read-only, container-confined) so it can describe received images; the classifier blocked the coordinator from setting it. See docs/review/M15b.md.
+
+
 - **QUOTA, top item.** Live: identities that chatted with ~25 peers cannot post in any v2 group (`AccountFull`; 50-statement allowance, DM statements never expire). Decide: client-side slot GC (replace ACKed idle DM slots with short-expiry statements, lazily near the limit) and/or an upstream ask for a finite DM expiry and a larger allowance. See docs/review/M16.md.
 
 
