@@ -125,7 +125,7 @@ Write the question, what you did meanwhile, and the date.
 
 ## Morning review (coordinator, 2026-09-24 night)
 
-- **Attachments phone interop: DECIDED 2026-09-24 (owner):** support both. Bulletin (0012) for groups and peers that advertise it; HOP for 1:1 chats with baseline clients (phones). The choice is made from a new capabilities message (spec 0013); a peer that never sends one is a baseline client. Receive always handles both.
+- **Attachments phone interop: DECIDED 2026-09-24 (owner, final plan):** keep both. Bulletin transaction storage is the main path; HOP (phones' dialect) is the bridge to baseline clients. Order: (1) HOP receive, (2) capabilities RFC 0013 + message (incl. HOP dialect and file variants), (3) HOP send to peers without capabilities, (4) move our Bulletin file into the base spec's rich-text `FileVariant` enum as a new variant (read kind 250 during a transition), then propose the variant and 0013 upstream. Evidence: t3ams prefers chain storage in a host and falls back to HOP; HOP has two dialects inside Parity.
 
 
 - **Guide bot image understanding:** DECIDED 2026-09-24 morning: all public Claude bots get `read,web` with workspace scope after two guards land in pca (per-peer staging wiped after the turn; web egress guard: private-range block + budgets). Never write or bash on public bots.
