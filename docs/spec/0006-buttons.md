@@ -111,3 +111,7 @@ Telegram inline keyboards (`callback_data`, `url`, and web-app buttons), Slack B
 An optional `input: { placeholder: String, kind: text|number }` on a button (Farcaster Frames v1 pattern) so a bot can ask for one value; the press then carries the value in `payload`.
 
 RFC 0007 `tx` action (model: EIP-5792 `wallet_sendCalls` with display metadata, plus a `transactionReference` kind for the result): `{ chainId, to, data | abiCall, value, dryRunRequired }` with the client obliged to dry-run and show effects before signing; the bot manifest (commands list, description, greeting) resolvable by DotNS name; a `menu` capability so a bot can publish its command list once.
+
+### Host parsing leniency (revision 2026-09-24)
+
+The fenced block is a host convention for text-only models, not wire format. A small model (owner's report: Claude Haiku in a pca bot) wrote a bare ``` fence, a flat array of buttons instead of `{"rows": [[…]]}`, and a line after the block; the strict parser refused all three and the user saw raw JSON. Hosts SHOULD accept: a fence tagged `buttons`, `json` or untagged whose JSON is either the rows object or a flat array of buttons (one row); the block anywhere in the reply, with text before and after it kept; and SHOULD strip a block that still fails to parse, logging it, rather than show JSON to a person. Stricter models still get the canonical form in the hint. Structured directives through tool calling (roadmap, M13) make this moot for engines that support them.
