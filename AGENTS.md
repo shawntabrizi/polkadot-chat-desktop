@@ -65,3 +65,4 @@ milestone file you were given in `docs/milestones/`. Do only that milestone.
       `docs/acceptance.md`.
 - [ ] `docs/decisions.md` has a bullet for each open choice you made.
 - [ ] Committed as `M<n>: ...`. `git status` is clean.
+- Every launch of the app by an agent (smoke, e2e, screenshots, manual checks) MUST set `PCD_HEADLESS=1` and `PCD_USER_DATA_DIR=<throwaway>`; a bare `npm run smoke` opens the owner's real profile. (Restated 2026-09-24 after M12e.)
