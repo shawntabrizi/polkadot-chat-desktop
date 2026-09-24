@@ -41,4 +41,5 @@ Provisional kind numbers are in the range 240–254 (`kinds.md`); RFC-0003 takes
 | `0008-bot-info.md` | v2 (balance hint) complete 2026-09-23 | desktop M10 + M11b, pca `desktop/rfc-0003` |
 | `0009-groups.md` | draft complete 2026-09-23 (fan-out v1) | desktop M12, pca `desktop/rfc-0003` |
 | `0011-groups-v2.md` | draft 2026-09-24 (private groups: epoch key, one statement per message, privacy levels); review in `docs/review/0011-groups-v2.md` | M16 |
-| `0012-attachments.md` | draft 2026-09-24 (Bulletin transaction storage, kind 250); review in `docs/review/0012-attachments.md`; HOP interop decision pending | M15 |
+| `0010-bot-directory.md` | draft 2026-09-24 (signed bot cards on a directory topic, kind 251); review in `docs/review/0010-bot-directory.md` | M17 |
+| `0012-attachments.md` | implemented M15a–c (Bulletin transaction storage, kind 250); review in `docs/review/0012-attachments.md`; HOP interop decision pending | M15 |

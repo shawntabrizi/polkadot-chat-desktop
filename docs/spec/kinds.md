@@ -14,6 +14,7 @@
 | 248 | `groupLeave` | implemented (M12) | none | 0009 |
 | 249 | `groupControl` (welcome, joinRequest, joinDecision, history, keyRequest) | draft (0011, M16) | none | 0011 |
 
-| 250 | `attachment` | draft (0012, M15) | the base spec's unsupported bubble | 0012 |
+| 250 | `attachment` | implemented (M15a–c) | the base spec's unsupported bubble | 0012 |
+| 251 | `botCard` | draft (0010, M17) | n/a (directory topic, never in a chat) | 0010 |
 
 Provisional range extended to 250–254 on 2026-09-24 (240–249 full).
