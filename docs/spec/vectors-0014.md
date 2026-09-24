@@ -136,3 +136,5 @@ the `01` variant byte. Under `scale-ts` the decode throws (tried
 - A vector with a `preview` and a `video` item (duration in seconds).
 - A mixed-rail negative: a `RichText` with one `p2pMixnet` and one `bulletin`
   item must never be sent (sender check; the decoder accepts it).
+
+> Vectors confirmed by the pca codec (b8b9fc4, 2026-09-24): byte for byte.
