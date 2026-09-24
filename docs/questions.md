@@ -122,3 +122,10 @@ Write the question, what you did meanwhile, and the date.
 - **Archive and a new message.** An archived chat stays archived when a message arrives (its unread still reaches the badge). Telegram brings an unmuted archived chat back. Which one?
 - **Pinned chats sit under the Assistant and the Faucet.** The two local rows stay first, as before. Should pinned chats go above them?
 - **Forward to the Assistant** is not offered (the Assistant's rows are not sent through the chat manager, and a forward into it would start an engine turn). Wanted?
+
+## Morning review (coordinator, 2026-09-24 night)
+
+- **pcdmeter seed in a transcript.** The M12f pca agent printed `BOT_SEED_HEX` of the devnet pcdmeter bot into its session transcript (the vault's `daily/.transcripts/`, private repo). Devnet only, test funds only. Rotate pcdmeter's identity when convenient (the meter contract's operator is that account, so rotation means a new Meter deploy or an operator transfer). Decide.
+- **Failed turns are charged** by pcdmeter ("Sorry — I couldn't reach my agent" cost 0.1 PAS). Queued for the pca fix round: charge only when the brain produced an answer.
+- **Groups v2 defaults** (see `docs/review/0011-groups-v2.md`): level 1 now, cap 256, history on request. Overrule if you disagree.
+- **M12e defaults**: delete keeps the contact; withdraw stops listening; blocked peers still see "delivered" (store ACK).
