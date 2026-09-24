@@ -40,6 +40,8 @@ export const upsertContactDevice = (seed: ContactSeed, device: PeerDevice | null
       devices,
       // A local label (M12e) survives every refresh of the chain data.
       ...(existing?.nickname ? { nickname: existing.nickname } : {}),
+      // M16b: a contact made only by a join request stays marked (its welcomes show as invites).
+      ...(existing?.joinedVia ? { joinedVia: existing.joinedVia } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };

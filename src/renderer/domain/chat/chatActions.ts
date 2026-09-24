@@ -34,18 +34,22 @@ const refreshRoom = async (peer: PeerId, extra: { unreadCount?: number; markedUn
  * message that arrived during the Undo time is kept, and brings the room
  * back), the draft, the deletions waiting for their target, a pending
  * outgoing request, and the room itself when nothing newer is left. A
- * group's row goes too, with all of its messages. The contact row stays
+ * group's row goes too, with all of its messages and its epoch keys. The contact row stays
  * (with the session): if the peer writes again, the room comes back.
  */
 export const deleteChatLocally = (peer: PeerId, at: number): Promise<void> =>
-  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups, db.attachments], async () => {
+  appDatabase.transaction('rw', [db.rooms, db.messages, db.drafts, db.pendingDeletions, db.requests, db.groups, db.attachments, db.keys], async () => {
     const group = isGroupPeer(peer);
     const rows = group ? db.messages.where('[peerAccountId+timestamp]').between([peer, -Infinity], [peer, Infinity]) : messagesUpTo(peer, at);
     await dropAttachments(await rows.primaryKeys());
     await rows.delete();
     await db.drafts.delete(peer);
     await db.pendingDeletions.where('[peerAccountId+createdAt]').between([peer, -Infinity], [peer, Infinity]).delete();
-    if (group) await db.groups.delete(groupIdOf(peer));
+    if (group) {
+      await db.groups.delete(groupIdOf(peer));
+      // M16b: its epoch keys live in `keys`; a deleted group keeps none.
+      await db.keys.where('groupId').equals(groupIdOf(peer)).delete();
+    }
     else await withdrawRequestLocally(peer as HexString);
     if (group || (await listMessages(peer)).length === 0) await db.rooms.delete(peer);
     else await refreshRoom(peer);

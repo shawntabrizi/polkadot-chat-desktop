@@ -19,6 +19,11 @@ describe('markdownToHtml', () => {
     expect(html).toContain('Vec&lt;T&gt;');
   });
 
+  it('makes a pasted group invite link clickable (M16b: main opens it in the app), and no other polkadotapp text', () => {
+    expect(markdownToHtml('join us: polkadotapp://g#AAEC_-x9')).toContain('<a href="polkadotapp://g#AAEC_-x9" target="_blank" rel="noopener noreferrer">');
+    expect(markdownToHtml('polkadotapp://pair?handshake=00')).not.toContain('<a ');
+  });
+
   it('turns an image into a link, so a reply cannot make the app fetch a URL', () => {
     const html = markdownToHtml('![logo](https://example.com/a.png)');
     expect(html).not.toContain('<img');

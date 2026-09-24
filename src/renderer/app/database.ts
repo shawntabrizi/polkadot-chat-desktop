@@ -89,6 +89,12 @@ export type ContactRow = {
   devices: PeerDevice[];
   /** M12e: a local label shown as the name; the username stays visible next to it. Never sent. */
   nickname?: string;
+  /**
+   * M16b: this contact exists only because our client accepted their request
+   * to join that group (an invite link): a stranger, so their `welcome`s show
+   * as invites (review M16 answer 5).
+   */
+  joinedVia?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -228,6 +234,46 @@ export type PeerInfoRow = {
  * side of two rekeys out of one epoch, kept 24 h to read what was sent under it.
  */
 export type GroupEpochKey = { epoch: number; key: Uint8Array; openedAt: number; erasesAt: number | null; signer: HexString; fork?: boolean };
+/**
+ * M16b: one epoch key at rest, in the `keys` table next to `secrets` (the
+ * review answer to M16 question 3). `sealed` is the 32-byte key sealed with
+ * the app's at-rest key (`app/atRest.ts`, safeStorage in main); the row's id
+ * is its additional data. Only `groupsV2`'s Dexie storage reads and writes it.
+ */
+export type GroupKeyRow = {
+  /** `<groupId>:<epoch>:<0|1 fork>` */
+  id: string;
+  groupId: string;
+  epoch: number;
+  fork: boolean;
+  openedAt: number;
+  erasesAt: number | null;
+  signer: HexString;
+  nonce: Uint8Array;
+  sealed: Uint8Array;
+};
+
+/**
+ * M16b: our own request to join a group by an invite link (0011 "Invite
+ * link"), until the admin's `welcome` arrives. `requested`: the chat request
+ * (or the `joinRequest`) went to `admin`; `pending`: the admin answered
+ * `joinDecision{pending}`; `rejected`: it answered rejected.
+ */
+export type GroupJoinRow = {
+  groupId: string;
+  name: string;
+  admins: HexString[];
+  admin: HexString;
+  inviteId: Uint8Array;
+  proof: Uint8Array;
+  status: 'requested' | 'pending' | 'rejected';
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** M16b, admin side: one join request by link waiting for approval (policy 1); local to this admin (0011). */
+export type GroupJoinRequest = { account: HexString; username: string; inviteId: Uint8Array; note: string; at: number };
+
 /** Spec 0011: one of our own messages as sent in a carrier (the remote message bytes), for the 24 h carry. */
 export type GroupCarryItem = { messageId: string; timestamp: number; sentAt: number; epoch: number; bytes: Uint8Array };
 
@@ -249,7 +295,8 @@ export type GroupRow = {
   members: GroupMember[];
   version: number;
   createdAt: number;
-  self: 'member' | 'left' | 'removed';
+  /** M16b `invited`: a stranger's `welcome`, shown as an invite to accept (review M16 answer 5); nothing is read or sent until then. */
+  self: 'member' | 'left' | 'removed' | 'invited';
   /** Members that sent `groupLeave` since the roster was last changed. */
   left: HexString[];
   /** Admin only: members without a contact yet; the roster goes to each once the chat is accepted. */
@@ -270,8 +317,10 @@ export type GroupRow = {
   stateBytes?: Uint8Array | null;
   stateSigner?: HexString | null;
   /**
-   * Epoch keys: secrets, kept on the group row as the milestone names them
-   * (docs/decisions.md "## M16"). Erased 14 days after the next epoch.
+   * Epoch keys. Erased 14 days after the next epoch. Since M16b they are
+   * stored sealed in the `keys` table, never on this row: `groupsV2`'s Dexie
+   * storage splits them off on write and joins them on read (and moves the
+   * keys of an M16 row there on its first read).
    */
   keys?: GroupEpochKey[];
   /** Our own messages of the current epoch, last 24 h: each carrier repeats them. */
@@ -288,6 +337,12 @@ export type GroupRow = {
   keyRequestedAt?: number;
   /** Admin: when the 7-day rotation fires (set once the epoch is 7 days old, with jitter). */
   rotateAt?: number | null;
+  /** M16b, admin: join requests waiting for approval (policy 1). */
+  joinRequests?: GroupJoinRequest[];
+  /** M16b: posting accounts a member added with a `deviceAdded` in its carrier, kept across states until an admin's state records them. */
+  postingAdded?: Record<string, HexString[]>;
+  /** M16b, `self: 'invited'`: who sent the `welcome`, and when. */
+  invitedBy?: { account: HexString; username: string; at: number } | null;
 };
 
 /**
@@ -349,6 +404,10 @@ dexie.version(8).stores({
 dexie.version(9).stores({
   attachments: '[messageId+index], messageId',
 });
+dexie.version(10).stores({
+  keys: 'id, groupId',
+  groupJoins: 'groupId',
+});
 
 /** The raw Dexie instance: for transactions and for tests that reset the store. */
 export const appDatabase = dexie;
@@ -368,6 +427,8 @@ export const db: {
   groups: Table<GroupRow, string>;
   blocked: Table<BlockedRow, HexString>;
   attachments: Table<AttachmentRow, [string, number]>;
+  keys: Table<GroupKeyRow, string>;
+  groupJoins: Table<GroupJoinRow, string>;
 } = {
   device: dexie.table('device'),
   secrets: dexie.table('secrets'),
@@ -383,4 +444,6 @@ export const db: {
   groups: dexie.table('groups'),
   blocked: dexie.table('blocked'),
   attachments: dexie.table('attachments'),
+  keys: dexie.table('keys'),
+  groupJoins: dexie.table('groupJoins'),
 };

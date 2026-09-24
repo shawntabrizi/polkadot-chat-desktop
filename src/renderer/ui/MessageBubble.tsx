@@ -2,7 +2,7 @@
 // ReactionPills.tsx and QuickReactionRow.tsx (2026-09-23), rebuilt on the design
 // system tokens and shadcn DropdownMenu; no tr-ui.
 
-import { Check, CheckCheck, CircleAlert, Clock, Copy, Forward, MoreHorizontal, Pencil, Reply, Trash2 } from 'lucide-react';
+import { Check, CheckCheck, CircleAlert, Clock, Copy, Forward, MoreHorizontal, Pencil, Pin, PinOff, Reply, Trash2 } from 'lucide-react';
 import { type ReactNode, memo, useCallback, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { MessageRow, Reaction, RequestRow } from '../app/database';
@@ -156,6 +156,8 @@ export type BubbleActions = {
   referenceText?: string | null;
   /** M12e: send a copy of the text to another chat (the Forward submenu lists the chats). */
   forward?: (target: ForwardTarget) => void;
+  /** M16b, a private group: pin or unpin this message for every member (the group state). */
+  pin?: { pinned: boolean; run: () => void };
 };
 
 /**
@@ -347,6 +349,11 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
                 <ForwardItems from={row.peerAccountId} onPick={target => actions.forward?.(target)} />
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+          ) : null}
+          {actions.pin ? (
+            <DropdownMenuItem onSelect={actions.pin.run} data-testid="pin-message">
+              {actions.pin.pinned ? <PinOff /> : <Pin />} {actions.pin.pinned ? 'Unpin' : 'Pin'}
+            </DropdownMenuItem>
           ) : null}
           {actions.edit ? (
             <DropdownMenuItem onSelect={actions.edit}>

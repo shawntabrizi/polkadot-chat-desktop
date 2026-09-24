@@ -36,6 +36,7 @@ import {
   GROUP2_BOUNDS,
   GROUP_MEMBER_CAP,
   type GroupState,
+  type InviteLink,
   type Member2,
   PERMISSIONS,
   ROLES,
@@ -43,9 +44,13 @@ import {
   decodeGroupData,
   decodeGroupMessages,
   decodeGroupState,
+  decodeInviteLink,
   encodeGroupData,
   encodeGroupMessages,
   encodeGroupState,
+  encodeInviteLink,
+  fromBase64Url,
+  toBase64Url,
 } from './groupCodec';
 import {
   type EpochKeys,
@@ -53,6 +58,7 @@ import {
   createGroupExpiryAllocator,
   deriveEpoch,
   hash256,
+  joinProof,
   makeRekeyEntry,
   open,
   openRekeyEntry,
@@ -60,6 +66,7 @@ import {
   randomBytes,
   seal,
 } from './groupKeys';
+import { putGroupWithKeys, withStoredKeys } from './groupKeyStore';
 import { ensureGroupRoom, groupSystemRow } from './groups';
 import { ChatMessageCodec, type ChatContent, type GroupControl, type HistorySinceWire } from './identityEvents';
 import { addMessage, listMessages, setMessageStatus } from './messages';
@@ -81,10 +88,11 @@ export type GroupsV2Storage = {
   markSent: (messageId: string) => Promise<void>;
 };
 
+/** Epoch keys go to the sealed `keys` table (M16b), the rest of the row to `groups`. */
 export const dexieGroupStorage: GroupsV2Storage = {
-  getGroup: groupId => db.groups.get(groupId),
-  putGroup: row => db.groups.put(row),
-  listGroups: () => db.groups.toArray(),
+  getGroup: async groupId => withStoredKeys(await db.groups.get(groupId)),
+  putGroup: putGroupWithKeys,
+  listGroups: async () => Promise.all((await db.groups.toArray()).map(async row => (await withStoredKeys(row))!)),
   addSystemRow: row => addMessage(row, { read: true }),
   ensureRoom: ensureGroupRoom,
   listRows: groupId => listMessages(groupPeerOf(groupId)),
@@ -204,6 +212,98 @@ export const historyProvider = (
   );
 };
 
+/** A new admin's flags (M16b): everything but `manage admins`, which the owner grants on purpose. */
+export const ADMIN_PERMISSIONS = ALL_PERMISSIONS & ~PERMISSIONS.admins;
+
+/**
+ * Slow mode at the receiver hides a role-0 carrier that came sooner than
+ * `slowModeSecs` after the member's previous one, by arrival time (0011
+ * Limits). Two carriers sent exactly `slowModeSecs` apart can arrive closer
+ * than that (network delay), so the receiver allows this much.
+ */
+export const SLOW_MODE_GRACE_MS = 2000;
+
+/** How long a role-0 member still waits before its next statement under slow mode; 0 when it may send. */
+export const slowModeWait = (state: GroupState | null | undefined, me: Member2 | null, lastSentAt: number | undefined, now: number): number =>
+  state && me?.role === ROLES.member && state.slowModeSecs > 0 ? Math.max(0, (lastSentAt ?? 0) + state.slowModeSecs * 1000 - now) : 0;
+
+/** The owner leaving without a transfer makes the longest-standing admin the owner (0011 Rules). */
+export const heirOf = (state: GroupState): Member2 | null =>
+  state.members.filter(m => m.role === ROLES.admin).sort((a, b) => a.joinedAt - b.joinedAt || (a.account < b.account ? -1 : 1))[0] ?? null;
+
+/** The copyable form of an invite link: 0011 puts the SCALE link, base64url, in a URL fragment (`…/g#<b64>`). */
+export const INVITE_LINK_PREFIX = 'polkadotapp://g#';
+export const inviteLinkText = (link: InviteLink): string => `${INVITE_LINK_PREFIX}${toBase64Url(encodeInviteLink(link))}`;
+
+/**
+ * An invite link in anything a person pastes or clicks: `polkadotapp://g#…`,
+ * any `…/g#…` URL, or the bare base64url. Null when it is not one.
+ */
+export const parseInviteLink = (text: string): InviteLink | null => {
+  const trimmed = text.trim();
+  const token = /(?:^|[/:])g#([A-Za-z0-9_-]+)/.exec(trimmed)?.[1] ?? (/^[A-Za-z0-9_-]{40,}$/.test(trimmed) ? trimmed : null);
+  if (!token) return null;
+  try {
+    return decodeInviteLink(fromBase64Url(token));
+  } catch {
+    return null;
+  }
+};
+
+/** 0011 Invite link: a request opener is rich text only, so the capability rides in the text. */
+export const joinOpenerText = (groupName: string, inviteId: Uint8Array, proof: Uint8Array): string =>
+  `Join request: ${groupName} [grp:${toBase64Url(inviteId)}:${toBase64Url(proof)}]`;
+
+export const parseJoinOpener = (text: string | null): { inviteId: Uint8Array; proof: Uint8Array } | null => {
+  const found = /\[grp:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)\]/.exec(text ?? '');
+  if (!found) return null;
+  try {
+    const inviteId = fromBase64Url(found[1]!);
+    const proof = fromBase64Url(found[2]!);
+    return inviteId.length === 16 && proof.length === 32 ? { inviteId, proof } : null;
+  } catch {
+    return null;
+  }
+};
+
+/** The posting additions a new state has not recorded yet (members still listed only). */
+const pendingPosting = (added: GroupRow['postingAdded'], state: GroupState): Record<string, HexString[]> => {
+  const out: Record<string, HexString[]> = {};
+  for (const [account, list] of Object.entries(added ?? {})) {
+    const member = memberOf(state, account as HexString);
+    const left = member ? list.filter(p => !member.posting.includes(p)) : [];
+    if (left.length > 0) out[account] = left;
+  }
+  return out;
+};
+
+const withPosting = (state: GroupState, added: Record<string, HexString[]>): GroupState =>
+  Object.keys(added).length === 0
+    ? state
+    : {
+        ...state,
+        members: state.members.map(m => (added[m.account] ? { ...m, posting: [...new Set([...m.posting, ...added[m.account]!])].slice(0, GROUP2_BOUNDS.posting) } : m)),
+      };
+
+/** The slow-mode choices of the members panel, in seconds (0 = off). */
+export const SLOW_MODE_CHOICES = [0, 10, 30, 60, 300, 900, 3600] as const;
+export const slowModeWords = (secs: number): string => (secs % 3600 === 0 ? `${secs / 3600} h` : secs % 60 === 0 ? `${secs / 60} min` : `${secs} s`);
+/** 0011 `joinPolicy`, as the members panel says it. */
+export const JOIN_POLICY_WORDS: Record<number, string> = { 0: 'admins add members', 1: 'invite link, an admin approves', 2: 'anyone with the invite link' };
+
+/** Why a state change of ours is refused, in words (`stateChangeRefusal` codes). */
+const REFUSAL_TEXT: Record<string, string> = {
+  'not-admin': 'Only an admin can change this group.',
+  'no-add': 'You cannot add members to this group.',
+  'no-remove': 'You cannot remove members from this group.',
+  'owner-only': 'Only the owner can change an admin or the owner.',
+  'no-admins': 'You cannot change roles in this group.',
+  'no-info': 'You cannot change this group’s settings.',
+  'no-pin': 'You cannot pin messages in this group.',
+  'no-invites': 'You cannot create invite links for this group.',
+  'no-owner': 'A group needs exactly one owner.',
+};
+
 /** Content kinds that never ride inside a carrier; `groupLeave` (248) does (0011 decoder bounds). */
 const FORBIDDEN_IN_CARRIER: readonly string[] = ['groupInfo', 'groupMessage', 'groupControl', 'undecodable'];
 
@@ -262,6 +362,14 @@ export type GroupsV2Deps = {
   sendControl: (peer: HexString, control: GroupControl) => Promise<void>;
   /** A taken message: the manager applies it to the room as a group message from `sender`. */
   applyMessage: (groupId: string, sender: HexString, message: IncomingGroupMessage) => Promise<void>;
+  /**
+   * M16b: is `account` someone whose `welcome` adds us at once (a contact
+   * we chose), rather than a stranger whose welcome shows as an invite?
+   * Absent: everyone is trusted (the M16 behaviour).
+   */
+  trusted?: (account: HexString) => Promise<boolean>;
+  /** M16b: did we ask to join this group by a link? Its admin's `welcome` is then expected. */
+  joinRequested?: (groupId: string) => Promise<boolean>;
   now?: () => number;
   random?: (length: number) => Uint8Array;
   log?: (event: string, detail?: Record<string, unknown>) => void;
@@ -307,6 +415,8 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
   const pending = new Map<string, GroupStatement[]>();
   const lastArrival = new Map<string, number>(); // `${groupId}:${account}` -> ms
   const outboxes = new Map<string, Outbox>();
+  // A newcomer's history can arrive before the state it is checked against: held until then.
+  const heldHistory = new Map<string, { from: HexString; history: Extract<GroupControl, { tag: 'history' }>['value'] }[]>();
 
   // Everything that reads and writes a group row runs one at a time.
   let chain: Promise<unknown> = Promise.resolve();
@@ -440,8 +550,11 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     );
 
   /** Stores `state` as the group's truth and writes one room line for what changed. */
-  const applyState = async (row: GroupRow, state: GroupState, bytes: Uint8Array, signer: HexString): Promise<GroupRow> => {
+  const applyState = async (row: GroupRow, incoming: GroupState, bytes: Uint8Array, signer: HexString): Promise<GroupRow> => {
     const before = row.state ?? null;
+    // 0011 Multi-device: a member's `deviceAdded` holds on every receiver until an admin's state records it.
+    const postingAdded = pendingPosting(row.postingAdded, incoming);
+    const state = withPosting(incoming, postingAdded);
     const members = await rosterOf(row, state);
     const nameOf = (account: HexString) =>
       members.find(m => m.account === account)?.username ?? row.members.find(m => m.account === account)?.username ?? `${account.slice(0, 8)}…`;
@@ -458,6 +571,7 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       stateBytes: bytes,
       stateSigner: signer,
       pendingWelcome: null,
+      postingAdded,
       self: listed ? (row.self === 'left' ? 'left' : 'member') : row.self === 'left' ? 'left' : 'removed',
       ...(listed ? {} : { keys: [], carry: [], locked: false }),
     };
@@ -474,6 +588,22 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
         lines.push(m.account === self ? `${actor} removed you` : `${actor} removed ${nameOf(m.account)}`);
       }
       if (state.name !== before.name) lines.push(`${actor} renamed the group to ${state.name}`);
+      for (const m of state.members) {
+        const was = memberOf(before, m.account);
+        if (!was || was.role === m.role) continue;
+        const who = m.account === self ? 'you' : nameOf(m.account);
+        if (m.role === ROLES.owner) lines.push(`${m.account === self ? 'You are' : `${nameOf(m.account)} is`} now the owner`);
+        else if (m.role === ROLES.admin) lines.push(`${actor} made ${who} an admin`);
+        else lines.push(`${actor} made ${who} a member`);
+      }
+      const newlyPinned = state.pinned.filter(id => !before.pinned.includes(id));
+      if (newlyPinned.length > 0) lines.push(`${actor} pinned a message`);
+      else if (before.pinned.some(id => !state.pinned.includes(id))) lines.push(`${actor} unpinned a message`);
+      if (state.slowModeSecs !== before.slowModeSecs)
+        lines.push(state.slowModeSecs > 0 ? `${actor} turned on slow mode: one message every ${slowModeWords(state.slowModeSecs)}` : `${actor} turned off slow mode`);
+      if (state.joinPolicy !== before.joinPolicy) lines.push(`${actor} changed who can join: ${JOIN_POLICY_WORDS[state.joinPolicy] ?? 'unknown'}`);
+      if (state.historyShare !== before.historyShare)
+        lines.push(state.historyShare > 0 ? `${actor} shares recent history with new members` : `${actor} stopped sharing history with new members`);
     }
     if (lines.length > 0) await note(row.id, `group2-state:${row.id}:${state.epoch}:${state.version}`, lines.join(' · '));
     log('GROUP2_STATE', {
@@ -552,7 +682,7 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       row.state.slowModeSecs > 0 &&
       !leaveOnly &&
       previous !== undefined &&
-      now() - previous < row.state.slowModeSecs * 1000
+      now() - previous < row.state.slowModeSecs * 1000 - SLOW_MODE_GRACE_MS
     ) {
       return 'slow-mode';
     }
@@ -593,9 +723,14 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
         }),
       );
     }
+    let latest = updated;
     for (const message of fresh) {
       if (message.content.tag === 'groupLeave') {
-        await onLeave(updated, member, message);
+        await onLeave(latest, member, message);
+        continue;
+      }
+      if (message.content.tag === 'deviceAdded' || message.content.tag === 'deviceRemoved') {
+        latest = await onDevice(latest, member, message.content);
         continue;
       }
       await deps.applyMessage(row.id, member.account, message);
@@ -607,9 +742,46 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     const name = row.members.find(m => m.account === member.account)?.username ?? `${member.account.slice(0, 8)}…`;
     await note(row.id, `group-leave:${member.account}:${message.messageId}`, `${name} left`, message.timestamp);
     // 0011 Leave: the first admin with `remove members` that sees it removes the member.
-    if (member.role !== ROLES.owner && can(memberOf(row.state, self), PERMISSIONS.remove)) {
-      await rekeyLocked(row.id, member.account).catch(error => log('GROUP2_REMOVE_FAILED', { group: row.id, error: String(error) }));
-    }
+    // The owner's leave also hands the group to the longest-standing admin (the heir rule).
+    if (!can(memberOf(row.state, self), PERMISSIONS.remove)) return;
+    if (member.role === ROLES.owner && (!row.state || !heirOf(row.state))) return;
+    await rekeyLocked(row.id, member.account, { heir: member.role === ROLES.owner }).catch(error => log('GROUP2_REMOVE_FAILED', { group: row.id, error: String(error) }));
+  };
+
+  /**
+   * 0011 Multi-device: a `deviceAdded` in member X's own carrier (so signed
+   * by one of X's posting accounts) adds that account to X's posting set on
+   * this receiver; `deviceRemoved` takes it out. An account another member
+   * already signs with is never taken.
+   */
+  const onDevice = async (
+    row: GroupRow,
+    member: Member2,
+    content: Extract<ChatContent, { tag: 'deviceAdded' | 'deviceRemoved' }>,
+  ): Promise<GroupRow> => {
+    if (!row.state) return row;
+    const account = bytesToHex(content.value.statementAccountId);
+    const added = { ...(row.postingAdded ?? {}) };
+    const mine = new Set(added[member.account] ?? []);
+    if (content.tag === 'deviceAdded') {
+      const taken = row.state.members.some(m => m.account !== member.account && (m.account === account || m.posting.includes(account)));
+      if (taken || account === member.account || memberOf(row.state, member.account)?.posting.includes(account)) return row;
+      if (mine.size + member.posting.length >= GROUP2_BOUNDS.posting) return row;
+      mine.add(account);
+    } else mine.delete(account);
+    added[member.account] = [...mine];
+    const state: GroupState = {
+      ...row.state,
+      members: row.state.members.map(m =>
+        m.account !== member.account
+          ? m
+          : { ...m, posting: content.tag === 'deviceAdded' ? [...new Set([...m.posting, account])] : m.posting.filter(p => p !== account) },
+      ),
+    };
+    const next: GroupRow = { ...row, state, postingAdded: added };
+    await putRow(next);
+    log('GROUP2_DEVICE', { group: row.id, member: member.account, device: account, change: content.tag });
+    return next;
   };
 
   // ── Rekey in ─────────────────────────────────────────────────────────────
@@ -759,6 +931,9 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       const held = pending.get(row.id) ?? [];
       pending.delete(row.id);
       for (const statement of held) void receive(statement);
+      const histories = heldHistory.get(row.id) ?? [];
+      heldHistory.delete(row.id);
+      for (const entry of histories) await onHistory(entry.from, entry.history);
     }
     return outcome;
   };
@@ -916,7 +1091,8 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       avatar: undefined,
       defaultPermissions: PERMISSIONS.post,
       slowModeSecs: 0,
-      joinPolicy: 0,
+      // 0011 ruling 10: a new group takes joins by link with approval; an upgraded v1 room keeps "admins add".
+      joinPolicy: base ? 0 : 1,
       historyShare: 0,
       members,
       invites: [],
@@ -975,7 +1151,7 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
   };
 
   /** The epoch change: K_{e+1}, an entry per remaining member, rekey on Topic_e, the new state on Topic_{e+1}. */
-  const rekeyLocked = async (groupId: string, remove: HexString | null): Promise<{ epoch: number; missing: HexString[] }> => {
+  const rekeyLocked = async (groupId: string, remove: HexString | null, options: { heir?: boolean } = {}): Promise<{ epoch: number; missing: HexString[] }> => {
     const row = await getRow(groupId);
     if (!row || !isV2(row) || !row.state) throw new Error('This group is not known on this device.');
     const me = memberOf(row.state, self);
@@ -983,14 +1159,19 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     if (remove) {
       const target = memberOf(row.state, remove);
       if (!target) throw new Error('That account is not a member.');
-      if (target.role === ROLES.owner) throw new Error('Nobody removes the owner.');
-      if (target.role >= ROLES.admin && me?.role !== ROLES.owner) throw new Error('Only the owner removes an admin.');
+      // Only the owner's own leave takes the owner out, and the heir takes over (0011 Rules).
+      if (target.role === ROLES.owner && !options.heir) throw new Error('Nobody removes the owner.');
+      if (target.role === ROLES.admin && me?.role !== ROLES.owner) throw new Error('Only the owner removes an admin.');
     }
     const old = currentEpoch(row);
     if (!old) throw new Error('This group has no key on this device.');
     const newEpoch = old.epoch + 1;
     const newKey = random(32);
-    const remaining = row.state.members.filter(m => m.account !== remove);
+    const heir = options.heir ? heirOf(row.state) : null;
+    if (options.heir && !heir) throw new Error('This group has no admin to become the owner.');
+    const remaining = row.state.members
+      .filter(m => m.account !== remove)
+      .map(m => (m.account === heir?.account ? { ...m, role: ROLES.owner, permissions: ALL_PERMISSIONS } : m));
     const entries = [];
     const missing: HexString[] = [];
     for (const m of remaining) {
@@ -1072,6 +1253,10 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
         locked: false,
       };
     } else {
+      // Review M16 answer 5: a welcome from a contact adds the group at once;
+      // from a stranger it waits as an invite. A group we asked to join is expected.
+      const asked = (await deps.joinRequested?.(w.groupId)) ?? false;
+      const invited = existing?.self !== 'member' && !asked && !((await deps.trusted?.(from)) ?? true);
       row = {
         ...(existing ?? {
           id: w.groupId,
@@ -1087,7 +1272,8 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
           gapNoted: false,
           updatedAt: now(),
         }),
-        self: 'member',
+        self: invited ? 'invited' : 'member',
+        invitedBy: invited ? { account: from, username: await deps.nameOf(from).catch(() => `${from.slice(0, 8)}…`), at: now() } : null,
         v: 2,
         epoch: w.epoch,
         keys: [
@@ -1115,11 +1301,39 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       };
     }
     await putRow(row);
+    if (row.self === 'invited') {
+      // Nothing is subscribed or sent until the person accepts; the state is read once, for the group's name.
+      await storage.ensureRoom(row.id, now());
+      await note(row.id, `group2-invited:${row.id}`, `${row.invitedBy?.username ?? 'Someone'} invited you to this group`);
+      await peekName(row, w);
+      log('GROUP2_INVITED', { group: w.groupId, from, epoch: w.epoch });
+      return 'invited';
+    }
     await reindex();
     // The state (and anything said so far) is on the topic now; read it at once.
     await sweep([bytesToHex(deriveEpoch(w.epochKey, w.groupId, w.epoch).topic)]);
     log('GROUP2_WELCOME', { group: w.groupId, from, epoch: w.epoch });
     return existing ? 'rekeyed' : 'welcomed';
+  };
+
+  /** An invite's group name, from the state its welcome names (read once; the topic is not watched). */
+  const peekName = async (row: GroupRow, w: Extract<GroupControl, { tag: 'welcome' }>['value']): Promise<void> => {
+    const ep = deriveEpoch(w.epochKey, w.groupId, w.epoch);
+    const result = await deps.store.queryStatements({ matchAny: [ep.topic] });
+    if (result.isErr()) return;
+    for (const statement of result.value as GroupStatement[]) {
+      if (!statement.data || lower(statement.channel ?? '') !== bytesToHex(ep.channels.state)) continue;
+      try {
+        const data = decodeGroupData(statement.data);
+        if (data.tag !== 'state') continue;
+        const plaintext = await open(ep.msgKey, { signer: lower(statement.proof?.value.signer ?? ''), epoch: w.epoch, variant: VARIANT.state, sealed: data.value });
+        if (!bytesEqual(hash256(plaintext), w.stateHash)) continue;
+        await putRow({ ...row, name: decodeGroupState(plaintext).name });
+        return;
+      } catch {
+        // Not the welcome's state: try the next one.
+      }
+    }
   };
 
   const onKeyRequest = async (from: HexString, request: Extract<GroupControl, { tag: 'keyRequest' }>['value']): Promise<string> => {
@@ -1217,9 +1431,17 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
 
   const onHistory = async (from: HexString, history: Extract<GroupControl, { tag: 'history' }>['value']): Promise<string> => {
     const row = await getRow(history.groupId);
+    if (row && isV2(row) && !row.state && row.pendingWelcome && row.self === 'member') {
+      // A newcomer: the admitter's history can overtake the state it is checked against.
+      const held = heldHistory.get(row.id) ?? [];
+      if (held.length < PENDING_PER_GROUP) held.push({ from, history });
+      heldHistory.set(row.id, held);
+      return 'held';
+    }
     if (!row || !isV2(row) || !row.state || row.self !== 'member' || !memberOf(row.state, from)) return 'not-member';
     const seen = new Set(row.seenIds ?? []);
-    let taken = 0;
+    let shared = 0;
+    let oldest = Number.POSITIVE_INFINITY;
     for (const item of [...history.items].reverse()) {
       if (!memberOf(row.state, item.from)) continue;
       let message;
@@ -1230,10 +1452,12 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       }
       const content = message.versioned.value;
       if (FORBIDDEN_IN_CARRIER.includes(content.tag) || content.tag === 'groupLeave') continue;
+      // The line counts what the sharer sent, also what the carriers (24 h) brought first.
+      shared += 1;
+      oldest = Math.min(oldest, Number(message.timestamp));
       const id = `${item.from}:${message.messageId}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      taken += 1;
       if (item.from !== self)
         await deps.applyMessage(row.id, item.from, {
           messageId: message.messageId,
@@ -1243,9 +1467,10 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     }
     const latest = (await getRow(row.id)) ?? row;
     await putRow({ ...latest, seenIds: [...seen].slice(-SEEN_IDS) });
-    if (taken > 0) {
+    if (shared > 0) {
       const name = row.members.find(m => m.account === from)?.username ?? `${from.slice(0, 8)}…`;
-      await note(row.id, `group2-history:${row.id}:${now()}`, `${name} shared ${taken} earlier ${taken === 1 ? 'message' : 'messages'}`);
+      // Just above the oldest shared message, so it heads what it brought (one line per sharer).
+      await note(row.id, `group2-history:${row.id}:${from}:${oldest}`, `History shared by ${name}`, oldest - 1);
     }
     return history.last ? 'done' : 'page';
   };
@@ -1275,6 +1500,154 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
       value: { groupId, since: from, limit: HISTORY_LIMIT },
     });
     return provider;
+  };
+
+  // ── State changes by us (M16b) ───────────────────────────────────────────
+
+  /**
+   * One state statement on the current epoch: `change` gets the current
+   * state and returns the next one (without the version bump). Refused here,
+   * before anything is sent, when our role does not allow it: receivers would
+   * refuse it too (`stateChangeRefusal`).
+   */
+  const changeStateLocked = async (groupId: string, change: (state: GroupState) => GroupState, roster?: GroupMember[]): Promise<GroupRow> => {
+    const row = await getRow(groupId);
+    if (!row || !isV2(row) || !row.state) throw new Error('This group is not known on this device.');
+    if (row.self !== 'member') throw new Error('You are no longer a member of this group.');
+    const ep = currentEpoch(row);
+    if (!ep) throw new Error('This group has no key on this device.');
+    const state: GroupState = { ...change(row.state), version: row.state.version + 1 };
+    const refusal = stateChangeRefusal(row.state, state, memberOf(row.state, self));
+    if (refusal) throw new Error(REFUSAL_TEXT[refusal] ?? 'You cannot make this change in this group.');
+    const { plaintext, data } = await sealState(ep, state);
+    await submitData(ep.topic, ep.channels.state, data);
+    return applyState(roster ? { ...row, members: roster } : row, state, plaintext, ownSigner);
+  };
+  const changeState = (groupId: string, change: (state: GroupState) => GroupState): Promise<GroupRow> => serial(() => changeStateLocked(groupId, change));
+
+  const setMember = (state: GroupState, account: HexString, patch: Partial<Pick<Member2, 'role' | 'permissions'>>): GroupState => {
+    if (!memberOf(state, account)) throw new Error('That account is not a member.');
+    return { ...state, members: state.members.map(m => (m.account === account ? { ...m, ...patch } : m)) };
+  };
+
+  /** Up to three admins a joiner may ask (0011 InviteLink): bot admins first (always online), then us, then the others. */
+  const linkAdmins = async (state: GroupState): Promise<HexString[]> => {
+    const admitters = state.members.filter(m => can(m, PERMISSIONS.add) || can(m, PERMISSIONS.approve));
+    const bots = new Set<HexString>();
+    for (const m of admitters) if (m.account !== self && (await deps.isBot(m.account).catch(() => false))) bots.add(m.account);
+    const order = [...admitters.filter(m => bots.has(m.account)), ...admitters.filter(m => m.account === self), ...admitters.filter(m => m.account !== self && !bots.has(m.account))];
+    return order.map(m => m.account).slice(0, 3);
+  };
+
+  /** Our invite link for the group: our live invite, else a new one (one state statement; policy 0 becomes 1). */
+  const inviteLink = (groupId: string): Promise<string> =>
+    serial(async () => {
+      const row = await getRow(groupId);
+      if (!row || !isV2(row) || !row.state) throw new Error('This group is not known on this device.');
+      if (!can(memberOf(row.state, self), PERMISSIONS.add)) throw new Error('You cannot create invite links for this group.');
+      const t = now();
+      const live = (i: GroupState['invites'][number]) => i.createdBy === self && (i.expiresAt === 0 || i.expiresAt > t) && (i.maxUses === 0 || i.uses < i.maxUses);
+      let state = row.state;
+      let invite = state.invites.find(live);
+      if (!invite || state.joinPolicy === 0) {
+        if (!invite && state.invites.length >= GROUP2_BOUNDS.invites) throw new Error('This group has 16 invite links. Revoke them first.');
+        const fresh = invite ?? { inviteId: random(16), secret: random(16), createdBy: self, expiresAt: 0, maxUses: 0, uses: 0 };
+        // A link is useless while only admins add: the first link turns on "an admin approves".
+        state = (await changeStateLocked(groupId, s => ({ ...s, joinPolicy: s.joinPolicy === 0 ? 1 : s.joinPolicy, invites: invite ? s.invites : [...s.invites, fresh] }))).state!;
+        invite = fresh;
+      }
+      return inviteLinkText({ groupId, name: state.name, admins: await linkAdmins(state), inviteId: invite.inviteId, secret: invite.secret });
+    });
+
+  /** Sends the newcomer the group's recent messages over the DM (0011 "History for late joiners"), when `historyShare` > 0. */
+  const shareHistory = async (row: GroupRow, account: HexString): Promise<number> => {
+    const newcomer = memberOf(row.state, account);
+    if (!row.state || !newcomer || row.state.historyShare === 0 || !deps.reachable(account)) return 0;
+    const pages = await historyPages(row, newcomer, { tag: 'timestamp', value: 0 }, row.state.historyShare);
+    let items = 0;
+    for (const page of pages) {
+      if (page.tag !== 'history' || page.value.items.length === 0) continue;
+      await deps.sendControl(account, page);
+      items += page.value.items.length;
+    }
+    log('GROUP2_HISTORY_SHARED', { group: row.id, to: account, items });
+    return items;
+  };
+
+  /** Admits `account`: the state with the member (and the invite's use), then `welcome`, then recent history. */
+  const admitLocked = async (groupId: string, account: HexString, inviteId: Uint8Array | null): Promise<void> => {
+    const row = await getRow(groupId);
+    if (!row?.state) throw new Error('This group is not known on this device.');
+    if (row.state.members.length >= GROUP_MEMBER_CAP) throw new Error(`A group has at most ${GROUP_MEMBER_CAP} members.`);
+    const username = await deps.nameOf(account).catch(() => `${account.slice(0, 8)}…`);
+    const joinedAt = now();
+    const entry = await memberEntry(account, ROLES.member, row.state.defaultPermissions, joinedAt);
+    const inviteHex = inviteId ? bytesToHex(inviteId) : null;
+    const applied = await changeStateLocked(
+      groupId,
+      s => ({
+        ...s,
+        members: [...s.members.filter(m => m.account !== account), entry],
+        invites: s.invites.map(i => (bytesToHex(i.inviteId) === inviteHex ? { ...i, uses: i.uses + 1 } : i)),
+      }),
+      [...row.members.filter(m => m.account !== account), { account, username, joinedAt }],
+    );
+    const settled: GroupRow = { ...applied, joinRequests: (applied.joinRequests ?? []).filter(r => r.account !== account) };
+    await putRow(settled);
+    await deps.sendControl(account, welcomeOf(settled));
+    await shareHistory(settled, account);
+  };
+
+  /** 0011 Joining, admin side: the proof names an invite in our state; then the join policy decides. */
+  const onJoinRequest = async (from: HexString, request: Extract<GroupControl, { tag: 'joinRequest' }>['value']): Promise<string> => {
+    const row = await getRow(request.groupId);
+    if (!row || !isV2(row) || !row.state || row.self !== 'member') return 'unknown-group';
+    const me = memberOf(row.state, self);
+    if (!can(me, PERMISSIONS.add) && !can(me, PERMISSIONS.approve)) return 'not-admin';
+    if (memberOf(row.state, from)) {
+      // Already in: the welcome may have been lost.
+      await deps.sendControl(from, welcomeOf(row));
+      return 'already-member';
+    }
+    const decide = async (status: 0 | 1, reason: string): Promise<string> => {
+      await deps.sendControl(from, { tag: 'joinDecision', value: { groupId: row.id, inviteId: request.inviteId, status } });
+      log('GROUP2_JOIN_DECIDED', { group: row.id, from, status: status === 0 ? 'pending' : 'rejected', reason });
+      return reason;
+    };
+    const invite = row.state.invites.find(i => bytesEqual(i.inviteId, request.inviteId));
+    if (!invite) return decide(1, 'unknown-invite');
+    if (!bytesEqual(request.proof, joinProof(invite.secret, from))) return decide(1, 'bad-proof');
+    if (invite.expiresAt !== 0 && invite.expiresAt < now()) return decide(1, 'expired');
+    if (invite.maxUses !== 0 && invite.uses >= invite.maxUses) return decide(1, 'used-up');
+    if (row.state.members.length >= GROUP_MEMBER_CAP) return decide(1, 'full');
+    if (row.state.joinPolicy === 0) return decide(1, 'admins-add-only');
+    if (row.state.joinPolicy === 2) {
+      await admitLocked(row.id, from, request.inviteId);
+      log('GROUP2_ADMITTED', { group: row.id, member: from });
+      return 'admitted';
+    }
+    // Policy 1: the request waits for an admin with `approve joins` (the queue is local to this admin in v2).
+    const queue = row.joinRequests ?? [];
+    if (!queue.some(r => r.account === from)) {
+      const username = await deps.nameOf(from).catch(() => `${from.slice(0, 8)}…`);
+      await putRow({ ...row, joinRequests: [...queue, { account: from, username, inviteId: request.inviteId, note: request.note.slice(0, 140), at: now() }] });
+      await note(row.id, `group2-join:${row.id}:${from}:${now()}`, `${username} asked to join`);
+    }
+    return decide(0, 'pending');
+  };
+
+  /** A chat request whose opener carries `[grp:…]` for an invite of ours: the group, when the proof holds. */
+  const joinOpenerGroup = async (peer: HexString, text: string | null): Promise<string | null> => {
+    const opener = parseJoinOpener(text);
+    if (!opener) return null;
+    for (const row of await storage.listGroups()) {
+      if (!isV2(row) || !row.state || row.self !== 'member') continue;
+      const me = memberOf(row.state, self);
+      if (!can(me, PERMISSIONS.add) && !can(me, PERMISSIONS.approve)) continue;
+      const invite = row.state.invites.find(i => bytesEqual(i.inviteId, opener.inviteId));
+      if (invite && bytesEqual(opener.proof, joinProof(invite.secret, lower(peer)))) return row.id;
+    }
+    return null;
   };
 
   // ── Timers ───────────────────────────────────────────────────────────────
@@ -1372,13 +1745,17 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
           plaintext,
           ownSigner,
         );
-        return (await welcomeAll(applied, [account])).length === 0;
+        const reached = (await welcomeAll(applied, [account])).length === 0;
+        if (reached) await shareHistory(applied, account);
+        return reached;
       }),
     /** The `welcome` a member we just reached (an accepted invite) still needs. */
     welcomeTo: async (groupId: string, account: HexString): Promise<void> => {
       const row = await getRow(groupId);
-      if (row && isV2(row) && row.self === 'member' && memberOf(row.state, account) && (memberOf(row.state, self)?.role ?? 0) >= ROLES.admin)
+      if (row && isV2(row) && row.self === 'member' && memberOf(row.state, account) && (memberOf(row.state, self)?.role ?? 0) >= ROLES.admin) {
         await deps.sendControl(account, welcomeOf(row));
+        await shareHistory(row, account);
+      }
     },
     /** 0011 Leave: a `groupLeave` in our carrier (one statement), then our keys are erased. */
     leave: async (groupId: string): Promise<void> => {
@@ -1406,13 +1783,67 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
             return onHistoryRequest(lower(from), control.value);
           case 'history':
             return onHistory(lower(from), control.value);
-          // Join requests and decisions are M16b.
           case 'joinRequest':
+            return onJoinRequest(lower(from), control.value);
+          // Our own join's answer: the manager keeps that (the `groupJoins` table).
           case 'joinDecision':
-            return 'ignored';
+            return control.value.status === 0 ? 'join-pending' : 'join-rejected';
         }
       }),
     requestHistory: (groupId: string, to?: HexString, since?: HistorySinceWire) => requestHistory(groupId, to, since),
     tick,
+    // ── M16b ──
+    /** Our invite link (a new invite in the state when we have none). */
+    inviteLink,
+    /** Removes every invite from the state: old links stop working. */
+    revokeInvites: (groupId: string) => changeState(groupId, s => ({ ...s, invites: [] })).then(() => undefined),
+    joinOpenerGroup: (peer: HexString, text: string | null) => serial(() => joinOpenerGroup(lower(peer), text)),
+    approveJoin: (groupId: string, account: HexString): Promise<void> =>
+      serial(async () => {
+        const row = await getRow(groupId);
+        const request = row?.joinRequests?.find(r => r.account === account);
+        if (!row || !request) throw new Error('This join request is no longer waiting.');
+        if (!can(memberOf(row.state, self), PERMISSIONS.approve) && !can(memberOf(row.state, self), PERMISSIONS.add)) throw new Error('You cannot approve join requests in this group.');
+        await admitLocked(groupId, account, request.inviteId);
+      }),
+    rejectJoin: (groupId: string, account: HexString): Promise<void> =>
+      serial(async () => {
+        const row = await getRow(groupId);
+        const request = row?.joinRequests?.find(r => r.account === account);
+        if (!row || !request) return;
+        await putRow({ ...row, joinRequests: (row.joinRequests ?? []).filter(r => r.account !== account) });
+        await deps.sendControl(account, { tag: 'joinDecision', value: { groupId, inviteId: request.inviteId, status: 1 } });
+      }),
+    /** Pins or unpins one message (0011 `pinned`, at most 10). */
+    setPinned: (groupId: string, messageId: string, pinned: boolean): Promise<void> =>
+      changeState(groupId, s => {
+        const without = s.pinned.filter(id => id !== messageId);
+        if (pinned && without.length >= GROUP2_BOUNDS.pinned) throw new Error('A group has at most 10 pinned messages. Unpin one first.');
+        return { ...s, pinned: pinned ? [...without, messageId] : without };
+      }).then(() => undefined),
+    /** Name, slow mode, join policy, history for newcomers: one state statement for all of them. */
+    setSettings: (groupId: string, settings: Partial<Pick<GroupState, 'name' | 'slowModeSecs' | 'joinPolicy' | 'historyShare'>>): Promise<void> =>
+      changeState(groupId, s => ({ ...s, ...settings })).then(() => undefined),
+    /** Member ↔ admin (0011: a role-0 member's change needs `manage admins`; only the owner changes an admin). */
+    setRole: (groupId: string, account: HexString, role: 0 | 1): Promise<void> =>
+      changeState(groupId, s => setMember(s, account, role === ROLES.admin ? { role, permissions: ADMIN_PERMISSIONS } : { role, permissions: s.defaultPermissions })).then(() => undefined),
+    setPermissions: (groupId: string, account: HexString, permissions: number): Promise<void> =>
+      changeState(groupId, s => setMember(s, account, { permissions: permissions & ALL_PERMISSIONS })).then(() => undefined),
+    /** The owner hands the group to `account` and stays an admin with every flag. */
+    transferOwnership: (groupId: string, account: HexString): Promise<void> =>
+      changeState(groupId, s => {
+        if (memberOf(s, self)?.role !== ROLES.owner) throw new Error('Only the owner can hand over the group.');
+        return setMember(setMember(s, account, { role: ROLES.owner, permissions: ALL_PERMISSIONS }), self, { role: ROLES.admin, permissions: ALL_PERMISSIONS });
+      }).then(() => undefined),
+    /** A stranger's invite, accepted: the group is watched and its state read now. */
+    acceptInvite: (groupId: string): Promise<void> =>
+      serial(async () => {
+        const row = await getRow(groupId);
+        if (!row || !isV2(row) || row.self !== 'invited') return;
+        await putRow({ ...row, self: 'member', invitedBy: null });
+        await reindex();
+        const key = row.epoch ? keyOf(row, row.epoch) : undefined;
+        if (key) await sweep([bytesToHex(deriveEpoch(key.key, row.id, key.epoch).topic)]);
+      }),
   };
 };

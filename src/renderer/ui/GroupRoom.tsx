@@ -5,7 +5,7 @@
 // once and can be undone for a few seconds (§10 "Destructive Actions Must Be
 // Undoable").
 
-import { Bell, BellOff, UserPlus, Users, X } from 'lucide-react';
+import { Bell, BellOff, ChevronDown, Pin, UserPlus, Users, X } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -16,7 +16,7 @@ import type { BotCommand } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import { PERMISSIONS, ROLES } from '../domain/chat/groupCodec';
 import { getGroup, memberName } from '../domain/chat/groups';
-import { can, isV2, memberOf } from '../domain/chat/groupsV2';
+import { can, heirOf, isV2, memberOf, slowModeWait, slowModeWords } from '../domain/chat/groupsV2';
 import type { ChatManager } from '../domain/chat/manager';
 import { forwardText } from '../domain/chat/chatActions';
 import { listMessages, setRoomMuted } from '../domain/chat/messages';
@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/cn';
 
 import { GroupAvatar, PeerAvatar } from './Avatar';
+import { GroupSettings, InviteSection, JoinRequests, RoleEditor, mayManage } from './GroupAdmin';
 import { BotBadge } from './BotBadge';
 import { memberCount } from './ChatList';
 import { Composer } from './Composer';
@@ -102,8 +103,13 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<HexString | null>(null);
   const v2 = isV2(group);
-  const admin = v2 ? can(memberOf(group.state, self), PERMISSIONS.add) : group.admin === self;
+  const me = v2 ? memberOf(group.state, self) : null;
+  const admin = v2 ? can(me, PERMISSIONS.add) : group.admin === self;
+  // 0011 heir rule: the owner leaving hands the group to the longest-standing admin.
+  const heir = v2 && me?.role === ROLES.owner && group.state ? heirOf(group.state) : null;
+  const ownerStuck = v2 && me?.role === ROLES.owner && !heir;
   const active = group.self === 'member';
   const needle = query.trim().toLowerCase();
   const candidates =
@@ -114,7 +120,10 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
   const others = (without: HexString | null) =>
     group.members.filter(member => member.account !== self && member.account !== without).map(member => ({ account: member.account, username: member.username }));
 
-  const run = (work: Promise<void>, what: string) => work.catch((cause: unknown) => setError(`${plainError(cause, what)} Try again.`));
+  const run = (work: Promise<void>, what: string) => {
+    setError(null);
+    return work.catch((cause: unknown) => setError(`${plainError(cause, what)} Try again.`));
+  };
 
   const add = (contact: ContactRow) => {
     setError(null);
@@ -171,13 +180,10 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
           // v2: the role is the state; "member" alone says nothing new next to a member's role.
           const state = removing ? 'removing…' : v2 && status === 'member' ? null : status;
           const words = [member.account === self ? 'you' : null, role, state].filter(Boolean).join(' · ');
-          return (
-            <div
-              key={member.account}
-              className="group/member flex items-center gap-3 px-4 py-2 transition-colors hover:bg-surface-container focus-within:bg-surface-container"
-              data-testid="member-row"
-              data-status={status}
-            >
+          const manageable = v2 && active && mayManage(group, self, member.account);
+          const open = manageable && editing === member.account;
+          const who = (
+            <>
               <PeerAvatar name={member.username} size="sm" />
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1">
@@ -188,6 +194,31 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
                   {words}
                 </p>
               </div>
+            </>
+          );
+          return (
+            <div key={member.account} className={cn(open && 'bg-surface-container')}>
+            <div
+              className="group/member flex items-center gap-3 px-4 py-2 transition-colors hover:bg-surface-container focus-within:bg-surface-container"
+              data-testid="member-row"
+              data-status={status}
+            >
+              {manageable ? (
+                // M16b: the role and flags open inline under the row.
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                  aria-expanded={open}
+                  aria-label={`Role of ${member.username}`}
+                  data-testid="member-manage"
+                  onClick={() => setEditing(current => (current === member.account ? null : member.account))}
+                >
+                  {who}
+                  <ChevronDown className={cn('size-4 shrink-0 text-fg-tertiary transition-transform', open && 'rotate-180')} aria-hidden />
+                </button>
+              ) : (
+                who
+              )}
               {mayRemove(group, self, member.account) && !removing ? (
                 <Button
                   variant="ghost"
@@ -204,8 +235,13 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
                 </Button>
               ) : null}
             </div>
+            {open ? <RoleEditor group={group} self={self} member={member} manager={manager} run={run} /> : null}
+            </div>
           );
         })}
+        {v2 && active && (can(me, PERMISSIONS.approve) || can(me, PERMISSIONS.add)) ? <JoinRequests group={group} manager={manager} run={run} /> : null}
+        {v2 && active && can(me, PERMISSIONS.add) ? <InviteSection group={group} manager={manager} run={run} later={later} /> : null}
+        {v2 && active && can(me, PERMISSIONS.info) ? <GroupSettings key={group.name} group={group} manager={manager} run={run} /> : null}
       </div>
       {admin && active ? (
         <div className="flex shrink-0 flex-col gap-1 px-4 pt-2">
@@ -262,20 +298,114 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
           </Button>
         ) : null}
         {active ? (
-          <Button
-            variant="destructive"
-            className="cursor-pointer rounded-medium"
-            data-testid="group-leave"
-            disabled={pending.has('leave')}
-            onClick={() => later('leave', `You left ${group.name}`, () => manager.leaveGroup(group.id))}
-          >
-            {pending.has('leave') ? 'Leaving…' : 'Leave group'}
-          </Button>
+          <>
+            {heir ? <p className="text-body-s text-fg-secondary">When you leave, {memberName(group, heir.account)} becomes the owner.</p> : null}
+            {ownerStuck ? <p className="text-body-s text-fg-secondary">Make someone an admin first: the longest-standing admin becomes the owner when you leave.</p> : null}
+            <Button
+              variant="destructive"
+              className="cursor-pointer rounded-medium"
+              data-testid="group-leave"
+              disabled={pending.has('leave') || ownerStuck}
+              onClick={() => later('leave', `You left ${group.name}`, () => manager.leaveGroup(group.id))}
+            >
+              {pending.has('leave') ? 'Leaving…' : 'Leave group'}
+            </Button>
+          </>
         ) : (
           <p className="text-body-s text-fg-secondary">{group.self === 'removed' ? 'You were removed from this group.' : 'You left this group.'}</p>
         )}
       </div>
     </aside>
+  );
+};
+
+/**
+ * M16b: the group's pinned messages (the state, so every member sees the
+ * same), newest first. A click jumps to the message and moves on to the next
+ * pin, as Telegram's bar does. Inline at the top of the room, never an overlay.
+ */
+const PinBar = ({ pinned, rows, canUnpin, onJump, onUnpin }: { pinned: readonly string[]; rows: readonly MessageRow[]; canUnpin: boolean; onJump: (messageId: string) => void; onUnpin: (messageId: string) => void }) => {
+  const [at, setAt] = useState(0);
+  if (pinned.length === 0) return null;
+  const newestFirst = [...pinned].reverse();
+  const index = Math.min(at, newestFirst.length - 1);
+  const id = newestFirst[index]!;
+  const row = rows.find(r => r.messageId === id);
+  return (
+    <div className="mx-4 mb-1 flex shrink-0 items-center gap-1 rounded-nested bg-surface-nested pe-1" data-testid="pin-bar">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-nested px-3 py-2 text-left transition-colors hover:bg-surface-container"
+        onClick={() => {
+          onJump(id);
+          setAt((index + 1) % newestFirst.length);
+        }}
+      >
+        <Pin className="size-4 shrink-0 text-fg-secondary" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block text-label-m text-fg-primary">{newestFirst.length > 1 ? `Pinned message ${index + 1} of ${newestFirst.length}` : 'Pinned message'}</span>
+          <span className="block truncate text-body-s text-fg-secondary" data-testid="pin-text">
+            {row ? messagePreview(row) : 'A message from before you joined'}
+          </span>
+        </span>
+      </button>
+      {canUnpin ? (
+        <Button variant="ghost" size="icon-sm" className="cursor-pointer rounded-full font-normal" aria-label="Unpin" onClick={() => onUnpin(id)}>
+          <X className="size-4 text-fg-secondary" />
+        </Button>
+      ) : null}
+    </div>
+  );
+};
+
+/** Seconds left of our slow-mode wait (0011: the sender's client keeps slow mode); the clock ticks only while slow mode binds us. */
+const useSlowModeWait = (group: GroupRow | undefined, self: HexString): number => {
+  const me = group && isV2(group) ? memberOf(group.state, self) : null;
+  const binds = me?.role === ROLES.member && (group?.state?.slowModeSecs ?? 0) > 0;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!binds) return;
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [binds]);
+  return binds ? Math.ceil(slowModeWait(group?.state, me, group?.lastSentAt, now) / 1000) : 0;
+};
+
+/** M16b: a stranger's `welcome` waits here until the person joins or declines (review M16 answer 5). */
+const InviteRow = ({ group, manager, onDecline }: { group: GroupRow; manager: ChatManager; onDecline: () => void }) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col items-center gap-3 px-4 py-4 text-center" data-testid="group-invite">
+      <p className="text-body-m text-fg-secondary">
+        {group.invitedBy?.username ?? 'Someone'} invited you to {group.name ? `“${group.name}”` : 'a private group'}. They are not one of your contacts, so you decide: nothing from the group shows until you join.
+      </p>
+      {error ? (
+        <p role="alert" className="text-body-s text-fg-error">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Button
+          className="h-auto cursor-pointer rounded-full px-8 py-3 text-label-l"
+          disabled={busy}
+          data-testid="invite-join"
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            manager
+              .acceptGroupInvite(group.id)
+              .catch((cause: unknown) => setError(`${plainError(cause, 'You did not join.')} Try again.`))
+              .finally(() => setBusy(false));
+          }}
+        >
+          {busy ? 'Joining…' : 'Join group'}
+        </Button>
+        <Button variant="ghost" className="cursor-pointer rounded-medium font-normal" disabled={busy} onClick={onDecline} data-testid="invite-decline">
+          Decline
+        </Button>
+      </div>
+    </div>
   );
 };
 
@@ -301,6 +431,8 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
   const [mode, setMode] = useState<Mode>({ mode: 'new' });
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
+  const [pinJump, setPinJump] = useState<{ messageId: string; request: number } | null>(null);
+  const slowWait = useSlowModeWait(group, self);
   const peerInfo = new Map(peerInfoRows.map(row => [row.peerId, row]));
   const chatActions = useChatActions();
   // "Clear history" waits out its Undo time with the messages hidden (M12e).
@@ -338,6 +470,11 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
 
   if (!group) return null;
   const active = group.self === 'member';
+  const v2 = isV2(group);
+  const me = v2 ? memberOf(group.state, self) : null;
+  const pinned = v2 ? (group.state?.pinned ?? []) : [];
+  const mayPin = v2 && active && can(me, PERMISSIONS.pin);
+  const slowSecs = v2 && me?.role === ROLES.member ? (group.state?.slowModeSecs ?? 0) : 0;
   const senderOf = (row: MessageRow) => (row.senderAccountId ? memberName(group, row.senderAccountId) : null);
   // The commands of the bots in the group (spec 0008), once each.
   const commands: BotCommand[] = [];
@@ -433,6 +570,10 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
         : undefined,
       retry: row.direction === 'outgoing' && row.status === 'failed' ? () => guarded(manager.retry(peer, row.messageId), 'The message was not sent.') : undefined,
       remove: isOwnText(row) ? { label: 'Delete for everyone', run: () => requestDelete(row) } : undefined,
+      pin:
+        mayPin && row.direction !== 'system'
+          ? { pinned: pinned.includes(row.messageId), run: () => guarded(manager.pinGroupMessage(group.id, row.messageId, !pinned.includes(row.messageId)), 'The pin did not change.') }
+          : undefined,
     };
   };
 
@@ -463,9 +604,11 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
             </span>
           }
         >
-          <IconToggle label="Members" pressed={panel} onClick={() => setPanel(open => !open)} testId="members-toggle">
-            <Users className="size-5 text-fg-secondary" />
-          </IconToggle>
+          {group.self !== 'invited' ? (
+            <IconToggle label="Members" pressed={panel} onClick={() => setPanel(open => !open)} testId="members-toggle">
+              <Users className="size-5 text-fg-secondary" />
+            </IconToggle>
+          ) : null}
           {room ? (
             <IconToggle label={muted ? 'Unmute' : 'Mute'} pressed={muted} onClick={() => void setRoomMuted(peer, !muted)} testId="mute-toggle">
               {muted ? <BellOff className="size-5 text-fg-secondary" /> : <Bell className="size-5 text-fg-secondary" />}
@@ -473,6 +616,13 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
           ) : null}
           <RoomMenu subject={{ peer, name: group.name, kind: 'group', room, member: active }} />
         </RoomHeader>
+        <PinBar
+          pinned={pinned}
+          rows={messages ?? NO_ROWS}
+          canUnpin={mayPin}
+          onJump={messageId => setPinJump(current => ({ messageId, request: (current?.request ?? 0) + 1 }))}
+          onUnpin={messageId => guarded(manager.pinGroupMessage(group.id, messageId, false), 'The pin did not change.')}
+        />
         <MessageFlow
           rows={clearing ? NO_ROWS : (messages ?? [])}
           peerName={group.name}
@@ -485,7 +635,7 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
           }}
           deleting={deleting}
           reveal={prefs.revealReplies}
-          jumpTo={scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null}
+          jumpTo={pinJump ?? (scrollToMessageId ? { messageId: scrollToMessageId, request: scrollRequest } : null)}
           senderOf={senderOf}
           empty={
             <div className="flex h-full flex-col items-center justify-center gap-1 text-center">
@@ -499,12 +649,22 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
             {error}
           </p>
         ) : null}
-        {active && group.locked ? (
+        {group.self === 'invited' ? (
+          <InviteRow group={group} manager={manager} onDecline={() => chatActions.remove(peer, group.name || 'this group', { member: false })} />
+        ) : active && group.locked ? (
           <p className="px-4 py-4 text-center text-body-m text-fg-secondary" data-testid="group-locked">
             Waiting for the new group key from an admin.
           </p>
         ) : active ? (
+          <>
+          {slowSecs > 0 ? (
+            // 0011 Limits: the sender's client keeps slow mode; this says why Send waits.
+            <p className="px-4 pb-1 text-body-s text-fg-secondary" data-testid="slow-mode">
+              Slow mode: one message every {slowModeWords(slowSecs)}.{slowWait > 0 ? ` You can send again in ${slowWait} s.` : ''}
+            </p>
+          ) : null}
           <Composer
+            sendDisabled={slowWait > 0}
             draft={draft}
             onDraft={text => {
               setDraft(text);
@@ -516,6 +676,7 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
             sendKey={prefs.sendKey}
             commands={mode.mode === 'new' ? commands : []}
           />
+          </>
         ) : (
           <p className="px-4 py-4 text-center text-body-m text-fg-secondary" data-testid="group-inactive">
             {group.self === 'removed' ? 'You were removed from this group.' : 'You left this group.'}

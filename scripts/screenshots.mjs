@@ -75,6 +75,10 @@
 //   room-group2     M16 a private group (spec 0011, fixture): epoch 2 and
 //                   "one statement per message" in the header, the removal notice
 //   group2-members  M16 its members panel: owner/admin/member, Remove hovered
+//   group-invite    M16b the same panel scrolled to "Asking to join" (a join
+//                   request by link: Approve, Reject), the invite link and settings
+//   group-roles     M16b an admin's role and flags opened inline in the panel
+//   room-pinned     M16b the pin bar at the top of the room
 //   room-attachment M15a images on Bulletin (fixture): a received photo with a
 //                   caption and Open / Save…, a sent one, one still
 //                   downloading (blurhash), one of ours storing chunk 1 of 2
@@ -154,6 +158,7 @@ const WORKER_SHOTS = {
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
+    'group-invite', 'group-roles', 'room-pinned',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice',
   ],
@@ -573,6 +578,8 @@ const GROUP2 = {
   at: Date.now() - 45 * 60_000,
   lena: { account: account('f1'), username: 'lenahart.31', at: Date.now() - 2 * 3_600_000 },
   tom: { account: account('f2'), username: 'tomfox.18' },
+  // M16b: someone who opened the invite link and waits for approval.
+  maya: { account: account('f3'), username: 'mayabrook.44' },
 };
 const group2Fixture = self => {
   const g = GROUP2;
@@ -580,8 +587,10 @@ const group2Fixture = self => {
   const peer = `group:${g.id}`;
   const entry = (who, role, permissions) => ({ account: who.account, role, permissions, posting: [], joinedAt: t(0) });
   const state = {
-    groupId: g.id, epoch: 2, version: 3, name: g.name, defaultPermissions: 1, slowModeSecs: 0, joinPolicy: 0, historyShare: 0,
-    members: [entry(self, 2, 0xff), entry(g.lena, 1, 0x13), entry(HELPER, 0, 0x01)], invites: [], pinned: [], createdAt: t(0),
+    groupId: g.id, epoch: 2, version: 5, name: g.name, defaultPermissions: 1, slowModeSecs: 0, joinPolicy: 1, historyShare: 100,
+    members: [entry(self, 2, 0xff), entry(g.lena, 1, 0x13), entry(HELPER, 0, 0x01)],
+    invites: [{ inviteId: fill(16, 0x21), secret: fill(16, 0x22), createdBy: self.account, expiresAt: 0, maxUses: 0, uses: 0 }],
+    pinned: ['fixture-group2-plan'], createdAt: t(0),
   };
   const say = (id, step, who, text, extra = {}) => ({
     messageId: `fixture-group2-${id}`, peerAccountId: peer, groupId: g.id, timestamp: t(step), direction: who ? 'incoming' : 'outgoing',
@@ -594,6 +603,7 @@ const group2Fixture = self => {
     say('ok', 2, null, 'Works for me. Who brings the map?', { reactions: [{ emoji: '👍', by: 'peer' }] }),
     say('bot', 3, HELPER, 'Sunrise is at 7:12 on Saturday and the forecast is dry.'),
     event('removed', 5, `You removed ${g.tom.username}`),
+    event('pinned', 5.5, 'You pinned a message'),
     say('map', 6, null, 'I have the map.'),
     say('see', 7, g.lena, 'Great, see you there!'),
   ];
@@ -609,6 +619,7 @@ const group2Fixture = self => {
       v: 2, epoch: 2, state, stateBytes: fill(8, 0), stateSigner: self.account,
       keys: [{ epoch: 2, key: fill(32, 0x42), openedAt: t(5), erasesAt: null, signer: self.account }],
       carry: [], pendingWelcome: null, locked: false, seenIds: [], senders: [], lastSentAt: 0, rotateAt: null,
+      joinRequests: [{ account: g.maya.account, username: g.maya.username, inviteId: fill(16, 0x21), note: '', at: t(7) }],
     },
     room: { peerAccountId: peer, groupId: g.id, unreadCount: 0, lastMessageAt: t(7), lastPreview: 'Great, see you there!', createdAt: t(0), updatedAt: t(7) },
     messages,
@@ -1775,12 +1786,40 @@ const group2Shots = async app => {
     if (await app.evaluate(app.exists('[data-testid=members-panel]'))) await app.click('[data-testid=members-toggle]');
     await app.settle();
   });
+  const openPanel = async () => {
+    await openRoom();
+    if (!(await app.evaluate(app.exists('[data-testid=members-panel]')))) await app.click('[data-testid=members-toggle]');
+    if (!(await app.waitFor(`document.querySelectorAll('[data-testid=member-row]').length === 3`, 10_000))) throw new Error('the members panel does not list three members');
+  };
+  await app.shot('room-pinned', async () => {
+    await openRoom();
+    if (await app.evaluate(app.exists('[data-testid=members-panel]'))) await app.click('[data-testid=members-toggle]');
+    if (!(await app.waitFor(`(document.querySelector('[data-testid=pin-text]')?.textContent ?? '').includes('trailhead')`, 10_000))) throw new Error('the pin bar does not show the pinned message');
+    await app.settle();
+  });
+  await app.shot('group-invite', async () => {
+    await openPanel();
+    if (!(await app.waitFor(app.exists('[data-testid=join-request]'), 10_000))) throw new Error('the join request is not in the panel');
+    await app.evaluate(`document.querySelector('[data-testid=join-requests]').scrollIntoView({ block: 'start' }); true`);
+    await app.settle();
+  });
+  await app.shot('group-roles', async () => {
+    await openPanel();
+    await app.evaluate(`document.querySelector('[data-testid=members-panel] .overflow-y-auto')?.scrollTo(0, 0); true`);
+    if (!(await app.evaluate(app.exists('[data-testid=role-editor]')))) {
+      await app.evaluate(`[...document.querySelectorAll('[data-testid=member-manage]')].find(e => e.textContent.includes(${JSON.stringify(GROUP2.lena.username)})).click(); true`);
+    }
+    if (!(await app.waitFor(app.exists('[data-testid=role-editor]'), 5_000))) throw new Error('the role editor did not open');
+    await app.settle();
+  });
   await app.shot(
     'group2-members',
     async () => {
       await openRoom();
       if (!(await app.evaluate(app.exists('[data-testid=members-panel]')))) await app.click('[data-testid=members-toggle]');
       if (!(await app.waitFor(`document.querySelectorAll('[data-testid=member-row]').length === 3`, 10_000))) throw new Error('the members panel does not list three members');
+      // group-roles leaves an editor open: this shot is the plain list.
+      await app.evaluate(`document.querySelector('[data-testid=member-manage][aria-expanded=true]')?.click(); true`);
       await app.settle();
       // The owner's Remove shows on the hovered row (design system §10: on hover, undoable).
       await app.hoverAt(`[...document.querySelectorAll('[data-testid=member-row]')].find(e => e.textContent.includes(${JSON.stringify(GROUP2.lena.username)}))`);

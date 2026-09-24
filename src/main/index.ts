@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { removeOpenedCopies } from './files';
 import { isHeadless } from './headless';
+import { installInviteLinks, openInviteLink, setInviteLinkWindow } from './inviteLinks';
 import { runAgentSelftest } from './agent/service';
 import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
@@ -29,6 +30,9 @@ if (userDataOverride) app.setPath('userData', userDataOverride);
 // Automation runs (screenshots, GUI checks) with PCD_HEADLESS=1: see headless.ts.
 const headless = isHeadless();
 
+// M16b: group invite links (`polkadotapp://g#…`) open the join view. Before `ready`.
+installInviteLinks({ headless });
+
 function createWindow(smoke: boolean): BrowserWindow {
   const win = new BrowserWindow({
     ...loadWindowBounds(),
@@ -53,6 +57,8 @@ function createWindow(smoke: boolean): BrowserWindow {
   // target=_blank. They open in the system browser, never in a new app window
   // (which would get this window's preload).
   win.webContents.setWindowOpenHandler(({ url }) => {
+    // A group invite link in a message opens here (the join view), never outside.
+    if (openInviteLink(url)) return { action: 'deny' };
     if (/^https?:\/\//.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
@@ -106,6 +112,7 @@ void app.whenReady().then(async () => {
   // Before the window exists, so macOS never gives the app a dock icon or the front.
   if (headless) app.dock?.hide();
   registerIpc(getWindow);
+  setInviteLinkWindow(getWindow);
   installAppMenu(getWindow);
   mainWindow = createWindow(process.argv.includes('--smoke'));
   mainWindow.on('closed', () => {

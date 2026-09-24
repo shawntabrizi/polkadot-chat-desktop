@@ -16,7 +16,18 @@ import { type StatementStoreAdapter, createExpiryAllocator, createSr25519Prover 
 
 import { type HexString, bytesToHex, hexToBytes, randomId } from '../../app/bytes';
 import { readChatPrefs } from '../../app/chatPrefs';
-import { type ContactRow, type GroupPeerId, type MessageRow, type PeerDevice, type RequestRow, db, groupIdOf, groupPeerOf, isGroupPeer } from '../../app/database';
+import {
+  type ContactRow,
+  type GroupJoinRow,
+  type GroupPeerId,
+  type MessageRow,
+  type PeerDevice,
+  type RequestRow,
+  db,
+  groupIdOf,
+  groupPeerOf,
+  isGroupPeer,
+} from '../../app/database';
 import type { ConnectionStatus } from '../../app/statementStore';
 import { getContact, listContacts, removeContactDevice, upsertContactDevice } from '../contacts/repository';
 import { type DeviceKeys, isUsablePeerDevice } from '../device/keys';
@@ -56,7 +67,8 @@ import {
   saveOwnGroupInfo,
   takeSeq,
 } from './groups';
-import { type GroupsV2, createGroupsV2, isV2 } from './groupsV2';
+import { joinProof } from './groupKeys';
+import { type GroupsV2, createGroupsV2, isV2, joinOpenerText, parseInviteLink } from './groupsV2';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
 import type { ButtonWire, GroupControl, IdentityChannelEvent } from './identityEvents';
 import {
@@ -235,6 +247,26 @@ export type ChatManager = {
   requestGroupHistory: (groupId: string, to?: HexString, since?: number) => Promise<HexString | null>;
   /** Spec 0011: the group topics this manager watches (the e2e reads them). */
   groupTopics: () => string[];
+  /** M16b: our invite link for the group (a new invite in the state when we have none; policy 0 becomes 1). */
+  createGroupInvite: (groupId: string) => Promise<string>;
+  /** M16b: every invite leaves the state; old links stop working. */
+  revokeGroupInvites: (groupId: string) => Promise<void>;
+  /**
+   * M16b: join by an invite link (0011 "Invite link"): a `joinRequest` to a
+   * listed admin we already chat with, else a chat request to the first one
+   * the People chain knows, with the capability in its opener. The state of
+   * the join is the `groupJoins` row until the admin's `welcome` arrives.
+   */
+  joinGroupByLink: (text: string) => Promise<{ groupId: string; name: string; member: boolean }>;
+  approveGroupJoin: (groupId: string, account: HexString) => Promise<void>;
+  rejectGroupJoin: (groupId: string, account: HexString) => Promise<void>;
+  pinGroupMessage: (groupId: string, messageId: string, pinned: boolean) => Promise<void>;
+  setGroupSettings: (groupId: string, settings: { name?: string; slowModeSecs?: number; joinPolicy?: number; historyShare?: number }) => Promise<void>;
+  setGroupRole: (groupId: string, account: HexString, role: 0 | 1) => Promise<void>;
+  setGroupPermissions: (groupId: string, account: HexString, permissions: number) => Promise<void>;
+  transferGroupOwnership: (groupId: string, account: HexString) => Promise<void>;
+  /** M16b: a stranger's invite, accepted (declining is "Delete chat"). */
+  acceptGroupInvite: (groupId: string) => Promise<void>;
   dispose: VoidFunction;
 };
 
@@ -402,8 +434,41 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
   const onGroupControl = async (sender: HexString, control: GroupControl): Promise<void> => {
     const outcome = await groupsV2.onControl(sender, control);
-    if (outcome === 'welcomed' || outcome === 'rekeyed') return;
-    if (outcome !== 'answered' && outcome !== 'done' && outcome !== 'page') console.warn('[chat] group control %s from %s: %s', control.tag, sender, outcome);
+    // M16b: our own join by link ends with the admin's welcome, or waits on its decision.
+    if (control.tag === 'welcome' && (outcome === 'welcomed' || outcome === 'rekeyed')) await db.groupJoins.delete(control.value.groupId);
+    if (control.tag === 'joinDecision') {
+      const join = await db.groupJoins.get(control.value.groupId);
+      if (join && join.admin === sender && join.status !== 'rejected')
+        await db.groupJoins.put({ ...join, status: control.value.status === 0 ? 'pending' : 'rejected', updatedAt: Date.now() });
+      return;
+    }
+    if (['welcomed', 'rekeyed', 'invited', 'answered', 'done', 'page', 'held', 'pending', 'admitted'].includes(outcome)) return;
+    console.warn('[chat] group control %s from %s: %s', control.tag, sender, outcome);
+  };
+
+  /** M16b: the joins by link that wait for this admin's chat: their `joinRequest` goes now. */
+  const sendPendingJoins = async (peer: HexString): Promise<void> => {
+    for (const join of await db.groupJoins.toArray()) {
+      if (join.admin !== peer || join.status !== 'requested') continue;
+      await submit(peer, { type: 'groupControl', control: joinRequestOf(join) }, { messageId: randomId(), timestamp: Date.now() });
+    }
+  };
+
+  const joinRequestOf = (join: GroupJoinRow): GroupControl => ({ tag: 'joinRequest', value: { groupId: join.groupId, inviteId: join.inviteId, proof: join.proof, note: '' } });
+
+  /**
+   * M16b, admin side: a chat request whose opener carries a valid `[grp:…]`
+   * capability for one of our invites is accepted at once (0011 "Invite
+   * link"); the joiner then sends `joinRequest` on the new session. A new
+   * contact made this way is marked (`joinedVia`): a stranger for welcomes.
+   */
+  const admitJoinOpener = async (request: RequestRow): Promise<void> => {
+    const groupId = await groupsV2.joinOpenerGroup(request.peerAccountId, request.welcomeMessage);
+    if (!groupId) return;
+    const known = !!(await getContact(request.peerAccountId));
+    await acceptRequest(request.requestId);
+    if (!known) await db.contacts.update(request.peerAccountId, { joinedVia: groupId });
+    console.warn('[chat] accepted a join request for %s from %s', groupId, request.peerUsername);
   };
 
   // ── Spec 0009 groups, inbound ──────────────────────────────────────────
@@ -535,6 +600,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     reachable: account => sessions.has(account),
     sendControl: (peer, control) => submit(peer, { type: 'groupControl', control }, { messageId: randomId(), timestamp: Date.now() }),
     applyMessage: (groupId, sender, message) => applyGroupEffect(groupPeerOf(groupId), groupId, sender, message, fromWire(message.content)),
+    trusted: async account => {
+      const contact = await getContact(account);
+      return !!contact && !contact.joinedVia;
+    },
+    joinRequested: async groupId => !!(await db.groupJoins.get(groupId)),
   });
   let groupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -568,6 +638,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     ensureChannel(hexToBytes(contact.accountId), contact.chatPublicKey);
     sessions.start(contact);
     guard(sendPendingInvites(contact.accountId), 'group invites');
+    guard(sendPendingJoins(contact.accountId), 'group joins');
     return contact;
   };
 
@@ -657,6 +728,35 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     return request;
   };
 
+  const acceptRequest: ChatManager['acceptRequest'] = async requestId => {
+    const request = await requireRequest(requestId, 'incoming');
+    await setRequestStatus(requestId, 'accepted');
+    const seed = { accountId: request.peerAccountId, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
+    await establishContact(seed, request.senderDevice, requestId, Date.now());
+    if (request.welcomeMessage) {
+      await addMessage(
+        {
+          messageId: requestId,
+          peerAccountId: request.peerAccountId,
+          timestamp: request.timestamp,
+          direction: 'incoming',
+          status: 'received',
+          content: { type: 'text', text: request.welcomeMessage },
+          reactions: [],
+          editedAt: null,
+        },
+        { read: true },
+      );
+    }
+    // mds.md §"Accepting a Chat Request": the accept carries this device's
+    // DeviceInfo on the identity-level session, because the peer cannot
+    // address a device it does not know yet.
+    await ensureChannel(hexToBytes(request.peerAccountId), request.peerChatPublicKey).post({
+      tag: 'deviceChatAccepted',
+      value: { requestId, device: ownDevice },
+    });
+  };
+
   // ── Transport lifecycle ────────────────────────────────────────────────
 
   const startTransport = async (): Promise<void> => {
@@ -670,7 +770,10 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       }
     }
     stopRequests = subscribeToIncomingRequests({ ownAccountId: identity.identityAccountId, statementStore }, data =>
-      guard(intakeRequestStatement({ identity, lookup }, data), 'request intake'),
+      guard(
+        intakeRequestStatement({ identity, lookup }, data).then(row => (row ? admitJoinOpener(row) : undefined)),
+        'request intake',
+      ),
     );
     guard(groupsV2.start().then(() => groupsV2.tick()), 'group topics');
     // Spec 0011 timers: key erase after 14 days, admin rotation after 7 days.
@@ -900,34 +1003,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   return {
     sendRequest: sendRequestTo,
 
-    acceptRequest: async requestId => {
-      const request = await requireRequest(requestId, 'incoming');
-      await setRequestStatus(requestId, 'accepted');
-      const seed = { accountId: request.peerAccountId, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
-      await establishContact(seed, request.senderDevice, requestId, Date.now());
-      if (request.welcomeMessage) {
-        await addMessage(
-          {
-            messageId: requestId,
-            peerAccountId: request.peerAccountId,
-            timestamp: request.timestamp,
-            direction: 'incoming',
-            status: 'received',
-            content: { type: 'text', text: request.welcomeMessage },
-            reactions: [],
-            editedAt: null,
-          },
-          { read: true },
-        );
-      }
-      // mds.md §"Accepting a Chat Request": the accept carries this device's
-      // DeviceInfo on the identity-level session, because the peer cannot
-      // address a device it does not know yet.
-      await ensureChannel(hexToBytes(request.peerAccountId), request.peerChatPublicKey).post({
-        tag: 'deviceChatAccepted',
-        value: { requestId, device: ownDevice },
-      });
-    },
+    acceptRequest,
 
     declineRequest: async requestId => {
       await requireRequest(requestId, 'incoming');
@@ -1154,6 +1230,48 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     requestGroupHistory: (groupId, to, since) => groupsV2.requestHistory(groupId, to, since === undefined ? undefined : { tag: 'timestamp', value: since }),
 
     groupTopics: () => groupsV2.topics(),
+
+    createGroupInvite: groupId => groupsV2.inviteLink(groupId),
+    revokeGroupInvites: groupId => groupsV2.revokeInvites(groupId),
+
+    joinGroupByLink: async text => {
+      const link = parseInviteLink(text);
+      if (!link) throw new Error('This is not a group invite link.');
+      if ((await getGroup(link.groupId))?.self === 'member') return { groupId: link.groupId, name: link.name, member: true };
+      const now = Date.now();
+      const base = { groupId: link.groupId, name: link.name, admins: link.admins, inviteId: link.inviteId, proof: joinProof(link.secret, self), status: 'requested' as const, createdAt: now, updatedAt: now };
+      // An admin we already chat with gets the request on that session.
+      const reachable = link.admins.find(account => sessions.has(account));
+      if (reachable) {
+        const join: GroupJoinRow = { ...base, admin: reachable };
+        await db.groupJoins.put(join);
+        await submit(reachable, { type: 'groupControl', control: joinRequestOf(join) }, { messageId: randomId(), timestamp: now });
+        return { groupId: link.groupId, name: link.name, member: false };
+      }
+      for (const account of link.admins) {
+        if (await isBlocked(account)) continue;
+        const peer = await lookup.getPeerIdentity(hexToBytes(account)).catch(() => null);
+        if (!peer) continue;
+        await db.groupJoins.put({ ...base, admin: account });
+        // The capability rides in the opener; the admin's client accepts it at once and we send `joinRequest` then.
+        await sendRequestTo(peer, joinOpenerText(link.name, link.inviteId, base.proof));
+        return { groupId: link.groupId, name: link.name, member: false };
+      }
+      throw new Error('No admin of this group could be found on the network.');
+    },
+
+    approveGroupJoin: (groupId, account) => groupsV2.approveJoin(groupId, account),
+    rejectGroupJoin: (groupId, account) => groupsV2.rejectJoin(groupId, account),
+    pinGroupMessage: (groupId, messageId, pinned) => groupsV2.setPinned(groupId, messageId, pinned),
+    setGroupSettings: async (groupId, settings) => {
+      const name = settings.name?.trim();
+      if (name !== undefined && (name === '' || [...name].length > MAX_GROUP_NAME)) throw new Error(`A group name has 1 to ${MAX_GROUP_NAME} characters.`);
+      await groupsV2.setSettings(groupId, { ...settings, ...(name !== undefined ? { name } : {}) });
+    },
+    setGroupRole: (groupId, account, role) => groupsV2.setRole(groupId, account, role),
+    setGroupPermissions: (groupId, account, permissions) => groupsV2.setPermissions(groupId, account, permissions),
+    transferGroupOwnership: (groupId, account) => groupsV2.transferOwnership(groupId, account),
+    acceptGroupInvite: groupId => groupsV2.acceptInvite(groupId),
 
     dispose: () => {
       disposed = true;

@@ -13,6 +13,7 @@ import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistan
 import type { BotInfo } from '../domain/chat/content';
 import type { ChatManager } from '../domain/chat/manager';
 import { displayName } from '../domain/chat/chatActions';
+import { parseInviteLink } from '../domain/chat/groupsV2';
 import { searchMessages } from '../domain/chat/messages';
 import { FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
 import type { IdentityLookup } from '../domain/identity/lookup';
@@ -20,7 +21,7 @@ import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-import { AssistantAvatar, PeerAvatar } from './Avatar';
+import { AssistantAvatar, GroupAvatar, PeerAvatar } from './Avatar';
 import { BotBadge } from './BotBadge';
 import { type ChatSelection, type ChatTarget, type ListData, type Row, useChatRows } from './ChatList';
 import { ChatRow } from './ChatRow';
@@ -71,6 +72,8 @@ type PanelProps = {
   onNewGroup?: () => void;
   /** The New group view is open (the row shows it). */
   newGroupActive?: boolean;
+  /** M16b: a pasted group invite link opens its join view. */
+  onJoinLink?: (text: string) => void;
   /** What the pane shows while the field is empty: the chat list. */
   children: ReactNode;
 };
@@ -124,6 +127,7 @@ export const SearchPane = ({
   onPickGlobal,
   onNewGroup,
   newGroupActive = false,
+  onJoinLink,
   children,
 }: PanelProps) => {
   const field = useRef<HTMLInputElement>(null);
@@ -132,6 +136,7 @@ export const SearchPane = ({
   const [highlight, setHighlight] = useState<{ query: string; key: string | null }>({ query: '', key: null });
   const typed = query.trim();
   const active = typed !== '' || adding;
+  const invite = onJoinLink ? parseInviteLink(typed) : null;
   const prefix = globalQuery(query);
 
   useEffect(() => {
@@ -245,7 +250,7 @@ export const SearchPane = ({
     );
   };
 
-  const nothing = typed !== '' && !searching && sections.order.length === 0;
+  const nothing = typed !== '' && !searching && sections.order.length === 0 && !invite;
 
   return (
     <>
@@ -262,6 +267,18 @@ export const SearchPane = ({
       />
       {active ? (
         <div ref={list} className="-mx-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2" data-testid="search-results">
+          {invite && onJoinLink ? (
+            <ChatRow
+              testId="join-link"
+              avatar={<GroupAvatar name={invite.name} />}
+              name={`Join ${invite.name}`}
+              time={null}
+              preview="Group invite link: ask an admin to let you in"
+              unread={0}
+              selected={false}
+              onClick={() => onJoinLink(typed)}
+            />
+          ) : null}
           {adding && typed === '' && onNewGroup ? (
             <ChatRow
               testId="new-group"

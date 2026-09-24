@@ -3605,3 +3605,112 @@ Reviewed by the agent: `room-file` shows a received PDF row ("Download · 2.2 MB
 ### git status --short
 
 (clean after the commit)
+
+## M16b — Groups v2 supergroup features (spec 0011) (2026-09-24)
+
+### npm run check (last lines)
+
+```
+ Test Files  84 passed (84)
+      Tests  742 passed (742)
+   Start at  03:04:27
+   Duration  16.52s (transform 3.11s, setup 1.26s, import 13.47s, tests 44.43s, environment 4ms)
+check:tokens: clean (178 files)
+```
+
+Exit 0 (tsc and eslint print nothing when clean).
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<temp> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:group2b (parent lines; a = pcdbenchfinb, b = pcdbenchfina, scratch bot from pca 587159f, stopped and deleted after)
+
+```
+BOT_CREATE pcdgrpkfhrm (scratch PCA_BOTS_DIR, brain echo, allow pcdbenchfinb.54) at=0.0s
+BOT_REGISTERED pcdgrpkfhrm.16 0x36f9b4ac29f2a64632f3241fdbdcdd7679e1890b75637b48dd9d5f45027a334a at=61.3s
+PEOPLE a=pcdbenchfinb.54 b=pcdbenchfina.25 bot=pcdgrpkfhrm.16 at=64.1s
+GROUP_READY group=a2d97231-467f-4371-951a-dd53a7244cee a=277ac94f-bc9d-4606-832f-a4e3ff4ef2ed bot=889B9CD6-40B9-4F7D-99F4-1EC84F757D62 at=77.9s
+JOIN_APPROVED policy=1 a accepted the chat request itself (auto-accepted), b heard pending, approve cost 2 submissions (the state; the welcome and the history ride the DM), b epoch=1 at=82.1s
+HISTORY_OK b has both earlier messages and the line "History shared by pcdbenchfinb.54" at=83.1s
+PIN_OK cost 1 statement(s); b's state pins 1 at=84.4s
+SLOW_OK b's second message waited (0 submissions in 3 s), a hid the forged one, the held one reached a 11.6 s after the first at=97.3s
+PROMOTED_OK cost 1 statement(s); b is admin with flags 0xbf at=99.0s
+BOT_REMOVED_OK by b in 2 submissions; a epoch=2 members=2 signer=b (pcdbenchfina.25); bot: {"time":"2026-09-24T07:03:16.492Z","event":"BOT_GROUP2_KEY_R at=100.2s
+GROUP2B_OK at=100.2s
+```
+
+Exit 0. The child lines of the slow-mode step, for the record:
+
+```
+[a] SENT2 id=277ac94f-bc9d-4606-832f-a4e3ff4ef2ed at=1790233372897 status=sent submissions=1
+[a] INVITE link=<not echoed> policy=1 invites=1 statements=1
+[b] JOIN_SENT group=a2d97231-467f-4371-951a-dd53a7244cee status=requested contact_before=false
+[a] JOIN_QUEUED from=pcdbenchfina.25 contact=auto-accepted
+[b] JOIN_STATUS pending
+[a] APPROVED submissions=2 members=3
+[a] SETTINGS_DONE statements=1 slow=10 history=100 policy=1
+[b] SENT2 id=7d853c4b-1d22-48b3-8d5d-1f1f61620393 at=1790233382058 status=sent submissions=1
+[b] HELD submissions=0 status=sending
+[a] GOT_TEXT id=7d853c4b-1d22-48b3-8d5d-1f1f61620393 received=1790233385362 text="slow one"
+[b] FORGED id=forged-1790233385363
+[a] HIDDEN id=forged-1790233385363
+[a] GOT_TEXT id=310ef397-1441-4bb0-9617-b6a08c11a4eb received=1790233393659 text="slow two"
+```
+
+### npm run e2e:group2 (M16 regression on the final code: epoch keys now come from the `keys` table)
+
+```
+V2_CREATED group=bdda7d32-1d87-4301-bf58-cdef10ea2813 create_statements=1 b epoch=1 bot joined at=57.4s
+ONE_SUBMISSION submissions=1 messages=1 at=57.8s
+BOT_REPLY_OK id=30CF6788-1227-40D4-98AA-0150EA270E07 text="Echo: hello bot" bot statements on Topic_1: ChMsgs_1=1 at=59.1s
+CARRY_OK b got 3 messages from a's current statement after a restart at=65.5s
+REMOVED_LOCKED_OUT submissions=2 b: no entry, epoch=1, a's epoch-2 statements=2 opened=0 at=67.0s
+BOT_EPOCH2_OK text="Echo: after b left" on Topic_2 at=68.3s
+HISTORY_OK the bot's page brought back id=30CF6788-1227-40D4-98AA-0150EA270E07 ("History shared by pcdgrpwstbe.66") at=69.3s
+MIGRATED_OK group=ab29a535-43a1-4d96-81b8-ca5a00827af1 b kept its v1 row (true) and read a's v2 message at=74.3s
+GROUP2_OK at=74.3s
+```
+
+### npm run e2e:group (v1 unchanged; last lines)
+
+```
+[a] EXIT
+[b] EXIT
+GROUP_OK at=20.3s
+```
+
+### Screenshots (PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcdbenchqmwk/identity.json node scripts/screenshots.mjs --only room-pinned,group-invite,group-roles,room-group2,group2-members)
+
+```
+PNGs:
+  .agent-runs/screens/berlin-day/room-group2.png
+  .agent-runs/screens/berlin-night/room-group2.png
+  .agent-runs/screens/berlin-day/room-pinned.png
+  .agent-runs/screens/berlin-night/room-pinned.png
+  .agent-runs/screens/berlin-day/group-invite.png
+  .agent-runs/screens/berlin-night/group-invite.png
+  .agent-runs/screens/berlin-day/group-roles.png
+  .agent-runs/screens/berlin-night/group-roles.png
+  .agent-runs/screens/berlin-day/group2-members.png
+  .agent-runs/screens/berlin-night/group2-members.png
+SCREENSHOTS_OK in 10.0 s
+```
+
+The main worker ran as pcdbenchqmwk instead of its default pcde2e, so this run could not collide with another agent's pcde2e run. All five shots are fixtures.
+
+### npm run package (the URL scheme in the bundle)
+
+```
+  • building        target=DMG arch=arm64 file=dist/Polkadot Chat-0.1.0-arm64.dmg
+$ plutil -extract CFBundleURLTypes json -o - "dist/mac-arm64/Polkadot Chat.app/Contents/Info.plist"
+[{"CFBundleTypeRole":"Editor","CFBundleURLName":"Polkadot Chat invite link","CFBundleURLSchemes":["polkadotapp"]}]
+```
+
+The built bundle was never opened. LaunchServices had listed it on its own; it was unregistered (`lsregister -u`) and `dist/` deleted, and no handler for `polkadotapp` is set on this Mac afterwards.
+
+### Not run
+
+- Opening a `polkadotapp://g#…` link from another app into the packaged app: that needs the packaged app installed as the scheme's handler on the owner's Mac (see docs/questions.md "## M16b", first item). The routing is covered by `src/main/inviteLinks.spec.ts` and the paste path by the join view.

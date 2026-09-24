@@ -203,3 +203,12 @@ Write the question, what you did meanwhile, and the date.
 - **Keys table.** Review M15a item 5 (one `keys` table for attachment and epoch keys) and review M16 (keys table in M16b's carry) name the same table. M15b did not add it, so two agents do not add two Dexie versions for one table. Attachment keys stay in the message row until M16b's table lands; then they move with a migration. Right?
 - **Video** (M15.md "Later: M15b … video (poster frame as thumbnail)") was not in this run's brief and is not built; a received video shows as a file row. M15c, or its own step?
 - **Album stores run one image after the other.** Four photos wait four best blocks (~6 s each on devnet). One store call with every chunk of the album (at most 14) would put them in flight at once; the renderer then maps progress back to the items. Worth it?
+
+## M16b (2026-09-24)
+
+- **Registering `polkadotapp://` takes the whole scheme.** macOS gives a scheme to one app. Once the packaged Polkadot Chat is the handler, every `polkadotapp://` link opens it, pairing links (`polkadotapp://pair?handshake=…`) included, and the app drops what is not an invite link. Registered as ruled (packaged runs only); should the invite link use its own scheme or an https wrapper instead, or should the app hand other `polkadotapp://` links on?
+- **Attachment keys are not in the `keys` table yet.** The brief asked for epoch keys and attachment keys; attachment keys are message content in the message rows, and moving them changes the attachment pipeline the M15b agent is changing now. Epoch keys moved. Move attachment keys after M15b lands?
+- **A new epoch at each join when `historyShare` is 0** (0011 "History for late joiners") is not built: the cost table ("Admin adds a member: 1 + 1 DM", "Join by link ~6 once") has no rotation in it. Which one holds?
+- **The history line**: "History shared by <name>" (the brief) or "<admitter> shared recent messages" (the spec)? The brief's is built.
+- **Slow mode at the receiver hides only carriers more than 2 s early** (network delay); pca hides at the exact interval. Should both use a grace?
+- **A contact made only by a join request stays a stranger for welcomes** (`joinedVia`), even after the two chat. Should a message the person sends that contact clear the mark?

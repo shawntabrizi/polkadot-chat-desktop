@@ -15,6 +15,13 @@ export type OpenableUrl = {
   display: string;
 };
 
+/**
+ * M16b (spec 0011 ruling 9): a group invite link, `polkadotapp://g#<InviteLink
+ * base64url>`. The app opens it itself (the join view); its fragment never
+ * goes to a server or to another app.
+ */
+export const isGroupInviteUrl = (value: string): boolean => /^polkadotapp:\/\/g#[A-Za-z0-9_-]+$/i.test(value.trim()) && value.length <= MAX_URL_CHARS;
+
 export const openableUrl = (value: string): OpenableUrl | null => {
   if (value.length > MAX_URL_CHARS) return null;
   let url: URL;

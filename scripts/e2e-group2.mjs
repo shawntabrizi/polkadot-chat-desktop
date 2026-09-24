@@ -357,6 +357,8 @@ async function child() {
   const { isLiveFrame } = await load('src/renderer/domain/chat/content.ts');
   const { deriveEpoch, open, VARIANT } = await load('src/renderer/domain/chat/groupKeys.ts');
   const { decodeGroupData } = await load('src/renderer/domain/chat/groupCodec.ts');
+  // M16b: epoch keys live sealed in the `keys` table, not on the group row.
+  const { loadGroupKeys } = await load('src/renderer/domain/chat/groupKeyStore.ts');
 
   setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
   setMetadataCache(metadataCache());
@@ -415,8 +417,7 @@ async function child() {
   };
   /** Statements on the epoch's topic, from the group's key this client holds. */
   const epochOf = async (epoch) => {
-    const group = await getGroup(groupId);
-    const key = group?.keys?.find((k) => k.epoch === epoch && !k.fork);
+    const key = (await loadGroupKeys(groupId)).find((k) => k.epoch === epoch && !k.fork);
     return key ? deriveEpoch(key.key, groupId, epoch) : null;
   };
   const statementsOn = async (topic) => {
@@ -558,18 +559,18 @@ async function child() {
           const found = await getGroup(rest[0]);
           return found?.locked ? found : null;
         }, WAIT_MS);
-        if (group) console.log(`LOCKED epoch=${group.epoch} keys=${group.keys.map((k) => k.epoch).join(',')}`);
+        if (group) console.log(`LOCKED epoch=${group.epoch} keys=${(await loadGroupKeys(rest[0])).map((k) => k.epoch).join(',')}`);
       }
       if (command === 'TRY_OPEN') {
         // Every key this client ever held for the group, against every statement a signed on the topic.
         const [topicHex, signerHex] = rest;
-        const group = await getGroup(groupId);
+        const keys = await loadGroupKeys(groupId);
         const found = (await statementsOn(bytesOf(topicHex))).filter((s) => (s.proof?.value?.signer ?? '').toLowerCase() === signerHex.toLowerCase());
         let opened = 0;
         for (const statement of found) {
           const data = decodeGroupData(statement.data);
           if (data.tag === 'rekey') continue;
-          for (const key of group.keys ?? []) {
+          for (const key of keys) {
             try {
               await open(deriveEpoch(key.key, groupId, 2).msgKey, { signer: signerHex, epoch: 2, variant: data.tag === 'state' ? VARIANT.state : VARIANT.messages, sealed: data.value });
               opened += 1;

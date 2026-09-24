@@ -40,6 +40,7 @@ import { BalanceChip, Pocket } from './Pocket';
 import { Room } from './Room';
 import { FaucetRoom } from './FaucetRoom';
 import { GroupRoom, NewGroupRoom } from './GroupRoom';
+import { JoinGroupRoom } from './JoinGroup';
 import { DraftRoom, SearchPane } from './Search';
 import { Settings } from './Settings';
 import { toSs58 } from './format';
@@ -58,6 +59,8 @@ export type Selection =
   | { kind: 'pocket' }
   /** M12: "New group" from the New chat panel. */
   | { kind: 'newGroup' }
+  /** M16b: a group invite link, pasted in the search or clicked in a message. */
+  | { kind: 'joinGroup'; link: string }
   /** M12i: "Meet the demo bots", once after sign-up. */
   | { kind: 'demoIntro' };
 
@@ -207,9 +210,16 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
       }
     });
     const stopMenu = desktopApp.onMenuSettings(() => setSelection({ kind: 'settings' }));
+    // M16b: a group invite link (the OS, a message link, a button) opens the join view.
+    const openLink = (link: string) => setSelection({ kind: 'joinGroup', link });
+    const stopLink = desktopApp.onOpenLink(openLink);
+    void desktopApp.takeOpenLink().then(link => {
+      if (link) openLink(link);
+    });
     return () => {
       stopOpen();
       stopMenu();
+      stopLink();
     };
   }, [desktopApp]);
 
@@ -363,6 +373,19 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             }}
           />
         );
+      case 'joinGroup':
+        return (
+          <JoinGroupRoom
+            key={selection.link}
+            link={selection.link}
+            manager={runtime?.manager ?? null}
+            onOpen={peer => {
+              setLeft('chats');
+              exitSearch();
+              setSelection({ kind: 'room', peer });
+            }}
+          />
+        );
       case 'demoIntro':
         return (
           <DemoIntro
@@ -436,6 +459,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
                 onPickGlobal={result => void pick(result)}
                 onNewGroup={() => setSelection({ kind: 'newGroup' })}
                 newGroupActive={selection.kind === 'newGroup'}
+                onJoinLink={link => setSelection({ kind: 'joinGroup', link })}
               >
                 {pendingIncoming.length > 0 ? (
                   <button

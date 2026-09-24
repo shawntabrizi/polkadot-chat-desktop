@@ -68,6 +68,8 @@ const api: DesktopApi = {
     onNotifyOpen: listen(IPC.notifyOpen),
     onMenuSettings: listener => listen<void>(IPC.menuSettings)(() => listener()),
     openUrl: url => ipcRenderer.invoke(IPC.openUrl, url),
+    onOpenLink: listen(IPC.appOpenLink),
+    takeOpenLink: () => ipcRenderer.invoke(IPC.appTakeOpenLink),
   },
   diagnostics: {
     add: delta => {
@@ -98,6 +100,9 @@ const api: DesktopApi = {
   files: {
     open: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileOpen, bytes, name, mime),
     save: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileSave, bytes, name, mime),
+  },
+  storage: {
+    atRestKey: () => ipcRenderer.invoke(IPC.storageAtRestKey),
   },
 };
 

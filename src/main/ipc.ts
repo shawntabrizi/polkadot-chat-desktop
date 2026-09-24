@@ -53,6 +53,8 @@ import { createDiagnostics } from './diagnostics';
 import { readMetadata, writeMetadata } from './metadataCache';
 import { isHeadless } from './headless';
 import { showNotification } from './notify';
+import { openInviteLink, takePendingInviteLink } from './inviteLinks';
+import { storageKey } from './storageKey';
 
 // The mobile app's rule: lowercase letters only, 6 to 29 of them.
 const USERNAME = /^[a-z]{6,29}$/;
@@ -552,6 +554,8 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   ipcMain.handle(IPC.openUrl, async (_event, value: unknown): Promise<void> => {
     const target = typeof value === 'string' ? openableUrl(value) : null;
     if (!target) throw new Error('Only https and polkadotapp links can be opened.');
+    // M16b: a group invite link is ours to open (the join view), not another app's.
+    if (openInviteLink(target.href)) return;
     await shell.openExternal(target.href);
   });
 
@@ -559,7 +563,12 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (typeof conversationId === 'string') assistantStreams.get(conversationId)?.abort();
   });
 
-  // The only channel that carries secrets. It exists so the renderer can seed
+  // M16b: the at-rest key of the renderer's `keys` table (epoch keys). It is
+  // not the identity: a new random key per profile, held by safeStorage.
+  ipcMain.handle(IPC.storageAtRestKey, (): Uint8Array => storageKey());
+  ipcMain.handle(IPC.appTakeOpenLink, (): string | null => takePendingInviteLink());
+
+  // The only channel that carries identity secrets. It exists so the renderer can seed
   // its Dexie device and identity rows (single device: the identity wallet is
   // the statement account; the device has its own encryption key). It sends
   // derived keys, never the mnemonic.

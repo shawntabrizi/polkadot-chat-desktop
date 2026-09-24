@@ -28,6 +28,8 @@ export const IPC = {
   notifyShow: 'notify:show',
   notifyOpen: 'notify:open',
   appSetBadge: 'app:setBadge',
+  appOpenLink: 'app:openLink',
+  appTakeOpenLink: 'app:takeOpenLink',
   menuSettings: 'menu:settings',
   openUrl: 'open:url',
   chainDryRun: 'chain:dryRun',
@@ -57,6 +59,7 @@ export const IPC = {
   bulletinFetch: 'bulletin:fetch',
   fileOpen: 'file:open',
   fileSave: 'file:save',
+  storageAtRestKey: 'storage:atRestKey',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -316,8 +319,14 @@ export type DesktopAppApi = {
   /**
    * Opens a button's link in the system browser (spec 0006), after the user
    * saw its host. Only https and polkadotapp links; anything else rejects.
+   * A group invite link (`polkadotapp://g#…`) is not handed out: it comes
+   * back as `onOpenLink`.
    */
   openUrl: (url: string) => Promise<void>;
+  /** M16b: a group invite link to open in the app (the OS, a message link, a button). */
+  onOpenLink: (listener: (url: string) => void) => () => void;
+  /** M16b: the invite link that launched the app before the page listened, once. */
+  takeOpenLink: () => Promise<string | null>;
 };
 
 /**
@@ -427,6 +436,11 @@ export type DesktopFilesApi = {
   save: (bytes: Uint8Array, name: string | null, mime: string) => Promise<boolean>;
 };
 
+/** M16b: the key that seals the renderer's `keys` table at rest (safeStorage in main). */
+export type DesktopStorageApi = {
+  atRestKey: () => Promise<Uint8Array>;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
@@ -438,6 +452,7 @@ export type DesktopApi = {
   agent: DesktopAgentApi;
   bulletin: DesktopBulletinApi;
   files: DesktopFilesApi;
+  storage: DesktopStorageApi;
 };
 
 declare global {
