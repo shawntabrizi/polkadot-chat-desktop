@@ -3,7 +3,8 @@
  * a bot sent about itself, and the two facts the automatic `/start` needs.
  *
  * `botInfo`: the highest `version` wins; a lower one is ignored (a replay, or
- * a bot that went back). The greeting becomes one system-style row the first
+ * a bot that went back). An equal version sent later replaces the stored one
+ * (spec 0008 v3: the bot resends it with a new `pending`). The greeting becomes one system-style row the first
  * time a peer's info arrives, never again.
  */
 
@@ -32,7 +33,10 @@ export const applyBotInfo = (peer: PeerId, info: BotInfo, arrivedAt: number): Pr
     const stored = row.botInfo;
     if (stored && info.version < stored.version) return 'older';
     const result: BotInfoResult = !stored ? 'first' : info.version > stored.version ? 'updated' : 'same';
-    await db.peerInfo.put({ ...row, botInfo: result === 'same' ? stored : info, botInfoAt: arrivedAt });
+    // Spec 0008 v3: the bot resends the same version with a new `pending`, so an
+    // equal version replaces the stored one, unless it was sent before it (a late replay).
+    const earlier = result === 'same' && row.botInfoAt !== null && arrivedAt < row.botInfoAt;
+    await db.peerInfo.put({ ...row, botInfo: earlier ? stored : info, botInfoAt: earlier ? row.botInfoAt : arrivedAt });
     if (result === 'first' && info.greeting.trim() !== '') {
       await addMessage(
         {

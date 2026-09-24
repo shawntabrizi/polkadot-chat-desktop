@@ -20,7 +20,10 @@
 // M11b: nothing here knows the Meter. The contract, the view, the decimals
 // and the price per reply come from the `balance` hint of pcdmeter's spec
 // 0008 botInfo (HINT …), as the app's room header reads them.
-// Exit 0 METER_OK; 10 E2E_TIMEOUT <stage> on any timeout; 11 DRIP_REFUSED
+//  4. M12f: two more answers (replies pending in the bot's batch), `/balance`,
+//     and the header's number (chain − the latest botInfo's `pending`, as the
+//     room header computes it) must equal the bot's (HEADER_MATCHES_BALANCE).
+// Exit 0 METER_OK then HEADER_MATCHES_BALANCE; 10 E2E_TIMEOUT <stage> on any timeout; 11 DRIP_REFUSED
 // (the faucet bot answered with a text, e.g. its 10 min limit); 3
 // PEER_KEY_UNSUPPORTED; 1 any other failure (NO_BALANCE_HINT: the bot's
 // botInfo declares no balance). Prints no secret.
@@ -98,7 +101,7 @@ const { toSs58 } = await load('src/renderer/ui/format.ts');
 const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
 const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');
 const { decodeTxIntent, formatUnits } = await load('src/shared/txIntent.ts');
-const { decodeUint256, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf } = await load('src/shared/balanceHint.ts');
+const { decodeUint256, headerParts, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf } = await load('src/shared/balanceHint.ts');
 
 setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
 setMetadataCache(metadataCache());
@@ -330,4 +333,47 @@ console.log(`CHARGE_REFERENCES ${references.length} (${references.map((row) => r
 console.log(`METERED_OK ${questionCount} answers, ${drops} charge(s): ${formatUnits(afterTopUp, hint.decimals)} → ${formatUnits(last, hint.decimals)} ${hint.unit}`);
 const finalized = await waitFor(async () => ((await ownReference())?.content.reference.status === 'finalized' ? true : null), 1);
 console.log(`TOPUP_REFERENCE ${(await ownReference())?.content.reference.status}${finalized ? '' : ' (finality is shown when it comes; nothing waited for it)'}`);
-finish(0, 'METER_OK');
+console.log('METER_OK');
+
+// ── 4. M12f (spec 0008 v3): the header's one number equals the bot's /balance ──
+// Two more metered replies leave replies pending in the bot's batch (the chain
+// lags the bot); the header shows chain − pending of the latest botInfo, read
+// as the room header reads it: the stored hint (peerInfo) and headerParts.
+// New rows only: a bot timestamp a little ahead of this clock would let an earlier answer match a time window.
+const seenIds = async () => new Set((await rowsOf(meter.accountHex)).map((row) => row.messageId));
+for (let n = 0; n < 2; n++) {
+  const known = await seenIds();
+  await manager.sendMessage(meter.accountHex, { type: 'text', text: QUESTIONS[n + 1] });
+  const answer = await waitFor(
+    async () =>
+      (await rowsOf(meter.accountHex)).find(
+        (row) => row.direction === 'incoming' && !known.has(row.messageId) && (row.content.type === 'text' || row.content.type === 'buttons') && !isStatus(row),
+      ),
+    ANSWER_WAIT_MS,
+  );
+  if (!answer) timeout(`pending answer ${n + 1}`);
+  console.log(`PENDING_ANSWER ${n + 1} ${oneLine(answer.content.text)} pending=${(await storedHint())?.pending ?? 'none'} at=${at()}`);
+}
+const beforeBalance = await seenIds();
+await manager.sendMessage(meter.accountHex, { type: 'text', text: '/balance' });
+const balanceReply = await waitFor(
+  async () =>
+    (await rowsOf(meter.accountHex)).find(
+      (row) => row.direction === 'incoming' && !beforeBalance.has(row.messageId) && (row.content.type === 'text' || row.content.type === 'buttons') && /^Balance: /.test(row.content.text),
+    ),
+  BUTTON_WAIT_MS,
+);
+if (!balanceReply) timeout('/balance answer');
+const botNumber = /^Balance: (\S+ PAS)/.exec(balanceReply.content.text)?.[1] ?? null;
+console.log(`BOT_BALANCE "${oneLine(balanceReply.content.text)}"`);
+// A charge may land between the bot's read and ours; its botInfo (pending 0) rides the charge's reference, so look again for a short while.
+let header = null;
+const matched = await waitFor(async () => {
+  const stored = await storedHint();
+  if (!stored) return null;
+  header = headerParts(stored, await readBalance());
+  return header.amount === botNumber ? header : null;
+}, 20_000);
+if (!matched) finish(1, `HEADER_MISMATCH header="${header?.amount}" split="${header?.split}" bot="${botNumber}"`);
+console.log(`HEADER ${matched.label}: ${matched.amount}${matched.replies ? ` (${matched.replies})` : ''}${matched.split ? ` tooltip="${matched.split}"` : ''}`);
+finish(0, `HEADER_MATCHES_BALANCE ${matched.amount}`);

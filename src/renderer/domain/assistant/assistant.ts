@@ -87,10 +87,12 @@ export const buildContext = (rows: MessageRow[]): AssistantChatMessage[] => {
     .filter(row => row.direction !== 'system' && (row.content.type === 'text' || row.content.type === 'buttons') && row.content.text.trim() !== '')
     .filter(row => !(row.direction === 'incoming' && row.status !== 'received'))
     .slice(-CONTEXT_TURNS)
-    .map((row): AssistantChatMessage => ({
-      role: row.direction === 'outgoing' ? 'user' : 'assistant',
-      content: row.content.type === 'text' || row.content.type === 'buttons' ? row.content.text : '',
-    }));
+    .map((row): AssistantChatMessage => {
+      const text = row.content.type === 'text' || row.content.type === 'buttons' ? row.content.text : '';
+      // A forwarded message is someone's words the user asks about, not the user's own (M12f).
+      const content = row.direction === 'outgoing' && row.forwardedFrom ? `Forwarded from ${row.forwardedFrom}:\n${text}` : text;
+      return { role: row.direction === 'outgoing' ? 'user' : 'assistant', content };
+    });
   return [{ role: 'system', content: SYSTEM_PROMPT }, ...turns];
 };
 
@@ -98,8 +100,11 @@ export const buildContext = (rows: MessageRow[]): AssistantChatMessage[] => {
 export type AssistantActivityLine = { messageId: string; title: string } | null;
 
 export type AssistantChat = {
-  /** Adds the user's message and starts the reply. Rejects when the main process refuses. */
-  send: (text: string) => Promise<void>;
+  /**
+   * Adds the user's message and starts the reply. Rejects when the main process refuses.
+   * `forwardedFrom` (M12f "Ask the Assistant"): a message forwarded here; it is never run as a command.
+   */
+  send: (text: string, options?: { forwardedFrom?: string }) => Promise<void>;
   /** Stops the reply that is streaming; its text so far stays. */
   stop: () => Promise<void>;
   /**
@@ -340,8 +345,8 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
   };
 
   return {
-    send: async text => {
-      if (await runCommand(text)) return;
+    send: async (text, options = {}) => {
+      if (!options.forwardedFrom && (await runCommand(text))) return;
       // Ended replies are painted from their rows now; their in-memory text can go.
       stream.forget(ended);
       const earlier = await listMessages(ASSISTANT_PEER);
@@ -354,6 +359,7 @@ export const createAssistantChat = (api: Api, now: () => number = Date.now): Ass
         content: { type: 'text', text },
         reactions: [],
         editedAt: null,
+        ...(options.forwardedFrom ? { forwardedFrom: options.forwardedFrom } : {}),
       };
       await addMessage(outgoing);
       lastSentAt = outgoing.timestamp;

@@ -2558,3 +2558,92 @@ The room-level actions were also driven once in the real app with a scratch copy
 ### git status --short
 
 This file is part of the commit, so the result is in the M12e hand-off report.
+
+## M12f (2026-09-24)
+
+Every app launch below set `PCD_HEADLESS=1` and a throwaway `PCD_USER_DATA_DIR` (smoke: `mktemp -d`; screenshots: the script makes its own profiles and removes them).
+
+### npm run check
+
+```
+ Test Files  63 passed (63)
+      Tests  525 passed (525)
+   Start at  22:42:23
+   Duration  22.01s (transform 8.78s, setup 4.55s, import 43.52s, tests 55.41s, environment 5ms)
+> polkadot-chat-desktop@0.1.0 check:tokens
+> node scripts/check-tokens.mjs
+check:tokens: clean (149 files)
+```
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) npm run smoke
+
+```
+✓ built in 399ms
+SMOKE_OK
+```
+
+### npm run e2e:meter
+
+Run at 22:37 local against pcdmeter.01 (pid 3440, the v3 code; see decisions "When to run e2e:meter"). `[ws]` status lines left out.
+
+```
+SELF 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653 pcdecejakd.11
+people best block #7056925
+ASSET_HUB 0xd6eec261… account 5H4Lootcg7w7A4xgsPFDabSiEqFUTpdykagVckcwcx6kyQYW free 33.9185 PAS
+FOUND pcdfaucet.77 0xe018148187403b5980aa5d91d38e108af1aadcb91ce5bc47f104ef04554e680f
+DRIP_SENT via=request to=pcdfaucet.77 (/drip 15zdx99gXuCabbyCq2JDikGs6TF8A8C7q5Qyn3cJB38H9sMf)
+DRIP_OK status=inBlock block=13628050 note="Dripped 1 PAS" hash=0x4b09f1fb545ac87ab0628437b398f822577d840e2b838a1f827d6c51227c72c8 at=9.9s
+FOUND pcdmeter.01 0x9eb681bc39734224669e4e261c271d628e8d87e4c3cb25636c0e248267ea2967
+REQUEST_SENT pcdmeter
+ACCEPTED pcdmeter at=12.2s
+HINT label="with Meter" contract=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 selector=0x70a08231 decimals=18 unit=PAS perReply=100000000000000000 chain=0xd6eec261…
+BALANCE_BEFORE with Meter: 4.6 PAS (~46 replies)
+SENT /topup
+BUTTON "Top up 1 PAS" text="Add 1 PAS to your balance. Each reply costs 0.1 PAS." intent: Top up 1 PAS; calls=1 kind=1 to=0x30b0c001431a1addb8c11a060ada4d6a7033cf21 value=10000000000
+DRYRUN ok=true fee=0.0014 PAS (14510503 planck) mapsAccount=false value=10000000000
+SIGNED hash=0xdff7c2738f4338df55b859601885e899e04d99a74784a0fbdab3f2113ffb95bf at=19.0s
+TOPUP_OK status=inBlock block=13628056 row="Top up (1 PAS)" at=21.0s
+BALANCE with Meter: 5.6 PAS (~56 replies) (5600000000000000000 PAS units; before with Meter: 4.6 PAS (~46 replies))
+ANSWER 1 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate, 
+BALANCE with Meter: 5.6 PAS (~56 replies) (no charge yet: pending in the bot's batch) at=52.5s
+ANSWER 2 A parachain is an independent blockchain that runs on the Polkadot network, sharing security with other parach
+BALANCE with Meter: 5.6 PAS (~56 replies) (no charge yet: pending in the bot's batch) at=83.2s
+ANSWER 3 Asset Hub is a Polkadot parachain that provides a common platform for creating, managing, and trading custom a
+BALANCE with Meter: 5.6 PAS (~56 replies) (no charge yet: pending in the bot's batch) at=114.9s
+ANSWER 4 A smart contract is a self-executing program stored on a blockchain that automatically enforces agreements and
+BALANCE with Meter: 5.1 PAS (~51 replies) (-0.5 PAS) reference="balance: 51000000000" inBlock at=122.4s
+ANSWER 5 Polkadot is a blockchain network that connects multiple independent blockchains (parachains) to interoperate, 
+BALANCE with Meter: 5.1 PAS (~51 replies) (no charge yet: pending in the bot's batch) at=152.3s
+CHARGE_REFERENCES 1 (inBlock)
+METERED_OK 5 answers, 1 charge(s): 5.6 → 5.1 PAS
+TOPUP_REFERENCE finalized
+METER_OK
+PENDING_ANSWER 1 A parachain is an independent blockchain that runs on the Polkadot network, sharing security with other parach pending=200000000000000000 at=156.3s
+PENDING_ANSWER 2 Asset Hub is a Polkadot parachain that provides a common platform for creating, managing, and trading custom a pending=300000000000000000 at=160.3s
+BOT_BALANCE "Balance: 4.8 PAS · ~48 replies at 0.1 PAS each."
+HEADER with Meter: 4.8 PAS (~48 replies) tooltip="5.1 PAS on chain · 0.3 not yet charged"
+HEADER_MATCHES_BALANCE 4.8 PAS
+```
+
+### PCD_HEADLESS=1 PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots -- --only room-meter
+
+```
+0.7s built
+1.0s seeded pcdecejakd.11
+1.0s assistant engine claude
+17.3s header: "with Meter: 4.9 PAS (~49 replies)" tooltip: "5.1 PAS on chain · 0.2 not yet charged"
+17.3s saved berlin-day/room-meter.png
+22.5s header: "with Meter: 4.9 PAS (~49 replies)" tooltip: "5.1 PAS on chain · 0.2 not yet charged"
+22.6s saved berlin-night/room-meter.png
+23.1s seeded profile removed: true
+PNGs:
+  .agent-runs/screens/berlin-day/room-meter.png
+  .agent-runs/screens/berlin-night/room-meter.png
+SCREENSHOTS_OK
+```
+
+I looked at the day PNG of this run (header "with Meter: 4.9 PAS (~49 replies)", tooltip under the number "5.1 PAS on chain · 0.2 not yet charged") and at the night PNG of the run before it (same layout, with 4.4 and 4.6 PAS).
+
+### git status --short
+
+This file is part of the commit, so the result is in the M12f hand-off report.

@@ -18,13 +18,16 @@ export const listMessages = (peerAccountId: PeerId): Promise<MessageRow[]> =>
 
 export const getMessage = (messageId: string): Promise<MessageRow | undefined> => db.messages.get(messageId);
 
-const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta: number): Promise<void> => {
+const touchRoom = async (peerAccountId: PeerId, message: MessageRow, unreadDelta: number, deleted = false): Promise<void> => {
   const existing = await db.rooms.get(peerAccountId);
   const now = Date.now();
   const newest = !existing || message.timestamp >= existing.lastMessageAt;
+  // M12f (Telegram's rule): a new message from the peer brings an archived chat back, unless it is muted.
+  const unarchive = existing?.archived === true && existing.muted !== true && message.direction === 'incoming' && !deleted;
   await db.rooms.put({
     // Local state (mute, group, and since M12e archive, pin, marked unread) survives a new message.
     ...existing,
+    ...(unarchive ? { archived: false } : {}),
     peerAccountId,
     unreadCount: (existing?.unreadCount ?? 0) + unreadDelta,
     lastMessageAt: newest ? message.timestamp : existing.lastMessageAt,
@@ -55,7 +58,7 @@ export const addMessage = (row: MessageRow, options: { read?: boolean } = {}): P
     if (deleted) await db.pendingDeletions.delete(pendingKey);
     const stored = deleted ? tombstone(row) : row;
     await db.messages.add(stored);
-    await touchRoom(row.peerAccountId, stored, row.direction === 'incoming' && !options.read && !deleted ? 1 : 0);
+    await touchRoom(row.peerAccountId, stored, row.direction === 'incoming' && !options.read && !deleted ? 1 : 0, deleted);
     return true;
   });
 

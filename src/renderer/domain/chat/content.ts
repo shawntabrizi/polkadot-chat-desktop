@@ -292,6 +292,7 @@ const botInfoWire = (info: BotInfo): BotInfoWire['value'] => ({
         unit: info.balance.unit,
         perReply: info.balance.perReply === null ? undefined : BigInt(info.balance.perReply),
         label: info.balance.label,
+        ...(info.balance.pending === undefined ? {} : { pending: BigInt(info.balance.pending) }),
       }
     : undefined,
 });
@@ -312,6 +313,8 @@ const botInfoOf = (value: BotInfoWire['value']): BotInfo => ({
         unit: value.balance.unit,
         perReply: value.balance.perReply === undefined ? null : value.balance.perReply.toString(),
         label: value.balance.label,
+        // v3: absent (a v2 hint, or None) means 0 and is left out, so a v2 hint stays as it was stored.
+        ...(value.balance.pending === undefined ? {} : { pending: value.balance.pending.toString() }),
       }
     : null,
 });

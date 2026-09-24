@@ -48,12 +48,20 @@ describe('applyBotInfo (spec 0008 recipient: latest version wins)', () => {
     expect(row?.botInfoAt).toBe(100);
   });
 
-  it('keeps the stored document on the same version but records that it arrived again (the answer to /start)', async () => {
-    await applyBotInfo(PEER, info(), 100);
-    expect(await applyBotInfo(PEER, info({ description: 'changed without a bump' }), 300)).toBe('same');
+  // Spec 0008 v3 (vectors-0008c "resend rule"): the bot resends the same
+  // version with each metered reply and each charge, carrying a new `pending`.
+  // Keeping the first copy (the v2 rule) would freeze the header's number.
+  it('replaces the stored document with a later one of the same version (a new pending), without a second greeting', async () => {
+    const hint = { chainId: '0x01', contract: '0x02', selector: '0x03', decimals: 18, unit: 'PAS', perReply: null, label: 'with Meter' };
+    await applyBotInfo(PEER, info({ balance: { ...hint, pending: '100' } }), 100);
+    expect(await applyBotInfo(PEER, info({ balance: { ...hint, pending: '300' } }), 300)).toBe('same');
     const row = await getPeerInfo(PEER);
-    expect(row?.botInfo?.description).toBe('Polkadot support guide');
+    expect(row?.botInfo?.balance?.pending).toBe('300');
     expect(row?.botInfoAt).toBe(300);
+    expect((await listMessages(PEER)).filter(entry => entry.content.type === 'botGreeting')).toHaveLength(1);
+    // One sent before the stored one (a replayed statement) does not roll the pending back.
+    await applyBotInfo(PEER, info({ balance: { ...hint, pending: '100' } }), 200);
+    expect((await getPeerInfo(PEER))?.botInfo?.balance?.pending).toBe('300');
   });
 
   it('adds no row for an empty greeting', async () => {

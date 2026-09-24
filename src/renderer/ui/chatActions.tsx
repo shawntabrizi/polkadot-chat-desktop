@@ -21,6 +21,7 @@ import {
   setPinned,
   unblockPeer,
 } from '../domain/chat/chatActions';
+import { ASSISTANT_PEER, ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
 import type { ChatManager, ChatTargetId } from '../domain/chat/manager';
 import { setRoomMuted } from '../domain/chat/messages';
 import { UNDO_MS, clearKey, deleteKey, pendingActions, withdrawKey } from '../domain/chat/undo';
@@ -44,11 +45,14 @@ const later = (key: string, title: string, description: string, commit: () => Pr
   toast(title, { description, duration: UNDO_MS, action: { label: 'Undo', onClick: undo } });
 };
 
+/** The Assistant as the first Forward target (M12f): ask it about a message. */
+export const ASSISTANT_TARGET: ForwardTarget = { peer: ASSISTANT_PEER, name: ASSISTANT_USERNAME, label: 'Ask the Assistant' };
+
 /** Shell builds the one value; the list, the rooms and the bubbles read it. */
-export const useChatActionsValue = (manager: ChatManager | null, targets: readonly ForwardTarget[]): ChatActions =>
+export const useChatActionsValue = (manager: ChatManager | null, targets: readonly ForwardTarget[], assistant: AssistantChat | null = null): ChatActions =>
   useMemo(
     () => ({
-      targets,
+      targets: assistant ? [ASSISTANT_TARGET, ...targets] : targets,
       ready: manager !== null,
       remove: (peer, name, options = {}) => {
         if (!manager) return;
@@ -93,14 +97,19 @@ export const useChatActionsValue = (manager: ChatManager | null, targets: readon
       },
       forward: (target, row, from) => {
         const text = forwardText(row);
-        if (!manager || text === null) return;
+        if (text === null) return;
+        if (target.peer === ASSISTANT_PEER) {
+          assistant?.send(text, { forwardedFrom: from }).then(() => toast('Sent to the Assistant'), failed('The Assistant did not get the message.'));
+          return;
+        }
+        if (!manager) return;
         manager.sendMessage(target.peer as ChatTargetId, { type: 'text', text }, { forwardedFrom: from }).then(
           () => toast(`Forwarded to ${target.name}`),
           failed(`The message was not forwarded to ${target.name}.`),
         );
       },
     }),
-    [manager, targets],
+    [manager, targets, assistant],
   );
 
 /** What a menu is about. `kind` decides which items it offers. */

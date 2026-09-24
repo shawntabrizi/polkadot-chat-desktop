@@ -7,8 +7,8 @@ import { createContext, useContext } from 'react';
 import type { HexString } from '../app/bytes';
 import type { MessageRow, PeerId } from '../app/database';
 
-/** A chat a message can be forwarded to. */
-export type ForwardTarget = { peer: PeerId; name: string };
+/** A chat a message can be forwarded to. `label` replaces the name in the menu ("Ask the Assistant"). */
+export type ForwardTarget = { peer: PeerId; name: string; label?: string };
 
 export type ChatActions = {
   /** Contacts and groups (you are in) of the list, in its order; the Forward menu lists them. */

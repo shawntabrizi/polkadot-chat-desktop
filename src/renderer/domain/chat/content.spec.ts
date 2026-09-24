@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { type TxIntent, decodeTxIntent, encodeTxIntent } from '../../../shared/txIntent';
 import { bytesToHex, hexToBytes } from '../../app/bytes';
 
-import { type OutgoingContent, type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
+import { type BotInfo, type OutgoingContent, type TxReference, fromWire, isLiveFrame, keyboardOf, liveFrameText, previewOf, referenceLine, toWire } from './content';
 import { BOT_INFO_BOUNDS, type ChatContent, ChatMessageCodec, GROUP_BOUNDS } from './identityEvents';
 
 // Round-trip through the real codec: what we build must be what the apps decode.
@@ -443,6 +443,80 @@ describe('kind 244 v2: spec 0008 balance hint (M11b)', () => {
   it('keeps a hint without a price (no "~N replies")', () => {
     const stake = { ...info, balance: { ...METER_HINT, perReply: null, label: 'your stake' } };
     expect(fromWire(viaWire(toWire({ type: 'botInfo', info: stake })))).toEqual({ kind: 'botInfo', info: stake });
+  });
+});
+
+describe('kind 244 v3: spec 0008 pending on the balance hint (M12f)', () => {
+  // The bot charges in batches, so the chain lags its view by what it has
+  // metered. Without `pending` the header said 1 PAS while /balance said 0.7.
+  const METER_HINT = {
+    chainId: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
+    contract: '0x30b0c001431a1addb8c11a060ada4d6a7033cf21',
+    selector: '0x70a08231',
+    decimals: 18,
+    unit: 'PAS',
+    perReply: '100000000000000000',
+    label: 'with Meter',
+  };
+  const BOT_1 = {
+    kind: 1,
+    name: 'Guide',
+    description: 'Polkadot support guide',
+    greeting: 'Hi! Ask me about Polkadot.',
+    commands: [
+      { name: 'staking', description: 'Staking basics' },
+      { name: 'governance', description: 'How OpenGov works' },
+    ],
+    version: 1,
+  };
+  const opaque = Bytes();
+
+  /*
+   * docs/spec/vectors-0008c.md, produced by the pca codec (BOT_INFO_PENDING_VECTOR
+   * in bot-core/test/codec.test.mjs), commit 7ec24fd of this repo.
+   * (a): the v2 hint bytes alone; (b): the same with pending 0.3 PAS in the
+   * contract's 1e18 scale; (c): the BOT-1 document carrying hint (b).
+   */
+  const HINT_A =
+    '09013078643665656332363133353330356138616432353761323064303033333537323834633861613033643062646232623335376162306132323337316531316566325030b0c001431a1addb8c11a060ada4d6a7033cf211070a08231120c5041530100008a5d7845630100000000000000002877697468204d65746572';
+  const HINT_B = `${HINT_A}0100009e1869d029040000000000000000`;
+  const VECTOR_C =
+    '0x450414424f542d310030fd779001000000f40114477569646558506f6c6b61646f7420737570706f7274206775696465684869212041736b206d652061626f757420506f6c6b61646f742e081c7374616b696e67385374616b696e672062617369637328676f7665726e616e636544486f77204f70656e476f7620776f726b7301000109013078643665656332363133353330356138616432353761323064303033333537323834633861613033643062646232623335376162306132323337316531316566325030b0c001431a1addb8c11a060ada4d6a7033cf211070a08231120c5041530100008a5d7845630100000000000000002877697468204d657465720100009e1869d029040000000000000000';
+  const PENDING = '300000000000000000';
+  const encode = (info: BotInfo) =>
+    bytesToHex(opaque.enc(ChatMessageCodec.enc({ messageId: 'BOT-1', timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire({ type: 'botInfo', info }) } })));
+
+  it('decodes vector (c) to the pinned values and encodes them to the same bytes', () => {
+    const decoded = ChatMessageCodec.dec(opaque.dec(VECTOR_C));
+    const info = { ...BOT_1, balance: { ...METER_HINT, pending: PENDING } };
+    expect(fromWire(decoded.versioned.value)).toEqual({ kind: 'botInfo', info });
+    expect(encode(info)).toBe(VECTOR_C);
+    // The hint bytes are vector (b): vector (a) plus the 17 bytes of `pending`.
+    expect(VECTOR_C.endsWith(HINT_B)).toBe(true);
+  });
+
+  // An older bot (and pcdflip) sends no pending: its v2 bytes (vectors-0008b,
+  // whose hint is vector a) must still read, as a hint with no pending, and a
+  // hint without pending must encode to the same v2 bytes.
+  it('still decodes a v2 botInfo without pending (vector a), and writes nothing after `label` without one', () => {
+    const v2 = `0x0104${VECTOR_C.slice(6, -HINT_B.length)}${HINT_A}`;
+    const info = { ...BOT_1, balance: METER_HINT };
+    const decoded = fromWire(ChatMessageCodec.dec(opaque.dec(v2)).versioned.value);
+    expect(decoded).toEqual({ kind: 'botInfo', info });
+    expect(decoded.kind === 'botInfo' ? decoded.info.balance && 'pending' in decoded.info.balance : true).toBe(false);
+    expect(encode(info)).toBe(v2);
+  });
+
+  it('writes Some(0) for a pending of 0 (the bot sends it after a charge) and reads it back as 0, not as missing', () => {
+    const info = { ...BOT_1, balance: { ...METER_HINT, pending: '0' } };
+    expect(encode(info).endsWith(`${HINT_A}01${'00'.repeat(16)}`)).toBe(true);
+    expect(fromWire(viaWire(toWire({ type: 'botInfo', info })))).toEqual({ kind: 'botInfo', info });
+  });
+
+  it('reads an explicit None after `label` as no pending, and any other tag as nothing', () => {
+    const v2 = ChatMessageCodec.enc({ messageId: 'BOT-1', timestamp: 1720000000000n, versioned: { tag: 'v1', value: toWire({ type: 'botInfo', info: { ...BOT_1, balance: METER_HINT } }) } });
+    expect(fromWire(ChatMessageCodec.dec(new Uint8Array([...v2, 0])).versioned.value)).toEqual({ kind: 'botInfo', info: { ...BOT_1, balance: METER_HINT } });
+    expect(ChatMessageCodec.dec(new Uint8Array([...v2, 2])).versioned.value.tag).toBe('undecodable');
   });
 });
 

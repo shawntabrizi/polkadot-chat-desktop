@@ -117,7 +117,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const desktopApp = window.desktop?.app ?? null;
 
   const forwardTargets = useForwardTargets();
-  const chatActions = useChatActionsValue(runtime?.manager ?? null, forwardTargets);
+  const chatActions = useChatActionsValue(runtime?.manager ?? null, forwardTargets, assistant);
   const pending = usePending();
 
   // A sent request that the peer accepts turns into their room. A chat being

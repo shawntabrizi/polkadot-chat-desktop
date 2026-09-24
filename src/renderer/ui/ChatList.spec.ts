@@ -15,9 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HexString } from '../app/bytes';
 import { type MessageRow, appDatabase, db } from '../app/database';
+import { ASSISTANT_PEER } from '../domain/assistant/assistant';
+import { FAUCET_PEER } from '../domain/faucet/faucet';
 import { upsertContactDevice } from '../domain/contacts/repository';
 import { MAX_PINNED, clearHistoryLocally, deleteChatLocally, setArchived, setMarkedUnread, setNickname, setPinned } from '../domain/chat/chatActions';
-import { addMessage, countUnread, listMessages } from '../domain/chat/messages';
+import { addMessage, countUnread, ensureRoom, listMessages, setRoomMuted } from '../domain/chat/messages';
 import { UNDO_MS, clearKey, createPendingActions, deleteKey } from '../domain/chat/undo';
 
 import { buildRows, loadList, outgoingPreview } from './ChatList';
@@ -148,6 +150,31 @@ describe('pin, archive, unread', () => {
     expect(await countUnread()).toBe(2);
     await setArchived(BOB, false);
     expect(await listed()).toEqual({ main: [ALICE, BOB], archived: [] });
+  });
+
+  // M12f (Telegram): an archived chat must not hide a peer who writes again,
+  // but a muted one stays out of sight, as the user asked twice.
+  it('brings an archived chat back on a new message from the peer, unless it is muted', async () => {
+    await setArchived(BOB, true);
+    // An own message (sent from another device, or a forward) does not bring it back.
+    await addMessage(message(BOB, 'b-own', 8000, 'outgoing'));
+    expect((await listed()).archived).toEqual([BOB]);
+    await addMessage(message(BOB, 'b2', 9000));
+    expect(await listed()).toEqual({ main: [BOB, ALICE], archived: [] });
+
+    await setArchived(ALICE, true);
+    await setRoomMuted(ALICE, true);
+    await addMessage(message(ALICE, 'a9', 9500));
+    expect(await listed()).toEqual({ main: [BOB], archived: [ALICE] });
+  });
+
+  // M12f: pinned means top. The owner pins a chat to see it first, above the
+  // two fixed local rows; unpinned chats stay below them.
+  it('puts pinned chats above the Assistant and the Faucet, and the others below', async () => {
+    await ensureRoom(FAUCET_PEER);
+    await setPinned(BOB, true, 10);
+    const keys = buildRows(await loadList(), { kind: 'other' }, () => undefined).rows.map(row => row.key);
+    expect(keys).toEqual([BOB, ASSISTANT_PEER, FAUCET_PEER, ALICE]);
   });
 
   it('keeps archive, pin and marks when a new message arrives', async () => {

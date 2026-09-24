@@ -140,6 +140,21 @@ describe('the Assistant command menu (M10 step 3)', () => {
   });
 });
 
+describe('Ask the Assistant (M12f forward)', () => {
+  // A forwarded message is someone else's words: the model must see it as a
+  // quote to talk about, and a forwarded "/reset" must not wipe the chat.
+  it('sends a forwarded text as a quote with its author, never as a command', async () => {
+    const fake = fakeApi();
+    const chat = createAssistantChat(fake.api);
+    await chat.send('/reset', { forwardedFrom: 'alice' });
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.messages.at(-1)).toEqual({ role: 'user', content: 'Forwarded from alice:\n/reset' });
+    const stored = (await listMessages(ASSISTANT_PEER)).find(entry => entry.direction === 'outgoing');
+    expect(stored).toMatchObject({ forwardedFrom: 'alice', content: { type: 'text', text: '/reset' } });
+    chat.dispose();
+  });
+});
+
 describe('createAssistantChat', () => {
   it('stores the question, streams the reply into one row, and finishes it', async () => {
     const fake = fakeApi();

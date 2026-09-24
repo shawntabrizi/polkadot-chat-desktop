@@ -68,6 +68,11 @@ export type BalanceHintWire = {
   unit: string;
   perReply: bigint | undefined;
   label: string;
+  /**
+   * v3 (vectors-0008c.md): what the bot metered but has not charged yet, in
+   * the unit of the value. Undefined: not sent (a v2 hint), which means 0.
+   */
+  pending?: bigint | undefined;
 };
 /**
  * Spec 0008 `botInfo(BotInfo)`, provisional kind 244. `kind` is 0 bot, 1
@@ -177,6 +182,11 @@ const BotInfoContentCodec = Struct(BotInfoV1Fields);
 // encoder writes nothing there when it has no hint, so v1 bytes stay v1.
 const BalanceHintCodec = Struct({ chainId: str, contract: Bytes(), selector: Bytes(), decimals: u8, unit: str, perReply: Option(u128), label: str });
 const BotInfoV2ContentCodec = Struct({ ...BotInfoV1Fields, balance: Option(BalanceHintCodec) });
+// Spec 0008 v3 (docs/spec/vectors-0008c.md): `pending: Option<u128>` appended
+// to the hint. A v2 hint ends after `label`, which reads as no pending; an
+// encoder writes nothing there without one, so v2 bytes stay v2.
+const BalanceHintV3Codec = Struct({ chainId: str, contract: Bytes(), selector: Bytes(), decimals: u8, unit: str, perReply: Option(u128), label: str, pending: Option(u128) });
+const BotInfoV3ContentCodec = Struct({ ...BotInfoV1Fields, balance: Option(BalanceHintV3Codec) });
 // Spec 0007 layout (docs/spec/vectors-0007.md).
 const TransactionReferenceCodec = Struct({ chainId: str, hash: Bytes(), status: u8, block: Option(u32), note: str, intentMessageId: Option(str) });
 
@@ -269,6 +279,7 @@ const TypingMessage = envelope(TypingContentCodec);
 const SeenMessage = envelope(SeenContentCodec);
 const BotInfoMessage = envelope(BotInfoContentCodec);
 const BotInfoV2Message = envelope(BotInfoV2ContentCodec);
+const BotInfoV3Message = envelope(BotInfoV3ContentCodec);
 const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
 const GroupInfoMessage = envelope(GroupInfoCodec);
 const GroupLeaveMessage = envelope(GroupLeaveCodec);
@@ -327,8 +338,10 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
     case SEEN_KIND:
       return decodeWith(SeenMessage, bytes, value => ({ tag: 'seen', value })) ?? undecodable(header);
     case BOT_INFO_KIND: {
-      // v2 first (a hint, or an explicit None byte), then a v1 document that ends at `version`.
+      // v3 first (a hint with `pending`), then v2 (a hint that ends at `label`, or an
+      // explicit None byte), then a v1 document that ends at `version`.
       const decoded =
+        decodeWith(BotInfoV3Message, bytes, value => ({ tag: 'botInfo', value })) ??
         decodeWith(BotInfoV2Message, bytes, value => ({ tag: 'botInfo', value })) ??
         decodeWith(BotInfoMessage, bytes, value => ({ tag: 'botInfo', value: { ...value, balance: undefined } }));
       const value = decoded?.versioned.value;
@@ -413,9 +426,11 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
         return SeenMessage.enc({ ...head, kind: SEEN_KIND, content: content.value });
       case 'botInfo':
         // No hint: the v1 bytes, so a document without one reads the same everywhere.
-        return content.value.balance === undefined
-          ? BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value })
-          : BotInfoV2Message.enc({ ...head, kind: BOT_INFO_KIND, content: { ...content.value, balance: content.value.balance } });
+        if (content.value.balance === undefined) return BotInfoMessage.enc({ ...head, kind: BOT_INFO_KIND, content: content.value });
+        // v3 only when there is a pending value (0 included), so a hint without one keeps its v2 bytes.
+        return content.value.balance.pending === undefined
+          ? BotInfoV2Message.enc({ ...head, kind: BOT_INFO_KIND, content: { ...content.value, balance: content.value.balance } })
+          : BotInfoV3Message.enc({ ...head, kind: BOT_INFO_KIND, content: { ...content.value, balance: { ...content.value.balance, pending: content.value.balance.pending } } });
       case 'transactionReference':
         return TransactionReferenceMessage.enc({ ...head, kind: TRANSACTION_REFERENCE_KIND, content: content.value });
       case 'groupInfo':

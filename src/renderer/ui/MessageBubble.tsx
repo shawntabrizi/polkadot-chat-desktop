@@ -164,7 +164,7 @@ const ForwardItems = ({ from, onPick }: { from: string; onPick: (target: Forward
     <>
       {targets.map(target => (
         <DropdownMenuItem key={target.peer} onSelect={() => onPick(target)} data-testid="forward-target">
-          <span className="max-w-56 truncate">{target.name}</span>
+          <span className="max-w-56 truncate">{target.label ?? target.name}</span>
         </DropdownMenuItem>
       ))}
     </>

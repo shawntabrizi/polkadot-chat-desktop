@@ -187,7 +187,7 @@ const byPinThenActivity = (a: Row, b: Row): number => {
 };
 
 /**
- * The Assistant first and the Faucet second (local, always there), then contacts and the requests
+ * Pinned chats first (M12f), then the Assistant and the Faucet (local, always there), then contacts and the requests
  * this user sent that wait for an answer, newest activity first. Shared by
  * the list and the ⌘↑/⌘↓/⌘1…9 shortcuts, so both see one order.
  */
@@ -387,7 +387,10 @@ export const buildRows = (
   const all = [...contactRows, ...groupRows, ...outgoingRows];
   const others = all.filter(row => !row.archived).sort(byPinThenActivity);
   const archived = all.filter(row => row.archived).sort((a, b) => b.at - a.at);
-  return { rows: [assistantRow, ...(faucetRow ? [faucetRow] : []), ...others], archived, others: others.length };
+  // M12f: pinned means top, so pinned chats sit above the Assistant and the Faucet.
+  const pinned = others.filter(row => row.pinnedAt !== undefined);
+  const rest = others.filter(row => row.pinnedAt === undefined);
+  return { rows: [...pinned, assistantRow, ...(faucetRow ? [faucetRow] : []), ...rest], archived, others: others.length };
 };
 
 /** The list's order, for the keyboard shortcuts (the Archived section is not in it). */

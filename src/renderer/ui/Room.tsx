@@ -21,7 +21,7 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { AssistantSettings } from '../../shared/desktop-api';
-import { type BalanceHint, decodeUint256, hintCalldata, hintLine, hintParts, planckInHintUnits, reviveAddressOf } from '../../shared/balanceHint';
+import { type BalanceHint, decodeUint256, headerParts, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf, spendable } from '../../shared/balanceHint';
 import { CALL_KIND_REVIVE, type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
 import { AssistantAvatar, PeerAvatar } from './Avatar';
@@ -336,7 +336,8 @@ export const Room = (props: Props) => {
     const paid = balanceHint ? valueToHint(intent, balanceHint) : null;
     Promise.all([chain.dryRun(bytes), paid !== null && balanceHint && self ? readHintValue(balanceHint, self.accountId).catch(() => null) : Promise.resolve(null)])
       .then(([dryRun, current]) => {
-        const outcome = paid !== null && balanceHint && current !== null ? `After this: ${hintLine(balanceHint, current + paid)}` : null;
+        // From the header's number (M12f: less what the bot has not charged yet), so the two agree.
+        const outcome = paid !== null && balanceHint && current !== null ? `After this: ${hintLine(balanceHint, spendable(balanceHint, current) + paid)}` : null;
         update({ state: dryRun.ok ? { phase: 'ready', dryRun } : { phase: 'refused', reason: dryRun.error ?? 'The test run failed.', dryRun }, outcome });
       })
       .catch((cause: unknown) => update({ state: { phase: 'refused', reason: `${plainError(cause, 'The network did not answer.')} Try again.`, dryRun: null } }));
@@ -559,11 +560,26 @@ export const Room = (props: Props) => {
     // The hint object is new on every read of the row; its key says when it changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hintKey, selfAccount, bestBlock, lastIncomingId, lastReferenceState]);
-  const balanceParts = balanceHint && hintValue !== null ? hintParts(balanceHint, hintValue) : null;
+  // Spec 0008 v3 (M12f): one number, the chain's value less the `pending` of the
+  // bot's latest botInfo (the same as its /balance); the split only in a tooltip.
+  const balanceParts = balanceHint && hintValue !== null ? headerParts(balanceHint, hintValue) : null;
   // Mono for the amount only (design system §7: balances line up as they change).
+  const amount = balanceParts ? <span className="font-mono">{balanceParts.amount}</span> : null;
   const balanceLine = balanceParts ? (
     <span data-testid="bot-balance">
-      {balanceParts.label}: <span className="font-mono">{balanceParts.amount}</span>
+      {balanceParts.label}:{' '}
+      {balanceParts.split ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span tabIndex={0} className="cursor-default rounded-sm underline decoration-dotted underline-offset-2" data-testid="bot-balance-amount">
+              {amount}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" data-testid="bot-balance-split">{balanceParts.split}</TooltipContent>
+        </Tooltip>
+      ) : (
+        amount
+      )}
       {balanceParts.replies ? ` (${balanceParts.replies})` : ''}
     </span>
   ) : null;

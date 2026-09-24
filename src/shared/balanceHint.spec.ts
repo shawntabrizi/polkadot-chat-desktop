@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { type BalanceHint, decodeUint256, formatPas, hintCalldata, hintLine, planckInHintUnits, repliesFor, reviveAddressOf } from './balanceHint';
+import { type BalanceHint, decodeUint256, formatPas, headerParts, hintCalldata, hintLine, pendingOf, planckInHintUnits, repliesFor, reviveAddressOf, spendable } from './balanceHint';
 
 const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString('hex')}`;
 const bytes = (value: string) => Uint8Array.from(Buffer.from(value.replace(/^0x/, ''), 'hex'));
@@ -73,5 +73,32 @@ describe('formatPas (the balance chip)', () => {
     expect(formatPas(0n)).toBe('0 PAS');
     // A dust amount is not "0": the chip must not say the account is empty.
     expect(formatPas(1n)).toBe('<0.0001 PAS');
+  });
+});
+
+describe('the header number (spec 0008 v3 pending, M12f)', () => {
+  // The owner saw "1 PAS" in the header while /balance said 0.7: the bot
+  // charges in batches, so the chain lags by what it metered. The header must
+  // show the bot's number, and the split only in the tooltip.
+  const PAS = 10n ** 18n;
+  const withPending = (pending: bigint): BalanceHint => ({ ...meter, pending: pending.toString() });
+
+  it('shows balance − pending as the one number, with the replies it pays for', () => {
+    const parts = headerParts(withPending((3n * PAS) / 10n), PAS);
+    expect(parts).toMatchObject({ label: 'with Meter', amount: '0.7 PAS', replies: '~7 replies' });
+    expect(parts.split).toBe('1 PAS on chain · 0.3 not yet charged');
+  });
+
+  // A v2 bot (or pcdflip) sends no pending: the number is the chain's, and no tooltip.
+  it('treats a hint without pending (v2) or with pending 0 as nothing owed, with no split', () => {
+    expect(headerParts(meter, PAS)).toEqual({ label: 'with Meter', amount: '1 PAS', replies: '~10 replies', split: null });
+    expect(headerParts(withPending(0n), PAS).split).toBeNull();
+    expect(pendingOf(meter)).toBe(0n);
+  });
+
+  // The charge can land in a best block a moment before the bot's botInfo with
+  // the new pending: never show a negative balance meanwhile.
+  it('never goes below 0', () => {
+    expect(spendable(withPending(2n * PAS), PAS)).toBe(0n);
   });
 });

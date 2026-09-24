@@ -104,6 +104,8 @@
 // run; when only M12e shots are named, no helper peer is started and none of
 // the network flows run (owner ask, 2026-09-24: faster runs).
 //   npm run screenshots -- --only chat-menu,archived,settings-privacy
+// M12f room-meter.png (also a fixture shot): a meter bot's room with the
+// header's one number (balance − pending) and its tooltip open.
 //
 //   PCD_SCREENSHOT_IDENTITY=.agent-runs/identity-pcde2e/identity.json npm run screenshots
 //
@@ -153,7 +155,7 @@ const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--on
 const only = onlyArg ? new Set(onlyArg.split(',').map(name => name.trim().replace(/\.png$/, '')).filter(Boolean)) : null;
 const wanted = name => only === null || only.has(name);
 // M12e: shots taken from local fixture rows, with no network flow before them.
-const MANAGE_SHOTS = ['chat-menu', 'archived', 'settings-privacy'];
+const MANAGE_SHOTS = ['chat-menu', 'archived', 'settings-privacy', 'room-meter'];
 const SEEDED_SHOTS = ['chats', 'room', 'room-deleted', 'room-buttons', 'room-seen', 'room-typing', 'room-bot', 'room-tx', 'room-tx-done', 'pocket', 'group-create', 'room-group', 'group-members', 'room-flip', 'room-flip-done', 'faucet', 'search-bots', 'assistant', 'settings', 'settings-diagnostics', 'keyboard', 'requests', 'search', 'search-jump', 'search-empty', 'search-no-results'];
 const manageOnly = only !== null && !SEEDED_SHOTS.some(name => only.has(name));
 if (only) {
@@ -310,6 +312,79 @@ const FIXTURE = (() => {
   };
 })();
 
+/**
+ * M12f room-meter.png: a fictional meter bot (one made-up device, so the
+ * header shows the balance and not "no device") whose stored spec 0008 v3
+ * botInfo carries the real Meter hint with 0.2 PAS pending. The header reads
+ * the seeded identity's real Meter balance at the best block and shows
+ * balance − pending, with the split in the tooltip. The room holds only the
+ * greeting and an own message: no incoming row, so no read receipt goes out.
+ */
+const METER_FIXTURE = (() => {
+  const account = `0x${'c7'.repeat(32)}`;
+  const at = Date.now() - 5 * 60_000;
+  return {
+    account,
+    username: 'meterbot.07',
+    at,
+    info: {
+      kind: 0,
+      name: 'Meter bot',
+      description: 'Pay per reply, 0.1 PAS each',
+      greeting: 'Hi! Each answer costs 0.1 PAS from your balance with Meter.',
+      commands: [{ name: 'balance', description: 'Your balance' }, { name: 'topup', description: 'Add 1 PAS' }],
+      version: 2,
+      balance: {
+        chainId: '0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2',
+        contract: '0x30b0c001431a1addb8c11a060ada4d6a7033cf21',
+        selector: '0x70a08231',
+        decimals: 18,
+        unit: 'PAS',
+        perReply: '100000000000000000',
+        label: 'with Meter',
+        pending: '200000000000000000',
+      },
+    },
+  };
+})();
+
+const seedMeterFixture = app =>
+  app.evaluate(`new Promise((done, fail) => {
+    const f = ${JSON.stringify(METER_FIXTURE)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages', 'peerInfo'], 'readwrite');
+      const bytes = b => new Uint8Array(32).fill(b);
+      tx.objectStore('contacts').put({ accountId: f.account, username: f.username, chatPublicKey: bytes(7), devices: [{ statementAccountId: bytes(8), encryptionPublicKey: bytes(9) }], createdAt: f.at, updatedAt: f.at });
+      tx.objectStore('rooms').put({ peerAccountId: f.account, unreadCount: 0, lastMessageAt: f.at + 1, lastPreview: 'What is a parachain?', createdAt: f.at, updatedAt: f.at });
+      tx.objectStore('messages').put({ messageId: 'bot-greeting:' + f.account, peerAccountId: f.account, timestamp: f.at, direction: 'system', status: 'received',
+        content: { type: 'botGreeting', text: f.info.greeting }, reactions: [], editedAt: null });
+      tx.objectStore('messages').put({ messageId: 'fixture-meter-question', peerAccountId: f.account, timestamp: f.at + 1, direction: 'outgoing', status: 'delivered',
+        content: { type: 'text', text: 'What is a parachain?' }, reactions: [], editedAt: null });
+      tx.objectStore('peerInfo').put({ peerId: f.account, botInfo: f.info, botInfoAt: f.at, botSignalAt: f.at, startSentAt: null });
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
+const unseedMeterFixture = app =>
+  app.evaluate(`new Promise((done, fail) => {
+    const f = ${JSON.stringify(METER_FIXTURE)};
+    const open = indexedDB.open('polkadot-chat-web');
+    open.onerror = () => fail(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction(['contacts', 'rooms', 'messages', 'peerInfo'], 'readwrite');
+      tx.objectStore('contacts').delete(f.account);
+      tx.objectStore('rooms').delete(f.account);
+      tx.objectStore('messages').delete('bot-greeting:' + f.account);
+      tx.objectStore('messages').delete('fixture-meter-question');
+      tx.objectStore('peerInfo').delete(f.account);
+      tx.oncomplete = () => { open.result.close(); done(true); };
+      tx.onerror = () => fail(tx.error);
+    };
+  })`);
+
 /** Writes the fixture (idempotent: fixed keys) into the app's IndexedDB. */
 const seedFixture = app =>
   app.evaluate(`new Promise((done, fail) => {
@@ -397,6 +472,34 @@ const manageShots = async (app, shot) => {
     await app.evaluate(`document.querySelector('[data-testid=blocked-list]').closest('section').scrollIntoView({ block: 'center' }); true`);
   });
   await unseedFixture(app);
+  if (wanted('room-meter')) {
+    await seedMeterFixture(app);
+    await app.evaluate('location.reload(); true');
+    await sleep(1000);
+    await shot(
+      'room-meter',
+      async () => {
+        if (!(await app.waitFor(`[...document.querySelectorAll('[data-testid=chat-row]')].some(r => r.textContent.includes(${JSON.stringify(METER_FIXTURE.username)}))`, 60_000))) {
+          throw new Error('the meter fixture is not in the list');
+        }
+        await app.evaluate(`[...document.querySelectorAll('[data-testid=chat-row]')].find(r => r.textContent.includes(${JSON.stringify(METER_FIXTURE.username)})).click(); true`);
+        // The chain read at the best block: the amount appears once the Meter answered.
+        if (!(await app.waitFor(app.exists('[data-testid=bot-balance-amount]'), 60_000))) {
+          const header = await app.evaluate(`document.querySelector('header')?.innerText ?? ''`);
+          throw new Error(`no balance with a pending split in the header: ${JSON.stringify(header)}`);
+        }
+        // Hover the number (a hidden window gets no focus events); the capture does not park the pointer.
+        const rect = await app.evaluate(`(() => { const r = document.querySelector('[data-testid=bot-balance-amount]').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x - 20, y: rect.y });
+        await app.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y });
+        if (!(await app.waitFor(app.exists('[data-testid=bot-balance-split]'), 10_000))) throw new Error('the tooltip did not open');
+        await app.settle();
+        log('header:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=bot-balance]').innerText`)), 'tooltip:', JSON.stringify(await app.evaluate(`document.querySelector('[data-testid=bot-balance-split]').innerText`)));
+      },
+      { now: true },
+    );
+    await unseedMeterFixture(app);
+  }
 };
 
 // ── Sign-up (a fresh profile per theme) ──────────────────────────────────
@@ -469,11 +572,11 @@ app.whenReady().then(() => {
   if (manageOnly) {
     for (const theme of THEMES) {
       const app = await launch(profile);
-      const shot = async (name, run) => {
+      const shot = async (name, run, options) => {
         if (!wanted(name)) return;
         try {
           await run();
-          await app.capture(theme, name);
+          await app.capture(theme, name, options);
         } catch (error) {
           missing.push(`${theme}/${name}.png (${error.message})`);
           log('missed', `${theme}/${name}.png:`, error.message);

@@ -129,3 +129,9 @@ Write the question, what you did meanwhile, and the date.
 - **Failed turns are charged** by pcdmeter ("Sorry — I couldn't reach my agent" cost 0.1 PAS). Queued for the pca fix round: charge only when the brain produced an answer.
 - **Groups v2 defaults** (see `docs/review/0011-groups-v2.md`): level 1 now, cap 256, history on request. Overrule if you disagree.
 - **M12e defaults**: delete keeps the contact; withdraw stops listening; blocked peers still see "delivered" (store ACK).
+
+## M12f (2026-09-24)
+
+- **Spec 0008 text.** The Recipient rule says "latest `version` wins". With v3 the bot resends the same version with a new `pending`, so the client must let an equal version replace the stored one (vectors-0008c says this; I cannot edit `docs/spec/*.md`). Please change the spec text to "a `version` ≥ the stored one replaces it".
+- **A short dip after a charge.** The charge can show in a best block a few seconds before the statement with the charge's reference and the botInfo with pending 0 arrives. In that window the header shows `new balance − old pending` (too low, never below 0). A fix would need the bot to tell the charged amount ahead of the block, or the client to hide the number while a charge is known to be in flight. Is the short dip acceptable?
+- **Forward to the Assistant does not open the Assistant.** The toast says "Sent to the Assistant" and the reply streams in its room. Should the forward also open the Assistant room, so the answer is seen at once?
