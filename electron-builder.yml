@@ -20,3 +20,6 @@ mac:
       arch: [arm64]
   category: public.app-category.social-networking
   identity: null
+  # M15b voice notes: macOS asks for the microphone with this text.
+  extendInfo:
+    NSMicrophoneUsageDescription: Polkadot Chat uses the microphone only while you record a voice message.

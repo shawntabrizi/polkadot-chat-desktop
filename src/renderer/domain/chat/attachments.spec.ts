@@ -19,13 +19,25 @@ import { sendChatRequest } from '../requests/gateway';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
 import { contentHash } from './attachmentCrypto';
-import { type PreparedFile, MAX_CONTENT_BYTES, buildAttachment, createAttachmentService, fitToBudget, getAttachmentRow, pickProblem } from './attachments';
+import {
+  type PreparedFile,
+  MAX_CONTENT_BYTES,
+  addPicked,
+  buildAttachment,
+  createAttachmentService,
+  fitToBudget,
+  gatewayFirst,
+  getAttachmentRow,
+  prepareFile,
+  wireFileName,
+} from './attachments';
 import { type AttachmentItem, fromWire, toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
 import { type IdentityChannelEvent, attachmentContentLength } from './identityEvents';
 import { type ChatManager, createChatManager } from './manager';
 import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
+import { MAX_VOICE_MS, prepareVoice } from './voice';
 
 const GENESIS = '0xe101f0fa4627d29a257645e02be86d80378fea1a2bf8fa6a918d150ebc760a59' as HexString;
 const STORE = { genesis: GENESIS, mirror: null };
@@ -121,10 +133,11 @@ const fakeBulletin = () => {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
-      fetch: async (_genesis: string, hash: string) => {
+      fetch: async (_genesis: string, hash: string, _mirror: string | null, _only?: string, gatewayFirst?: boolean) => {
         const bytes = chunks.get(hash.toLowerCase());
         if (!bytes) throw new Error('No source had the chunk.');
-        return { bytes, source: 'bitswap' };
+        log.push(`fetched ${bytes.length} ${gatewayFirst ? 'gateway-first' : 'bitswap-first'}`);
+        return { bytes, source: gatewayFirst ? 'gateway' : 'bitswap' };
       },
     },
   };
@@ -269,9 +282,105 @@ describe('the 4 KB message budget', () => {
     expect(length).toBeLessThanOrEqual(MAX_CONTENT_BYTES);
   });
 
-  it('accepts only images of at most 25 MiB in M15a', () => {
-    expect(pickProblem({ type: 'image/png', size: 300_000 })).toBeNull();
-    expect(pickProblem({ type: 'application/pdf', size: 10 })).toMatch(/Only images/);
-    expect(pickProblem({ type: 'image/jpeg', size: 25 * 1024 * 1024 + 1 })).toMatch(/at most 25 MB/);
+});
+
+const receivedAttachment = async (transport: ReturnType<typeof openPeerTransport>) => {
+  const received = await waitFor(() => transport.received.find(m => m.content.tag === 'attachment'));
+  const effect = fromWire(received.content);
+  if (effect.kind !== 'message' || effect.content.type !== 'attachment') throw new Error('not an attachment');
+  return { messageId: received.messageId, content: effect.content };
+};
+
+describe('files (M15b)', () => {
+  it('sends any file as `media = file` with its name, and the peer decrypts the same bytes', async () => {
+    const { manager, transport, peerKey, chain, service } = await setup();
+    const bytes = fill(4_000);
+    await service.send(manager, peerKey, [prepareFile({ bytes, name: 'minutes 2026-09.pdf', type: 'application/pdf' })], null);
+    const { content } = await receivedAttachment(transport);
+    const [item] = content.items as [AttachmentItem];
+    expect(item.media).toEqual({ kind: 'file' });
+    expect(item.name).toBe('minutes 2026-09.pdf');
+    expect(item.mime).toBe('application/pdf');
+    const recipient = createAttachmentService({ bulletin: chain.api, store: STORE });
+    await db.attachments.clear();
+    expect(await recipient.fetch('file-1', 0, item)).toBe('ready');
+    expect((await getAttachmentRow('file-1', 0))?.bytes).toEqual(bytes);
+  });
+
+  it('keeps a long name within the 128 bytes a receiver accepts (a longer one would drop the whole message), extension kept', () => {
+    const name = wireFileName(`${'Überweisung-'.repeat(20)}.xlsx`) as string;
+    expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(128);
+    expect(name.endsWith('….xlsx')).toBe(true);
+    expect(wireFileName('C:\\Users\\me\\secret\\plan.txt')).toBe('plan.txt');
+    // An unknown or over-long type goes out as octet-stream, never over the 64-byte bound.
+    expect(prepareFile({ bytes: fill(1), name: 'x', type: '' }).mime).toBe('application/octet-stream');
+    expect(prepareFile({ bytes: fill(1), name: 'x', type: `application/${'x'.repeat(80)}` }).mime).toBe('application/octet-stream');
+  });
+
+  it('fetches a chunk over 512 KB from the gateway first and a small last chunk by bitswap (spec 0012 source order)', async () => {
+    const chain = fakeBulletin();
+    const built = await buildAttachment([prepareFile({ bytes: fill(2_300_000), name: 'big.bin', type: '' })], null, STORE, Date.now());
+    const [item] = built.items as [AttachmentItem];
+    built.ciphertexts[0]?.forEach((chunk, i) => chain.chunks.set(bytesToHex(item.chunks[i] as Uint8Array), chunk));
+    expect([gatewayFirst(item, 0), gatewayFirst(item, 1)]).toEqual([true, false]);
+    const service = createAttachmentService({ bulletin: chain.api, store: STORE });
+    expect(await service.fetch('big', 0, item)).toBe('ready');
+    expect(chain.log.filter(line => line.startsWith('fetched'))).toEqual(['fetched 2000016 gateway-first', 'fetched 300016 bitswap-first']);
+    service.dispose();
+  });
+});
+
+describe('albums (M15b)', () => {
+  it('sends up to 4 images as one message and one statement, one caption for all', async () => {
+    const { manager, transport, peerKey, chain, service } = await setup();
+    const photos = [photo(2_000), photo(3_000), photo(4_000), photo(5_000)];
+    const before = manager.submissions.snapshot();
+    await service.send(manager, peerKey, photos, 'The island');
+    const { messageId, content } = await receivedAttachment(transport);
+    expect(manager.submissions.snapshot().submissions - before.submissions).toBe(1);
+    expect(transport.received.filter(m => m.content.tag === 'attachment')).toHaveLength(1);
+    expect(content.items).toHaveLength(4);
+    expect(content.caption).toBe('The island');
+    // Four stores (one chunk each), each item its own key.
+    expect(chain.log.filter(line => line.startsWith('stored'))).toHaveLength(4);
+    expect(new Set(content.items.map(item => bytesToHex(item.key))).size).toBe(4);
+    for (const [index, file] of photos.entries()) expect((await getAttachmentRow(messageId, index))?.bytes).toEqual(file.bytes);
+  });
+
+  it('refuses a fifth image and a mixed pick, keeping what already waits', async () => {
+    const image = { type: 'image/png', size: 10 };
+    const pdf = { type: 'application/pdf', size: 10 };
+    const four = addPicked([image, image], [image, image]);
+    expect(four).toEqual({ files: [image, image, image, image], problem: null });
+    expect(addPicked(four.files, [image]).problem).toMatch(/at most 4 images/);
+    expect(addPicked(four.files, [image]).files).toHaveLength(4);
+    expect(addPicked([], [image, pdf]).problem).toMatch(/one file at a time/);
+    // A file replaces an album in waiting, and images replace a file.
+    expect(addPicked([image, image], [pdf])).toEqual({ files: [pdf], problem: null });
+    expect(addPicked([pdf], [image])).toEqual({ files: [image], problem: null });
+    expect(addPicked([], [{ type: 'image/jpeg', size: 25 * 1024 * 1024 + 1 }]).problem).toMatch(/at most 25 MB/);
+    expect(addPicked([], [{ type: 'text/plain', size: 0 }]).problem).toMatch(/empty/);
+    // 25 MiB is the limit per message, not per item.
+    expect(addPicked([{ type: 'image/png', size: 20 * 1024 * 1024 }], [{ type: 'image/png', size: 6 * 1024 * 1024 }]).problem).toMatch(/at most 25 MB/);
+    await expect(buildAttachment([photo(10), photo(10), photo(10), photo(10), photo(10)], null, STORE, Date.now())).rejects.toThrow(/1 to 4/);
+  });
+});
+
+describe('voice notes (M15b)', () => {
+  const voice = (durationMs: number) => ({ bytes: fill(1_000), durationMs, waveform: Array.from({ length: 32 }, (_, i) => i * 8) });
+
+  it('refuses a recording over 5 minutes (spec 0012: one chunk at 24 kbps), and a 5:00 one goes', () => {
+    expect(() => prepareVoice(voice(MAX_VOICE_MS + 1))).toThrow(/at most 5 minutes/);
+    expect(prepareVoice(voice(MAX_VOICE_MS)).media).toEqual({ kind: 'voice', durationMs: MAX_VOICE_MS, waveform: voice(0).waveform });
+  });
+
+  it('goes out with its duration and 32-bar waveform, no name, and auto-downloads on the other side', async () => {
+    const { manager, transport, peerKey, service } = await setup();
+    await service.send(manager, peerKey, [prepareVoice(voice(42_000))], null);
+    const { content } = await receivedAttachment(transport);
+    const [item] = content.items as [AttachmentItem];
+    expect(item.mime).toBe('audio/webm; codecs=opus');
+    expect(item.name).toBeNull();
+    expect(item.media).toEqual({ kind: 'voice', durationMs: 42_000, waveform: voice(0).waveform });
   });
 });

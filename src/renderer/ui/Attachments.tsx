@@ -1,15 +1,37 @@
-// Spec 0012 (M15a): the composer's attach row and the image bubble. Design
-// system: inline, no modal; honest progress (chunks stored or fetched, never a
-// fake percentage); Open and Save… go through the main process.
+// Spec 0012: the composer's attach row and the attachment bubbles. M15a:
+// the image bubble. M15b: the album grid, the file row, the voice recorder
+// strip and the voice player. Design system: inline, no modal; honest
+// progress (chunks stored or fetched, never a fake percentage); Open and
+// Save… go through the main process.
 
-import { Download, ExternalLink, Loader2, Paperclip, RotateCw, X } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  Download,
+  ExternalLink,
+  File as FileIcon,
+  FileArchive,
+  FileAudio,
+  FileCode,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Loader2,
+  Pause,
+  Paperclip,
+  Play,
+  RotateCw,
+  SendHorizontal,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { AttachmentRow, MessageRow } from '../app/database';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { autoDownloads, formatSize, getAttachmentRow } from '../domain/chat/attachments';
+import { autoDownloads, formatSize, getAttachmentRow, isImageType } from '../domain/chat/attachments';
 import { decodeBlurhash } from '../domain/chat/blurhash';
 import type { AttachmentItem } from '../domain/chat/content';
+import { MAX_VOICE_MS, clockOf } from '../domain/chat/voice';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
 
@@ -27,22 +49,59 @@ const useObjectUrl = (bytes: Uint8Array | null | undefined, mime: string): strin
   return url;
 };
 
-/** The composer's inline row: the picked image, its size, Remove; the one-time notice under it. */
-export const AttachRow = ({ file, notice, onRemove }: { file: File; notice: boolean; onRemove: () => void }) => {
-  const url = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+/** A picked file's preview: the image itself, or a type icon. */
+const PickedThumb = ({ file }: { file: File }) => {
+  const image = isImageType(file.type);
+  const url = useMemo(() => (image ? URL.createObjectURL(file) : null), [file, image]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  if (url) return <img src={url} alt="" className="size-12 shrink-0 rounded-small object-cover" />;
+  return (
+    <span className="flex size-12 shrink-0 items-center justify-center rounded-small bg-surface-container">
+      <TypeIcon mime={file.type} name={file.name} className="size-6 text-fg-secondary" />
+    </span>
+  );
+};
+
+/**
+ * The composer's inline row: what waits to be sent (one file, or an album of
+ * up to 4 images), the total size, Remove; the one-time notice under it.
+ */
+export const AttachRow = ({ files, notice, onRemove }: { files: readonly File[]; notice: boolean; onRemove: (index: number | null) => void }) => {
+  const [first] = files;
+  if (!first) return null;
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  const album = files.length > 1;
+  const title = album ? `${files.length} photos` : first.name || (isImageType(first.type) ? 'Image' : 'File');
   return (
     <div className="flex flex-col gap-1" data-testid="attach-row">
       <div className="flex items-center gap-3 rounded-nested bg-surface-nested py-2 ps-2 pe-2">
-        <img src={url} alt="" className="size-12 shrink-0 rounded-small object-cover" />
+        <div className="flex shrink-0 gap-1">
+          {files.map((file, index) => (
+            <div key={`${file.name}-${index}`} className="group/thumb relative">
+              <PickedThumb file={file} />
+              {album ? (
+                <button
+                  type="button"
+                  className="absolute -end-1 -top-1 flex size-5 cursor-pointer items-center justify-center rounded-full bg-surface-container shadow-1"
+                  aria-label={`Remove photo ${index + 1}`}
+                  onClick={() => onRemove(index)}
+                >
+                  <X className="size-3 text-fg-secondary" aria-hidden />
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-label-m text-fg-primary">{file.name || 'Image'}</p>
+          <p className="truncate text-label-m text-fg-primary">{title}</p>
           <p className="text-body-s text-fg-secondary">
             <Paperclip className="me-1 inline size-3.5 align-[-2px]" aria-hidden />
-            {formatSize(file.size)} · encrypted before it leaves this computer
+            {formatSize(total)} · encrypted before it leaves this computer
           </p>
         </div>
-        <Button variant="ghost" size="sm" className="rounded-full font-normal" onClick={onRemove} data-testid="attach-remove">
+        <Button variant="ghost" size="sm" className="rounded-full font-normal" onClick={() => onRemove(null)} data-testid="attach-remove">
           <X className="size-4 text-fg-secondary" aria-hidden /> Remove
         </Button>
       </div>
@@ -53,6 +112,82 @@ export const AttachRow = ({ file, notice, onRemove }: { file: File; notice: bool
       ) : null}
     </div>
   );
+};
+
+/** The recorder strip over the composer while a voice note records: elapsed time, Cancel, Send. */
+export const VoiceRecorderStrip = ({ startedAt, busy, notice, onCancel, onSend }: { startedAt: number; busy: boolean; notice: boolean; onCancel: () => void; onSend: () => void }) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="flex flex-col gap-1" data-testid="voice-recorder">
+      <div className="flex items-center gap-3 rounded-nested bg-surface-nested py-2 ps-3 pe-2">
+        <span className={cn('size-2.5 shrink-0 rounded-full bg-fg-error', !busy && 'animate-pulse')} aria-hidden />
+        <p className="min-w-0 flex-1 text-label-m text-fg-primary tabular-nums" data-testid="voice-elapsed">
+          {busy ? 'Preparing…' : `Recording ${clockOf(now - startedAt)}`} <span className="text-body-s text-fg-tertiary">/ {clockOf(MAX_VOICE_MS)}</span>
+        </p>
+        <Button variant="ghost" size="sm" className="rounded-full font-normal" onClick={onCancel} disabled={busy} data-testid="voice-cancel">
+          <Trash2 className="size-4 text-fg-secondary" aria-hidden /> Cancel
+        </Button>
+        <Button size="sm" className="rounded-full" onClick={onSend} disabled={busy} data-testid="voice-send">
+          <SendHorizontal className="size-4" aria-hidden /> Send
+        </Button>
+      </div>
+      {notice ? (
+        <p className="px-1 text-caption text-fg-tertiary" data-testid="attach-notice">
+          {FIRST_ATTACHMENT_NOTICE}
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
+type FileKind = 'image' | 'audio' | 'video' | 'archive' | 'sheet' | 'code' | 'text' | 'other';
+
+/** A file's kind for its icon: from the MIME type, or the extension when the type is generic. */
+export const fileKindOf = (mime: string, name: string | null): FileKind => {
+  const type = mime.toLowerCase();
+  const extension = /\.([a-z0-9]{1,7})$/i.exec(name ?? '')?.[1]?.toLowerCase() ?? '';
+  if (type.startsWith('image/')) return 'image';
+  if (type.startsWith('audio/')) return 'audio';
+  if (type.startsWith('video/')) return 'video';
+  if (/zip|compressed|tar|gzip|7z|rar/.test(type) || ['zip', 'gz', 'tgz', '7z', 'rar', 'tar'].includes(extension)) return 'archive';
+  if (/spreadsheet|excel|csv/.test(type) || ['xlsx', 'xls', 'csv', 'ods', 'numbers'].includes(extension)) return 'sheet';
+  if (/json|javascript|typescript|xml|x-sh|x-python/.test(type) || ['json', 'js', 'ts', 'py', 'rs', 'sh', 'xml', 'toml', 'yaml', 'yml'].includes(extension)) return 'code';
+  if (type.startsWith('text/') || /pdf|word|document|rtf|presentation/.test(type) || ['pdf', 'txt', 'md', 'doc', 'docx', 'rtf', 'pages', 'key', 'pptx'].includes(extension)) return 'text';
+  return 'other';
+};
+
+/** The type icon of a file. */
+const TypeIcon = ({ mime, name, className }: { mime: string; name: string | null; className: string }) => {
+  switch (fileKindOf(mime, name)) {
+    case 'image':
+      return <FileImage className={className} aria-hidden />;
+    case 'audio':
+      return <FileAudio className={className} aria-hidden />;
+    case 'video':
+      return <FileVideo className={className} aria-hidden />;
+    case 'archive':
+      return <FileArchive className={className} aria-hidden />;
+    case 'sheet':
+      return <FileSpreadsheet className={className} aria-hidden />;
+    case 'code':
+      return <FileCode className={className} aria-hidden />;
+    case 'text':
+      return <FileText className={className} aria-hidden />;
+    case 'other':
+      return <FileIcon className={className} aria-hidden />;
+  }
+};
+
+/** "PDF", "ZIP", "WEBM": the short type shown next to the size. */
+const typeLabel = (mime: string, name: string | null): string => {
+  const extension = /\.([a-z0-9]{1,5})$/i.exec(name ?? '')?.[1];
+  if (extension) return extension.toUpperCase();
+  const sub = (mime.split(';')[0] ?? '').split('/')[1] ?? '';
+  return sub === '' || sub === 'octet-stream' ? 'File' : sub.replace(/^x-/, '').slice(0, 8).toUpperCase();
 };
 
 const useService = () => useSyncExternalStore(subscribeAttachmentService, attachmentService, attachmentService);
@@ -124,19 +259,18 @@ const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: 
   }
 };
 
-const ItemView = ({ messageId, index, item, own }: { messageId: string; index: number; item: AttachmentItem; own: boolean }) => {
+/** One item's local state, its auto-download, and Open / Save… of the decrypted bytes. */
+const useItem = (messageId: string, index: number, item: AttachmentItem) => {
   const service = useService();
   // Wrapped, so "not read yet" (undefined) and "no row" (null) differ: a download starts only for a missing row.
   const state = useLiveQuery(async () => ({ row: (await getAttachmentRow(messageId, index)) ?? null }), [messageId, index]);
   const loaded = state !== undefined;
   const local = state?.row ?? undefined;
   const ready = local?.status === 'ready' && local.bytes ? local.bytes : null;
-  const url = useObjectUrl(ready, item.mime);
-  const thumbnail = useObjectUrl(item.thumbnail, 'image/webp');
   const [actionError, setActionError] = useState<string | null>(null);
   const fetchNow = () => void service?.fetch(messageId, index, item);
 
-  // Auto-download (spec 0012): images of at most 5 MiB, once the row is known to be missing.
+  // Auto-download (spec 0012): images and voice notes of at most 5 MiB, once the row is known to be missing.
   useEffect(() => {
     if (!service || !loaded || local || !autoDownloads(item)) return;
     void service.fetch(messageId, index, item);
@@ -149,40 +283,243 @@ const ItemView = ({ messageId, index, item, own }: { messageId: string; index: n
     const work = what === 'open' ? files.open(ready, item.name, item.mime) : files.save(ready, item.name, item.mime);
     void work.catch((cause: unknown) => setActionError(cause instanceof Error ? cause.message : 'That did not work.'));
   };
-  const line = stateLine(local, item, own, fetchNow);
+  return { local, ready, fetchNow, act, actionError };
+};
 
+const ActionError = ({ text }: { text: string | null }) => (text ? <p className="text-caption text-fg-error">{text}</p> : null);
+
+const OpenSave = ({ own, act }: { own: boolean; act: (what: 'open' | 'save') => void }) => (
+  <div className={cn('flex gap-1', own ? 'justify-end' : 'justify-start')}>
+    <Button variant="ghost" size="sm" className="h-7 rounded-full px-2 font-normal" onClick={() => act('open')} data-testid="attachment-open">
+      <ExternalLink className="size-3.5" aria-hidden /> Open
+    </Button>
+    <Button variant="ghost" size="sm" className="h-7 rounded-full px-2 font-normal" onClick={() => act('save')} data-testid="attachment-save">
+      <Download className="size-3.5" aria-hidden /> Save…
+    </Button>
+  </div>
+);
+
+/** The picture of an image item: blurhash, then the thumbnail, then the decrypted image. */
+const ImageFrame = ({ item, ready, className }: { item: AttachmentItem; ready: Uint8Array | null; className?: string }) => {
+  const url = useObjectUrl(ready, item.mime);
+  const thumbnail = useObjectUrl(item.thumbnail, 'image/webp');
+  return (
+    <>
+      <Placeholder item={item} />
+      {thumbnail && !url ? <img src={thumbnail} alt="" className={cn('absolute inset-0 size-full object-cover', className)} /> : null}
+      {url ? <img src={url} alt={item.name ?? 'Photo'} className={cn('absolute inset-0 size-full object-cover', className)} data-testid="attachment-image" /> : null}
+    </>
+  );
+};
+
+type ItemProps = { messageId: string; index: number; item: AttachmentItem; own: boolean };
+
+const ImageItem = ({ messageId, index, item, own }: ItemProps) => {
+  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
+  const line = stateLine(local, item, own, fetchNow);
   return (
     <div className="flex flex-col gap-1" data-testid="attachment-item" data-status={local?.status ?? 'none'}>
       <div className="relative max-h-80 w-60 max-w-full overflow-hidden rounded-medium bg-surface-container">
-        <Placeholder item={item} />
-        {thumbnail && !url ? <img src={thumbnail} alt="" className="absolute inset-0 size-full object-cover" /> : null}
-        {url ? <img src={url} alt={item.name ?? 'Photo'} className="absolute inset-0 size-full object-cover" data-testid="attachment-image" /> : null}
+        <ImageFrame item={item} ready={ready} />
         {line ? <div className="absolute start-2 bottom-2">{line}</div> : null}
       </div>
+      {ready ? <OpenSave own={own} act={act} /> : null}
+      <ActionError text={actionError} />
+    </div>
+  );
+};
+
+/** One square of an album: click opens it with the default app; a small Save… in the corner. */
+const AlbumTile = ({ messageId, index, item, own }: ItemProps) => {
+  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
+  const line = stateLine(local, item, own, fetchNow);
+  return (
+    <div className="group/tile relative aspect-square overflow-hidden bg-surface-container" data-testid="attachment-item" data-status={local?.status ?? 'none'} title={actionError ?? undefined}>
+      <button type="button" className="absolute inset-0 cursor-pointer disabled:cursor-default" disabled={!ready} onClick={() => act('open')} aria-label={`Open photo ${index + 1}`}>
+        <span className="absolute inset-0 [&>canvas]:size-full">
+          <ImageFrame item={item} ready={ready} />
+        </span>
+      </button>
+      {line ? <div className="absolute start-1.5 bottom-1.5">{line}</div> : null}
       {ready ? (
-        <div className={cn('flex gap-1', own ? 'justify-end' : 'justify-start')}>
-          <Button variant="ghost" size="sm" className="h-7 rounded-full px-2 font-normal" onClick={() => act('open')} data-testid="attachment-open">
-            <ExternalLink className="size-3.5" aria-hidden /> Open
-          </Button>
+        <button
+          type="button"
+          className="absolute end-1.5 top-1.5 flex size-7 cursor-pointer items-center justify-center rounded-full bg-surface-container text-fg-primary opacity-0 shadow-1 transition-opacity group-hover/tile:opacity-100 focus-visible:opacity-100"
+          onClick={() => act('save')}
+          aria-label={`Save photo ${index + 1}`}
+          data-testid="attachment-save"
+        >
+          <Download className="size-3.5" aria-hidden />
+        </button>
+      ) : null}
+    </div>
+  );
+};
+
+/** M15b: an album of 2 to 4 images, one bubble, a 2-column grid (3 images: the first spans the top). */
+const AlbumGrid = ({ row, items, own }: { row: MessageRow; items: readonly AttachmentItem[]; own: boolean }) => (
+  <div className="grid w-72 max-w-full grid-cols-2 gap-0.5 overflow-hidden rounded-medium" data-testid="attachment-album" data-count={items.length}>
+    {items.map((item, index) => (
+      <div key={index} className={cn(items.length === 3 && index === 0 && 'col-span-2 [&>div]:aspect-[2/1]')}>
+        <AlbumTile messageId={row.messageId} index={index} item={item} own={own} />
+      </div>
+    ))}
+  </div>
+);
+
+/** M15b: a file row: type icon, name, size and type; Download for a received one, then Open and Save…. */
+const FileItem = ({ messageId, index, item, own }: ItemProps) => {
+  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
+  const line = ready ? null : stateLine(local, item, own, fetchNow);
+  return (
+    <div className="flex w-72 max-w-full flex-col gap-1" data-testid="attachment-item" data-kind="file" data-status={local?.status ?? 'none'}>
+      <div className={cn('flex items-center gap-3 rounded-medium py-2 ps-2 pe-3', own ? 'bg-surface-nested-inverted' : 'bg-surface-container')}>
+        <span className={cn('flex size-10 shrink-0 items-center justify-center rounded-small', own ? 'bg-surface-container-inverted' : 'bg-surface-nested')}>
+          <TypeIcon mime={item.mime} name={item.name} className={cn('size-5', own ? 'text-fg-primary-inverted' : 'text-fg-secondary')} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-label-m" data-testid="attachment-file-name">
+            {item.name ?? 'Attachment'}
+          </p>
+          <p className={cn('text-body-s', own ? 'text-fg-secondary-inverted' : 'text-fg-secondary')}>
+            {formatSize(item.size)} · {typeLabel(item.mime, item.name)}
+          </p>
+        </div>
+      </div>
+      {line ? <div className={cn('flex', own ? 'justify-end' : 'justify-start')}>{line}</div> : null}
+      {ready ? <OpenSave own={own} act={act} /> : null}
+      <ActionError text={actionError} />
+    </div>
+  );
+};
+
+const WAVE_BAR = 3;
+const WAVE_GAP = 2;
+const WAVE_HEIGHT = 28;
+
+/** The sender's waveform as SVG bars; bars left of `progress` (0–1) are drawn played. */
+const Waveform = ({ samples, progress, own }: { samples: readonly number[]; progress: number; own: boolean }) => {
+  const bars = samples.length > 0 ? samples : new Array<number>(32).fill(0);
+  const width = bars.length * (WAVE_BAR + WAVE_GAP) - WAVE_GAP;
+  return (
+    <svg viewBox={`0 0 ${width} ${WAVE_HEIGHT}`} className="block h-7 w-full" preserveAspectRatio="none" aria-hidden data-testid="voice-waveform">
+      {bars.map((value, i) => {
+        const height = Math.max(3, Math.round((value / 255) * WAVE_HEIGHT));
+        const played = (i + 0.5) / bars.length <= progress;
+        return (
+          <rect
+            key={i}
+            x={i * (WAVE_BAR + WAVE_GAP)}
+            y={(WAVE_HEIGHT - height) / 2}
+            width={WAVE_BAR}
+            height={height}
+            rx={1.5}
+            className={own ? (played ? 'fill-fg-primary-inverted' : 'fill-fg-tertiary-inverted') : played ? 'fill-fg-primary' : 'fill-fg-tertiary'}
+          />
+        );
+      })}
+    </svg>
+  );
+};
+
+/**
+ * M15b: the voice player. Play/pause, the waveform as the progress bar (click
+ * to seek), elapsed / total. The duration is the message's `durationMs`:
+ * MediaRecorder's WebM has no duration in its header.
+ */
+const VoiceItem = ({ messageId, index, item, own }: ItemProps) => {
+  const { local, ready, fetchNow, act, actionError } = useItem(messageId, index, item);
+  const url = useObjectUrl(ready, item.mime.split(';')[0] ?? item.mime);
+  const audio = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [position, setPosition] = useState(0);
+  const durationMs = item.media.kind === 'voice' ? item.media.durationMs : 0;
+  const waveform = item.media.kind === 'voice' ? item.media.waveform : [];
+  const progress = durationMs > 0 ? Math.min(1, position / durationMs) : 0;
+  const line = ready ? null : stateLine(local, item, own, fetchNow);
+
+  const toggle = () => {
+    const player = audio.current;
+    if (!player) return;
+    if (player.paused) void player.play().catch(() => setPlaying(false));
+    else player.pause();
+  };
+  const seek = (event: MouseEvent<HTMLButtonElement>) => {
+    const player = audio.current;
+    if (!player || durationMs <= 0) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    const at = Math.min(1, Math.max(0, (event.clientX - box.left) / Math.max(1, box.width)));
+    player.currentTime = (at * durationMs) / 1000;
+    setPosition(at * durationMs);
+  };
+
+  return (
+    <div className="flex w-72 max-w-full flex-col gap-1" data-testid="attachment-item" data-kind="voice" data-status={local?.status ?? 'none'}>
+      <div className="flex items-center gap-3 py-1">
+        <Button
+          type="button"
+          size="icon"
+          variant={own ? 'secondary' : 'default'}
+          className="size-10 shrink-0 rounded-full"
+          disabled={!url}
+          onClick={toggle}
+          aria-label={playing ? 'Pause' : 'Play voice message'}
+          data-testid="voice-play"
+        >
+          {!url && local?.status === 'downloading' ? <Loader2 className="size-5 animate-spin" /> : playing ? <Pause className="size-5" /> : <Play className="size-5" />}
+        </Button>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <button type="button" className="block w-full cursor-pointer disabled:cursor-default" disabled={!url} onClick={seek} aria-label="Seek">
+            <Waveform samples={waveform} progress={progress} own={own} />
+          </button>
+          <p className={cn('text-caption tabular-nums', own ? 'text-fg-secondary-inverted' : 'text-fg-secondary')} data-testid="voice-duration">
+            {playing || position > 0 ? `${clockOf(position)} / ${clockOf(durationMs)}` : clockOf(durationMs)}
+          </p>
+        </div>
+      </div>
+      {url ? (
+        <audio
+          ref={audio}
+          src={url}
+          preload="auto"
+          className="hidden"
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onTimeUpdate={event => setPosition(event.currentTarget.currentTime * 1000)}
+          onEnded={() => {
+            setPlaying(false);
+            setPosition(0);
+          }}
+        />
+      ) : null}
+      {line ? <div className={cn('flex', own ? 'justify-end' : 'justify-start')}>{line}</div> : null}
+      {ready ? (
+        <div className={cn('flex', own ? 'justify-end' : 'justify-start')}>
           <Button variant="ghost" size="sm" className="h-7 rounded-full px-2 font-normal" onClick={() => act('save')} data-testid="attachment-save">
             <Download className="size-3.5" aria-hidden /> Save…
           </Button>
         </div>
       ) : null}
-      {actionError ? <p className="text-caption text-fg-error">{actionError}</p> : null}
+      <ActionError text={actionError} />
     </div>
   );
 };
 
-/** The body of a kind-250 bubble: each item, then the caption. */
+/** The body of a kind-250 bubble: an album grid, or each item by its kind; then the caption. */
 export const AttachmentBody = ({ row, own }: { row: MessageRow; own: boolean }) => {
   if (row.content.type !== 'attachment') return null;
   const { items, caption } = row.content;
+  const album = items.length > 1 && items.every(item => item.media.kind === 'image');
   return (
     <div className="flex flex-col gap-2" data-testid="attachment">
-      {items.map((item, index) => (
-        <ItemView key={index} messageId={row.messageId} index={index} item={item} own={own} />
-      ))}
+      {album ? (
+        <AlbumGrid row={row} items={items} own={own} />
+      ) : (
+        items.map((item, index) => {
+          const View = item.media.kind === 'image' ? ImageItem : item.media.kind === 'voice' ? VoiceItem : FileItem;
+          return <View key={index} messageId={row.messageId} index={index} item={item} own={own} />;
+        })
+      )}
       {caption ? <p className="text-body-m whitespace-pre-wrap">{caption}</p> : null}
     </div>
   );

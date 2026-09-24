@@ -16,7 +16,8 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/main/**/*.spec.ts', 'src/shared/**/*.spec.ts', 'src/renderer/**/*.spec.ts', 'src/renderer/**/*.spec.tsx'],
+    // scripts/lib: pure helpers of the e2e scripts whose rules need a test (M15b botDescribe).
+    include: ['src/main/**/*.spec.ts', 'src/shared/**/*.spec.ts', 'src/renderer/**/*.spec.ts', 'src/renderer/**/*.spec.tsx', 'scripts/lib/**/*.spec.mjs'],
     setupFiles: ['./vitest.setup.ts'],
   },
 });

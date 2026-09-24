@@ -1,7 +1,7 @@
 // Layout from .refs/polkadot-desktop/src/features/chat/ui/partials/MessageInput.tsx
 // (2026-09-23): a growing field, a round send button, a reply/edit card above.
 
-import { Paperclip, Plus, SendHorizontal, Square, X } from 'lucide-react';
+import { Mic, Paperclip, Plus, SendHorizontal, Square, X } from 'lucide-react';
 import { type ClipboardEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import type { SendKey } from '../app/chatPrefs';
@@ -51,6 +51,8 @@ type Props = {
   attach?: { accept: string; onFiles: (files: File[]) => void } | null;
   /** An attachment waits in the composer: Send works with an empty field (the text is its caption). */
   hasAttachment?: boolean;
+  /** Spec 0012 (M15b): the mic button, shown while the field is empty; starts a voice note. */
+  onRecord?: () => void;
 };
 
 export type PlusItem = { label: string; icon: ReactNode; onSelect: () => void; testId: string };
@@ -116,6 +118,7 @@ export const Composer = ({
   panel = null,
   attach = null,
   hasAttachment = false,
+  onRecord,
 }: Props) => {
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -274,7 +277,7 @@ export const Composer = ({
               variant="ghost"
               size="icon"
               className="size-10 shrink-0 rounded-full font-normal"
-              aria-label="Attach an image"
+              aria-label="Attach a file or photos"
               data-testid="composer-attach"
               onClick={() => picker.current?.click()}
             >
@@ -283,7 +286,8 @@ export const Composer = ({
             <input
               ref={picker}
               type="file"
-              accept={attach.accept}
+              accept={attach.accept || undefined}
+              multiple
               className="hidden"
               data-testid="composer-attach-input"
               onChange={event => {
@@ -309,6 +313,19 @@ export const Composer = ({
           // field-sizing (stock) grows the field; the cap is six lines of text-body-m.
           className="max-h-40 min-h-10 resize-none rounded-nested py-2 text-body-m md:text-body-m"
         />
+        {onRecord && draft.trim() === '' ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-10 shrink-0 rounded-full font-normal"
+            aria-label="Record a voice message"
+            data-testid="composer-mic"
+            onClick={onRecord}
+          >
+            <Mic className="size-5 text-fg-secondary" />
+          </Button>
+        ) : null}
         {onStop ? (
           <Button variant="secondary" className="h-10 rounded-medium text-label-m" onClick={onStop}>
             <Square className="size-4" aria-hidden /> Stop

@@ -46,11 +46,13 @@ import { BotBadge } from './BotBadge';
 import { Composer } from './Composer';
 import { type BubbleActions, messagePreview } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
-import { AttachRow } from './Attachments';
+import { AttachRow, VoiceRecorderStrip } from './Attachments';
 import { readSetting, writeSetting } from '../app/settings';
 import { attachmentService, subscribeAttachmentService } from '../domain/chat/attachmentRuntime';
-import { IMAGE_TYPES, pickProblem } from '../domain/chat/attachments';
+import { type PreparedFile, addPicked, isImageType, prepareFile } from '../domain/chat/attachments';
 import { prepareImage } from '../domain/chat/attachmentImage';
+import { prepareVoice } from '../domain/chat/voice';
+import { type VoiceRecording, startVoiceRecording } from '../domain/chat/voiceRecorder';
 import { RoomHeader, TypingLine } from './RoomHeader';
 import { type ForwardTarget, RoomMenu, useChatActions, usePending } from './chatActions';
 import { AmountRow, type PaymentKind, RequestBody } from './Payments';
@@ -314,22 +316,29 @@ export const Room = (props: Props) => {
 
   // One assistant reply at a time: Send waits until it ends or is stopped.
   const answering = assistant !== null && (messages ?? []).some(row => row.status === 'streaming');
-  // Spec 0012 (M15a): one image waits in the composer until Send; its notice shows until the first one went out.
-  const [attachment, setAttachment] = useState<File | null>(null);
+  // Spec 0012: what waits in the composer until Send (M15a one image; M15b one file or an album of up to 4
+  // images); the notice shows until the first attachment went out.
+  const [attachment, setAttachment] = useState<File[]>([]);
   const attachNotice = useLiveQuery(async () => (await readSetting('chat.attachmentNotice')) !== 'seen', []) ?? false;
   const attachments = useSyncExternalStore(subscribeAttachmentService, attachmentService, attachmentService);
   const canAttach = manager !== null && contact !== undefined && contact !== null && !blocked && attachments !== null;
   const pickFiles = (files: File[]) => {
-    const [file] = files;
-    if (!file) return;
-    const problem = pickProblem(file);
-    if (problem) {
-      setError(problem);
-      return;
-    }
-    setError(null);
-    setAttachment(file);
+    const next = addPicked(attachment, files);
+    setError(next.problem);
+    setAttachment(next.files);
   };
+  const removeAttachment = (index: number | null) => setAttachment(current => (index === null ? [] : current.filter((_file, i) => i !== index)));
+
+  // M15b: a voice note records here; the strip over the composer shows it. Leaving the room drops it.
+  const [recording, setRecording] = useState<{ rec: VoiceRecording; busy: boolean } | null>(null);
+  const recordingRef = useRef<VoiceRecording | null>(null);
+  useEffect(
+    () => () => {
+      recordingRef.current?.cancel();
+      recordingRef.current = null;
+    },
+    [peer],
+  );
 
   // ── Buttons (spec 0006): the pressed button stays marked until the bot
   // answers (callback) or for a moment (anything else).
@@ -607,34 +616,72 @@ export const Room = (props: Props) => {
   const forwardFor = (row: MessageRow) =>
     forwardText(row) !== null && row.status !== 'streaming' ? (target: ForwardTarget) => chatActions.forward(target, row, authorOf(row)) : undefined;
 
-  const sendAttachment = async (file: File, caption: string | null) => {
+  const prepared = async (file: File): Promise<PreparedFile> =>
+    isImageType(file.type) ? prepareImage(file) : prepareFile({ bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, type: file.type });
+
+  const sendAttachment = async (files: File[], caption: string | null) => {
     const service = attachmentService();
     if (!manager || !service) return;
     setError(null);
-    setAttachment(null);
+    setAttachment([]);
     setDraft('');
     setMode({ mode: 'new' });
-    let prepared;
+    let ready: PreparedFile[];
     try {
-      prepared = await prepareImage(file);
+      ready = await Promise.all(files.map(prepared));
     } catch (cause) {
-      setAttachment(file);
+      setAttachment(files);
       setDraft(caption ?? '');
-      setError(`${plainError(cause, 'This image cannot be read.')} Pick another one.`);
+      setError(`${plainError(cause, 'This file cannot be read.')} Pick another one.`);
       return;
     }
     try {
       await writeSetting('chat.attachmentNotice', 'seen');
-      await service.send(manager, peer as HexString, [prepared], caption);
+      await service.send(manager, peer as HexString, ready, caption);
     } catch (cause) {
       // The bubble stays, marked "Not sent · Retry": the local copy is the source of a retry.
-      setError(`${plainError(cause, 'The image was not sent.')} Press Retry under it to try again.`);
+      setError(`${plainError(cause, 'The attachment was not sent.')} Press Retry under it to try again.`);
+    }
+  };
+
+  const startRecording = async () => {
+    if (recordingRef.current) return;
+    setError(null);
+    try {
+      // At 5 minutes the recorder stops and the note goes out as if Send was pressed.
+      const rec = await startVoiceRecording(() => void finishRecording());
+      recordingRef.current = rec;
+      setRecording({ rec, busy: false });
+    } catch (cause) {
+      setError(plainError(cause, 'The microphone is not available. Check that Polkadot Chat may use it in System Settings › Privacy & Security.'));
+    }
+  };
+  const cancelRecording = () => {
+    recordingRef.current?.cancel();
+    recordingRef.current = null;
+    setRecording(null);
+  };
+  const finishRecording = async () => {
+    const rec = recordingRef.current;
+    const service = attachmentService();
+    if (!rec) return;
+    recordingRef.current = null;
+    setRecording({ rec, busy: true });
+    try {
+      const voice = prepareVoice(await rec.stop());
+      setRecording(null);
+      if (!manager || !service) return;
+      await writeSetting('chat.attachmentNotice', 'seen');
+      await service.send(manager, peer as HexString, [voice], null);
+    } catch (cause) {
+      setRecording(null);
+      setError(plainError(cause, 'The voice message was not sent.'));
     }
   };
 
   const submit = async () => {
     const text = draft.trim();
-    if (attachment && mode.mode !== 'edit') return sendAttachment(attachment, text === '' ? null : text);
+    if (attachment.length > 0 && mode.mode !== 'edit') return sendAttachment(attachment, text === '' ? null : text);
     if (!text || answering) return;
     setError(null);
     const current = mode;
@@ -980,12 +1027,22 @@ export const Room = (props: Props) => {
                 onSign={() => void signSend()}
                 onCancel={() => setSendStrip(null)}
               />
-            ) : attachment ? (
-              <AttachRow file={attachment} notice={attachNotice} onRemove={() => setAttachment(null)} />
+            ) : recording ? (
+              <VoiceRecorderStrip
+                startedAt={recording.rec.startedAt}
+                busy={recording.busy}
+                notice={attachNotice}
+                onCancel={cancelRecording}
+                onSend={() => void finishRecording()}
+              />
+            ) : attachment.length > 0 ? (
+              <AttachRow files={attachment} notice={attachNotice} onRemove={removeAttachment} />
             ) : null
           }
-          attach={canAttach && mode.mode !== 'edit' ? { accept: IMAGE_TYPES.join(','), onFiles: pickFiles } : null}
-          hasAttachment={attachment !== null}
+          // Any file (alone) or up to 4 images; the picker takes several at once.
+          attach={canAttach && mode.mode !== 'edit' && !recording ? { accept: '', onFiles: pickFiles } : null}
+          hasAttachment={attachment.length > 0}
+          onRecord={canAttach && mode.mode === 'new' && attachment.length === 0 && !recording ? () => void startRecording() : undefined}
         />
       )}
     </>

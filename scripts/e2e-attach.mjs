@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// M15a e2e: an encrypted image through the Bulletin chain (spec 0012) between
+// M15a/M15b e2e: encrypted attachments through the Bulletin chain (spec 0012) between
 // two test identities of this repo (never the owner's), on devnet:
 //   npm run e2e:attach -- [--profile devnet] [--identity-a pcde2e] [--identity-b pcdeceb] [--bot pcdguide.70]
 //
@@ -16,9 +16,17 @@
 //  3. b receives it, fetches each chunk by `bitswap_v1_get`, checks the hash,
 //     decrypts, and compares the SHA-256 with a's (FETCH_OK); then again
 //     through the devnet gateway only (GATEWAY_OK);
-//  4. the bot step (BOT_DESCRIBE_OK) runs only when the pca fleet already runs
+//  4. M15b: a sends a 2.3 MB file (two chunks: the 2 MB one is fetched from
+//     the gateway first, the 300 KB one by bitswap first, spec 0012 source
+//     order), an album of 4 images (one message, one statement, four
+//     stores) and a 60 s voice note (duration, 32-bar waveform); b fetches
+//     and verifies each (FILE_OK, ALBUM_OK, VOICE_OK). A voice note over
+//     5 minutes is refused before anything is stored (in VOICE_SENT).
+//  5. the bot step (BOT_DESCRIBE_OK) runs only when the pca fleet already runs
 //     the pca half of M15a; else BOT_DESCRIBE_SKIPPED with the reason. The
-//     fleet is read (its REVISION file), never changed.
+//     fleet is read (its REVISION file), never changed. M15b: the bot's first
+//     text after the attachment message must talk about the image
+//     (scripts/lib/botDescribe.mjs); a greeting fails it.
 // Exit 0 ATTACH_OK; 13 E2E_TIMEOUT <stage>; 3 PEER_KEY_UNSUPPORTED; 1 any
 // other failure. Prints no secret (keys stay in the processes).
 
@@ -29,7 +37,8 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { drawTestImage, shrink } from './lib/testImage.mjs';
+import { describesImage, refusesToLook, repliesAfter } from './lib/botDescribe.mjs';
+import { drawScene, drawTestImage, shrink } from './lib/testImage.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -41,7 +50,6 @@ const profile = flag('profile') ?? 'devnet';
 const role = flag('role');
 const TIMEOUT_EXIT = 13;
 const BOT = flag('bot') ?? 'pcdguide.70';
-const BOT_WORDS = ['red', 'circle', 'round', 'dot'];
 const PCA_REPO = resolve(root, '..', 'polkadot-chat-agents');
 const FLEET = 'root@100.85.56.36';
 
@@ -167,7 +175,18 @@ async function parent() {
   if (!(await step('b', `FETCH ${messageId} ${sha}`, /^FETCH_OK /, 'fetch by bitswap_v1_get'))) return;
   if (!(await step('b', `GATEWAY ${messageId} ${sha}`, /^GATEWAY_OK /, 'fetch through the gateway'))) return;
 
-  // 4. The bot, only when its half runs on the fleet.
+  // 4. M15b: a file, an album, a voice note; b verifies each.
+  const fileSent = await step('a', 'SEND_FILE', /^FILE_SENT /, 'store and send the file');
+  if (!fileSent) return;
+  if (!(await step('b', `FETCH_FILE ${field(fileSent, 'id')} ${field(fileSent, 'sha256')}`, /^FILE_OK /, 'fetch the file'))) return;
+  const albumSent = await step('a', 'SEND_ALBUM', /^ALBUM_SENT /, 'store and send the album');
+  if (!albumSent) return;
+  if (!(await step('b', `FETCH_ALBUM ${field(albumSent, 'id')} ${field(albumSent, 'sha256')}`, /^ALBUM_OK /, 'fetch the album'))) return;
+  const voiceSent = await step('a', 'SEND_VOICE', /^VOICE_SENT /, 'store and send the voice note');
+  if (!voiceSent) return;
+  if (!(await step('b', `FETCH_VOICE ${field(voiceSent, 'id')} ${field(voiceSent, 'sha256')}`, /^VOICE_OK /, 'fetch the voice note'))) return;
+
+  // 5. The bot, only when its half runs on the fleet.
   const bot = botReadiness();
   if (!bot.ready) console.log(`BOT_DESCRIBE_SKIPPED ${bot.reason}`);
   else if (!(await step('a', `BOT ${BOT}`, /^BOT_DESCRIBE_OK /, 'bot describes the image', 6 * 60_000))) return;
@@ -178,7 +197,7 @@ async function parent() {
   }
   await delay(1_000);
   stopAll();
-  console.log(`ATTACH_OK at=${at()}${bot.ready ? '' : ' (desktop steps; bot step skipped)'}`);
+  console.log(`ATTACH_OK FILE_OK ALBUM_OK VOICE_OK ${bot.ready ? 'BOT_DESCRIBE_OK' : 'BOT_DESCRIBE_SKIPPED'} at=${at()}`);
   process.exit(0);
 }
 
@@ -223,6 +242,8 @@ async function child(name) {
   const { openBulletin, createBulletinService, bulletinSigner, cidOf } = await load('src/main/chain/bulletin.ts');
   const { createAttachmentService, getAttachmentRow } = await load('src/renderer/domain/chat/attachments.ts');
   const { encodeBlurhash } = await load('src/renderer/domain/chat/blurhash.ts');
+  const { prepareFile, gatewayFirst } = await load('src/renderer/domain/chat/attachments.ts');
+  const { prepareVoice, waveformOf, MAX_VOICE_MS, VOICE_MIME } = await load('src/renderer/domain/chat/voice.ts');
 
   setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
   setMetadataCache(metadataCache());
@@ -271,21 +292,23 @@ async function child(name) {
   // The renderer's `window.desktop.bulletin`, over the main-process service in this process.
   const progress = new Set();
   const sources = [];
+  const orders = [];
   const bulletinApi = {
     store: async (uploadId, chunks) => {
       const stored = await service.store(chunks, (step) => {
         for (const listener of progress) listener({ uploadId, ...step });
       });
-      for (const entry of stored) console.log(`STORED ${cidOf(bytesOf(entry.hash))} block=${entry.block ?? 'already-on-chain'} best=yes`);
+      for (const entry of stored) console.log(`STORED ${cidOf(bytesOf(entry.hash))} block=${entry.block ?? 'found-by-content-hash'} best=yes`);
     },
     onProgress: (listener) => {
       progress.add(listener);
       return () => progress.delete(listener);
     },
-    fetch: async (chainId, hash, mirror, only) => {
+    fetch: async (chainId, hash, mirror, only, preferGateway) => {
       if (chainId.toLowerCase() !== genesis.toLowerCase()) throw new Error('This attachment is on another network.');
-      const result = await service.fetchChunk(bytesOf(hash), mirror, only);
+      const result = await service.fetchChunk(bytesOf(hash), mirror, only, preferGateway);
       sources.push(result.source);
+      orders.push(preferGateway ? 'gateway-first' : 'bitswap-first');
       return result;
     },
   };
@@ -313,6 +336,59 @@ async function child(name) {
       thumbnail: null,
     };
   };
+  // M15b payloads, seeded so every run sends the same plaintext (each send has a fresh key, so new chunks).
+  const seeded = (size, seed) => {
+    const out = new Uint8Array(size);
+    let x = seed >>> 0;
+    for (let i = 0; i < size; i++) {
+      x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+      out[i] = x >>> 24;
+    }
+    return out;
+  };
+  const FILE_BYTES = 2_300_000;
+  const fileBytes = seeded(FILE_BYTES, 0x15b0f11e);
+  const albumImages = [
+    drawScene(320, 240, { top: [44, 62, 120], bottom: [247, 150, 92], sun: [255, 214, 140], sea: [40, 70, 110] }),
+    drawScene(240, 240, { top: [120, 180, 230], bottom: [214, 234, 248], sun: [255, 246, 200], sea: [30, 110, 140] }),
+    drawScene(320, 240, { top: [70, 40, 110], bottom: [230, 110, 120], sun: [255, 190, 150], sea: [50, 40, 90] }),
+    drawScene(300, 225, { top: [90, 160, 220], bottom: [240, 220, 180], sun: [255, 240, 190], sea: [20, 120, 150] }),
+  ];
+  const sceneFile = (scene) => {
+    const small = shrink(scene.rgba, scene.width, scene.height);
+    return { bytes: scene.png, mime: 'image/png', name: null, media: { kind: 'image', width: scene.width, height: scene.height }, blurhash: encodeBlurhash(small.pixels, small.w, small.h, 4, 3), thumbnail: null };
+  };
+  // 60 s at 24 kbps. Not a real Opus stream (Node cannot record): the e2e checks the transport and the metadata;
+  // recording and playback are checked in the app (docs/acceptance.md "## M15b").
+  const VOICE_MS = 60_000;
+  const voiceBytes = seeded((VOICE_MS / 1000) * 3_000, 0x15b0c0de);
+  const voiceWaveform = waveformOf(Float32Array.from({ length: 4_800 }, (_, i) => Math.sin(i / 40) * (0.2 + 0.8 * Math.abs(Math.sin(i / 700)))));
+  /** Sends `files` and checks the one-statement rule; resolves with the sent row and the counts. */
+  const sendCounted = async (files, caption) => {
+    const before = manager.submissions.snapshot();
+    const transactionsBefore = bulletinTransactions;
+    await attachments.send(manager, otherHex, files, caption);
+    const row = (await listMessages(otherHex)).filter((r) => r.direction === 'outgoing' && r.content.type === 'attachment').at(-1);
+    await waitFor(async () => manager.submissions.snapshot().submissions > before.submissions, 30_000);
+    const statements = manager.submissions.snapshot().submissions - before.submissions;
+    return { row, statements, transactions: bulletinTransactions - transactionsBefore };
+  };
+  /** b: every item of `messageId` fetched, checked and compared with a's SHA-256 list. */
+  const fetchAll = async (messageId, expected) => {
+    const row = await incomingAttachment(otherHex, messageId);
+    if (!row) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the attachment message`);
+    sources.length = 0;
+    orders.length = 0;
+    const results = [];
+    for (const [index, item] of row.content.items.entries()) {
+      const status = await attachments.fetch(row.messageId, index, item);
+      const local = await getAttachmentRow(row.messageId, index);
+      results.push({ status, sha: local?.bytes ? sha256(local.bytes) : 'none', error: local?.error ?? null });
+    }
+    const same = results.length === expected.length && results.every((r, i) => r.status === 'ready' && r.sha === expected[i]);
+    return { row, results, same };
+  };
+
   const incomingAttachment = (peer, messageId) =>
     waitFor(async () => (await listMessages(peer)).find((row) => row.direction === 'incoming' && row.content.type === 'attachment' && (!messageId || row.messageId === messageId)) ?? null);
   const fetchAndCompare = async (messageId, expected, only) => {
@@ -334,7 +410,7 @@ async function child(name) {
       if (command === 'REQUEST_OTHER') {
         const peer = await lookup.getPeerIdentity(bytesOf(otherHex));
         if (!peer) finish(3, `PEER_KEY_UNSUPPORTED ${otherName}`);
-        await manager.sendRequest(peer, 'M15a attachments e2e');
+        await manager.sendRequest(peer, 'M15b attachments e2e');
         const request = (await db.requests.toArray()).filter((row) => row.direction === 'outgoing' && row.peerAccountId === otherHex).sort((x, y) => y.createdAt - x.createdAt)[0];
         console.log(`CHAT_REQUEST_SENT id=${request.requestId} to=${peer.username}`);
       }
@@ -383,6 +459,55 @@ async function child(name) {
         const line = `id=${result.row.messageId} status=${result.status} sources=${sources.join(',')} sha256=${result.got}`;
         console.log(result.same && sources.length > 0 && sources.every((source) => source === 'gateway') ? `GATEWAY_OK ${line}` : `GATEWAY_FAILED ${line} error=${result.error}`);
       }
+      if (command === 'SEND_FILE') {
+        const file = prepareFile({ bytes: fileBytes, name: 'm15b-e2e-archive.bin', type: '' });
+        const { row, statements, transactions } = await sendCounted([file], null);
+        const item = row.content.items[0];
+        const line = `id=${row.messageId} sha256=${sha256(fileBytes)} size=${fileBytes.length} name=${item.name} mime=${item.mime} chunks=${item.chunks.length} statements_delta=${statements} bulletin_tx_delta=${transactions}`;
+        console.log(statements === 1 && item.chunks.length === 2 && item.media.kind === 'file' ? `FILE_SENT ${line}` : `SEND_FILE_FAILED ${line}`);
+      }
+      if (command === 'FETCH_FILE') {
+        const { row, results, same } = await fetchAll(rest[0], [rest[1]]);
+        const item = row.content.items[0];
+        // Spec 0012 source order: the 2 MB chunk asks the gateway first, the 300 KB one bitswap first.
+        const expectedOrder = item.chunks.map((_hash, i) => (gatewayFirst(item, i) ? 'gateway-first' : 'bitswap-first'));
+        const ordered = orders.join(',') === 'gateway-first,bitswap-first' && orders.join(',') === expectedOrder.join(',');
+        const line = `id=${row.messageId} name=${item.name} media=${item.media.kind} size=${item.size} order=${orders.join(',')} sources=${sources.join(',')} sha256=${results[0].sha}`;
+        console.log(same && ordered && item.name === 'm15b-e2e-archive.bin' && item.media.kind === 'file' ? `FILE_OK ${line}` : `FETCH_FILE_FAILED ${line} error=${results[0].error}`);
+      }
+      if (command === 'SEND_ALBUM') {
+        const { row, statements, transactions } = await sendCounted(albumImages.map(sceneFile), 'M15b: an album of four');
+        const shas = albumImages.map((scene) => sha256(scene.png));
+        const line = `id=${row.messageId} sha256=${shas.join(',')} items=${row.content.items.length} statements_delta=${statements} bulletin_tx_delta=${transactions}`;
+        console.log(statements === 1 && row.content.items.length === 4 ? `ALBUM_SENT ${line}` : `SEND_ALBUM_FAILED ${line} (expected one statement for 4 items)`);
+      }
+      if (command === 'FETCH_ALBUM') {
+        const expected = rest[1].split(',');
+        const { row, results, same } = await fetchAll(rest[0], expected);
+        const line = `id=${row.messageId} items=${row.content.items.length} kinds=${row.content.items.map((i) => i.media.kind).join(',')} caption="${row.content.caption}" sources=${sources.join(',')} ready=${results.filter((r) => r.status === 'ready').length}`;
+        console.log(same && row.content.items.every((i) => i.media.kind === 'image') ? `ALBUM_OK ${line}` : `FETCH_ALBUM_FAILED ${line} errors=${results.map((r) => r.error).join('|')}`);
+      }
+      if (command === 'SEND_VOICE') {
+        // Spec 0012: over 5 minutes is refused before anything is encrypted or stored.
+        let refused = 'no';
+        try {
+          prepareVoice({ bytes: voiceBytes, durationMs: MAX_VOICE_MS + 1, waveform: voiceWaveform });
+        } catch (error) {
+          refused = /5 minutes/.test(error.message) ? 'yes' : error.message;
+        }
+        const { row, statements, transactions } = await sendCounted([prepareVoice({ bytes: voiceBytes, durationMs: VOICE_MS, waveform: voiceWaveform })], null);
+        const item = row.content.items[0];
+        const line = `id=${row.messageId} sha256=${sha256(voiceBytes)} size=${voiceBytes.length} duration_ms=${item.media.durationMs} bars=${item.media.waveform.length} mime="${item.mime}" over_5min_refused=${refused} statements_delta=${statements} bulletin_tx_delta=${transactions}`;
+        console.log(statements === 1 && refused === 'yes' ? `VOICE_SENT ${line}` : `SEND_VOICE_FAILED ${line}`);
+      }
+      if (command === 'FETCH_VOICE') {
+        const { row, results, same } = await fetchAll(rest[0], [rest[1]]);
+        const item = row.content.items[0];
+        const wave = item.media.kind === 'voice' ? item.media.waveform : [];
+        const matches = item.media.kind === 'voice' && item.media.durationMs === VOICE_MS && wave.length === 32 && wave.join(',') === voiceWaveform.join(',') && item.mime === VOICE_MIME && item.name === null;
+        const line = `id=${row.messageId} media=${item.media.kind} duration_ms=${item.media.durationMs} bars=${wave.length} mime="${item.mime}" sources=${sources.join(',')} sha256=${results[0].sha}`;
+        console.log(same && matches ? `VOICE_OK ${line}` : `FETCH_VOICE_FAILED ${line} error=${results[0].error}`);
+      }
       if (command === 'BOT') {
         const username = rest[0];
         const [base] = username.split('.');
@@ -398,14 +523,31 @@ async function child(name) {
           await manager.sendRequest(peer, null);
           if (!(await waitFor(() => db.contacts.get(botHex)))) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the bot's accept`);
         }
-        const since = Date.now();
+        // A new contact's greeting arrives after the accept: let it land, so it is not taken for the reply.
+        const greeted = await waitFor(async () => (await listMessages(botHex)).some((row) => row.direction === 'incoming'), 45_000);
+        console.log(`BOT_CONTACT ${username} greeting_before_send=${greeted ? 'yes' : 'none in 45 s'}`);
+        const before = new Set((await listMessages(botHex)).filter((row) => row.direction === 'incoming').map((row) => row.messageId));
         await attachments.send(manager, botHex, [preparedImage()], 'What is in this image? Answer in one short sentence.');
-        const reply = await waitFor(async () => {
-          const rows = (await listMessages(botHex)).filter((row) => row.direction === 'incoming' && row.timestamp >= since - 60_000 && row.content.type === 'text' && !/^(?:⏳|🤔|✓) /u.test(row.content.text));
-          return rows.find((row) => BOT_WORDS.some((word) => row.content.text.toLowerCase().includes(word))) ?? null;
+        const sent = (await listMessages(botHex)).filter((row) => row.direction === 'outgoing' && row.content.type === 'attachment').at(-1);
+        // Only the bot's texts after the attachment message count; one must say what the image shows. A refusal
+        // ends the wait at once; a greeting or a welcome does not count and the wait goes on.
+        const size = { width: image.width, height: image.height };
+        let after = [];
+        const settled = await waitFor(async () => {
+          after = repliesAfter(await listMessages(botHex), before);
+          return after.find((row) => describesImage(row.content.text, size) || refusesToLook(row.content.text)) ?? null;
         }, 5 * 60_000);
-        if (!reply) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: the bot's description`);
-        console.log(`BOT_DESCRIBE_OK bot=${username} reply="${reply.content.text.replace(/\s+/g, ' ').slice(0, 120)}"`);
+        if (!settled && after.length === 0) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: no bot text after the attachment`);
+        const reply = settled ?? after.at(-1);
+        const text = reply.content.text.replace(/\s+/g, ' ').slice(0, 160);
+        const ok = describesImage(reply.content.text, size);
+        if (!ok) {
+          for (const row of await listMessages(botHex)) {
+            const body = row.content.type === 'text' || row.content.type === 'reply' ? row.content.text.replace(/\s+/g, ' ').slice(0, 100) : row.content.type;
+            console.log(`BOT_ROW ${row.direction} at=${new Date(row.timestamp).toISOString()} id=${row.messageId}${before.has(row.messageId) ? ' (before)' : ''} "${body}"`);
+          }
+        }
+        console.log(`${ok ? 'BOT_DESCRIBE_OK' : 'BOT_DESCRIBE_FAILED'} bot=${username} attachment=${sent?.messageId} reply=${reply.messageId} reply_type=${reply.content.type} text="${text}"`);
       }
     } catch (error) {
       console.log(`${command}_FAILED ${error instanceof Error ? error.message : String(error)}`);

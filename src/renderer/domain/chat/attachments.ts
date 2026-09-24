@@ -17,7 +17,7 @@ import type { BulletinProgress, DesktopBulletinApi } from '../../../shared/deskt
 
 import { SENDER_CHUNK_SIZE, decryptChunk, encryptAttachment, freshKeyAndNonce, isAttachmentError } from './attachmentCrypto';
 import { type AttachmentItem, type AttachmentMedia, attachmentItemWire } from './content';
-import { attachmentContentLength } from './identityEvents';
+import { ATTACHMENT_BOUNDS, attachmentContentLength } from './identityEvents';
 import type { ChatManager } from './manager';
 
 /** Spec 0012 "Limits". */
@@ -30,8 +30,14 @@ export const MAX_CAPTION_BYTES = 1_024;
 export const AUTO_DOWNLOAD_BYTES = 5 * 1024 * 1024;
 /** Bulletin keeps a chunk 14 days; the sender's estimate is an hour short of it. */
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
-/** M15a sends images only (files, albums and voice notes are M15b). */
+/** Images the app prepares (re-encodes, blurhash, thumbnail) and shows inline; up to 4 make an album. */
 export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+/** A file whose type the browser does not know, or whose type is longer than the wire allows. */
+export const OCTET_STREAM = 'application/octet-stream';
+/** Spec 0012 "Source order": a chunk whose ciphertext is larger than this is fetched from the gateway first. */
+export const GATEWAY_FIRST_ABOVE = 512 * 1024;
+/** AES-GCM tag appended to every chunk. */
+const TAG_BYTES = 16;
 /** Download retries: 10 s doubling to 10 min, for 24 h after the first failure. */
 const RETRY_FIRST_MS = 10_000;
 const RETRY_MAX_MS = 10 * 60_000;
@@ -47,15 +53,77 @@ export type PreparedFile = {
   thumbnail: Uint8Array | null;
 };
 
-/** Why a picked file cannot be sent (M15a: images of at most 25 MiB); null when it can. */
-export const pickProblem = (file: { type: string; size: number }): string | null => {
-  if (!(IMAGE_TYPES as readonly string[]).includes(file.type)) return 'Only images (PNG, JPEG, WebP, GIF) can be sent yet.';
-  if (file.size < 1) return 'This file is empty.';
-  if (file.size > MAX_ATTACHMENT_BYTES) return 'An attachment is at most 25 MB.';
-  return null;
+export const isImageType = (type: string): boolean => (IMAGE_TYPES as readonly string[]).includes(type);
+
+type Pickable = { type: string; size: number };
+
+/**
+ * M15b: what waits in the composer after a pick, paste or drop. One message
+ * is either one file (any type) or an album of 1 to 4 images (spec 0012
+ * "Items per message": 4), at most 25 MiB in total. Images add to images
+ * already waiting; a file replaces what waits, and images replace a file.
+ * `problem` says why the pick was refused; `files` is then what waited before.
+ */
+export const addPicked = <T extends Pickable>(waiting: readonly T[], picked: readonly T[]): { files: T[]; problem: string | null } => {
+  const refuse = (problem: string) => ({ files: [...waiting], problem });
+  if (picked.length === 0) return { files: [...waiting], problem: null };
+  if (picked.some(file => file.size < 1)) return refuse('This file is empty.');
+  if (picked.some(file => file.size > MAX_ATTACHMENT_BYTES)) return refuse('An attachment is at most 25 MB.');
+  const images = picked.every(file => isImageType(file.type));
+  if (!images && picked.length > 1) return refuse('Send one file at a time, or up to 4 images together.');
+  const next = images && waiting.every(file => isImageType(file.type)) ? [...waiting, ...picked] : [...picked];
+  if (next.length > MAX_ITEMS) return refuse('An album holds at most 4 images.');
+  if (next.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) return refuse('One message carries at most 25 MB.');
+  return { files: next, problem: null };
 };
 
 const utf8Length = (text: string): number => new TextEncoder().encode(text).length;
+
+/** At most `max` UTF-8 bytes of `text`, whole characters only. */
+const clipBytes = (text: string, max: number): string => {
+  let out = '';
+  for (const char of text) {
+    if (utf8Length(out + char) > max) break;
+    out += char;
+  }
+  return out;
+};
+
+/**
+ * A file's name for the wire: at most 128 bytes (the receiver's decoder
+ * drops a longer one, and the whole message with it), keeping the extension
+ * when it is short. Null for no name.
+ */
+export const wireFileName = (name: string): string | null => {
+  const base = (name.split(/[/\\]/).pop() ?? '').trim();
+  if (base === '') return null;
+  if (utf8Length(base) <= ATTACHMENT_BOUNDS.name) return base;
+  const extension = /\.[\w-]{1,10}$/.exec(base)?.[0] ?? '';
+  return `${clipBytes(base.slice(0, base.length - extension.length), ATTACHMENT_BOUNDS.name - utf8Length(`…${extension}`))}…${extension}`;
+};
+
+/** The MIME type for the wire: the browser's, or `application/octet-stream` when it has none or it is over 64 bytes. */
+export const wireMime = (type: string): string => {
+  const trimmed = type.trim();
+  return trimmed === '' || utf8Length(trimmed) > ATTACHMENT_BOUNDS.mime ? OCTET_STREAM : trimmed;
+};
+
+/** Spec 0012 "Other files: sent as they are, `media = file`", with the file's name. */
+export const prepareFile = (file: { bytes: Uint8Array; name: string; type: string }): PreparedFile => ({
+  bytes: file.bytes,
+  mime: wireMime(file.type),
+  name: wireFileName(file.name),
+  media: { kind: 'file' },
+  blurhash: null,
+  thumbnail: null,
+});
+
+/** The ciphertext length of chunk `index` (plaintext part plus the tag). */
+export const cipherChunkLength = (item: Pick<AttachmentItem, 'size' | 'chunkSize'>, index: number): number =>
+  Math.max(0, Math.min(item.chunkSize, item.size - index * item.chunkSize)) + TAG_BYTES;
+
+/** Spec 0012 "Source order": chunks over 512 KB go to the gateway first. */
+export const gatewayFirst = (item: Pick<AttachmentItem, 'size' | 'chunkSize'>, index: number): boolean => cipherChunkLength(item, index) > GATEWAY_FIRST_ABOVE;
 
 const contentLength = (items: readonly AttachmentItem[], caption: string | null): number =>
   attachmentContentLength({ items: items.map(attachmentItemWire), caption: caption ?? undefined });
@@ -236,7 +304,7 @@ export const createAttachmentService = ({ bulletin, store, now = Date.now }: Att
       const out = new Uint8Array(item.size);
       let offset = 0;
       for (const [i, hash] of item.chunks.entries()) {
-        const { bytes } = await target.bulletin.fetch(item.store.genesis, bytesToHex(hash), item.store.mirror, only);
+        const { bytes } = await target.bulletin.fetch(item.store.genesis, bytesToHex(hash), item.store.mirror, only, gatewayFirst(item, i));
         // The hash is checked before the cipher sees a byte (decryptChunk).
         const plain = await decryptChunk(item, i, bytes);
         out.set(plain, offset);

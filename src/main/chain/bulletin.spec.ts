@@ -15,6 +15,7 @@ import {
   contentHash,
   fetchVerified,
   httpsPrefix,
+  sourceOrder,
   storeWithRetry,
 } from './bulletin';
 
@@ -109,6 +110,17 @@ describe('fetching one chunk', () => {
   it('gives up on a source after its time', async () => {
     const slow = { name: 'mirror' as const, get: () => new Promise<Uint8Array>(() => undefined) };
     await expect(fetchVerified(hash, [slow], 20)).rejects.toThrow(/mirror: mirror timed out/);
+  });
+});
+
+describe('source order (spec 0012, measured on devnet)', () => {
+  const sources = [{ name: 'bitswap' as const }, { name: 'mirror' as const }, { name: 'gateway' as const }];
+  it('asks bitswap first for a small chunk: it is fast there and tells no gateway what we read', () => {
+    expect(sourceOrder(sources, false).map(s => s.name)).toEqual(['bitswap', 'mirror', 'gateway']);
+  });
+  it('asks the gateway first for a chunk over 512 KB (bitswap took ~30 s for 2 MB), and still falls back to bitswap', () => {
+    expect(sourceOrder(sources, true).map(s => s.name)).toEqual(['gateway', 'mirror', 'bitswap']);
+    expect(sourceOrder([sources[0], sources[2]] as typeof sources, true).map(s => s.name)).toEqual(['gateway', 'bitswap']);
   });
 });
 

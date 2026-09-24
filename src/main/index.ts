@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { join } from 'node:path';
 
+import { removeOpenedCopies } from './files';
 import { isHeadless } from './headless';
 import { runAgentSelftest } from './agent/service';
 import { registerIpc, shutdownAgent } from './ipc';
@@ -125,6 +126,10 @@ app.on('activate', () => {
 
 // M13: the published agent's process ends with the app.
 app.on('before-quit', () => shutdownAgent());
+// M15b: the plaintext copies "Open" wrote to the temp folder go with the app.
+app.on('will-quit', () => {
+  removeOpenedCopies();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

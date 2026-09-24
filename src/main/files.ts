@@ -4,10 +4,15 @@
  * under the OS temp directory and hands it to the default app (never a
  * webview); "Save…" asks where with the system dialog. The name comes from a
  * remote message, so it is cut to a plain file name first.
+ *
+ * M15b: the "Open" copies are plaintext outside the app's store, so every
+ * folder this process made is removed when the app quits
+ * (`removeOpenedCopies`, from index.ts `will-quit`). Only this process's
+ * folders: another running copy of the app keeps its own.
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type BrowserWindow, app, dialog, shell } from 'electron';
@@ -22,11 +27,29 @@ const checkBytes = (bytes: unknown): Uint8Array => {
   return bytes;
 };
 
+const openedCopies = new Set<string>();
+
+/** Deletes every "Open" folder this process wrote. A folder that is gone already is fine. */
+export function removeOpenedCopies(): number {
+  let removed = 0;
+  for (const dir of openedCopies) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      removed += 1;
+    } catch (error) {
+      console.warn('[files] could not remove an opened copy', error);
+    }
+  }
+  openedCopies.clear();
+  return removed;
+}
+
 /** Writes the file to a new temp folder and opens it with the system's default app. */
 export async function openFile(bytes: unknown, name: unknown, mime: unknown): Promise<void> {
   const data = checkBytes(bytes);
   const dir = join(app.getPath('temp'), 'polkadot-chat-attachments', randomUUID());
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  openedCopies.add(dir);
   const path = join(dir, safeFileName(name, mime));
   writeFileSync(path, data, { mode: 0o600 });
   const problem = await shell.openPath(path);

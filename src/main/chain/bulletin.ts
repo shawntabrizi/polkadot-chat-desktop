@@ -190,6 +190,17 @@ export async function storeWithRetry(steps: StoreSteps): Promise<void> {
 export type FetchSource = { name: 'bitswap' | 'mirror' | 'gateway'; get: (cid: string) => Promise<Uint8Array> };
 
 /**
+ * Spec 0012 "Source order" (measured on devnet): `bitswap_v1_get` is fast for
+ * small chunks but takes ~30 s for 2 MB, where the gateway takes 6–8 s. So a
+ * chunk over 512 KB tries the gateway first and bitswap last; the mirror (if
+ * any) stays in the middle. The caller knows the chunk's size; main does not.
+ */
+export const sourceOrder = <T extends { name: FetchSource['name'] }>(sources: readonly T[], gatewayFirst: boolean): T[] => {
+  const rank = (name: FetchSource['name']) => (name === 'mirror' ? 1 : (name === 'gateway') === gatewayFirst ? 0 : 2);
+  return [...sources].sort((x, y) => rank(x.name) - rank(y.name));
+};
+
+/**
  * Spec 0012 "Download flow" step 3–4: each source in order, 30 s each; bytes
  * whose blake2b-256 is not the listed hash are dropped and the next source is
  * tried (every source is untrusted). Rejects when none gave the chunk.
@@ -252,8 +263,12 @@ export type BulletinService = {
    * stored again. `onProgress` gets each step.
    */
   store: (ciphertexts: readonly Uint8Array[], onProgress?: (progress: StoreProgress) => void) => Promise<StoredChunk[]>;
-  /** One chunk by its hash: RPC `bitswap_v1_get`, then `mirror`, then the gateway (or only `only`). */
-  fetchChunk: (hash: Uint8Array, mirror: string | null, only?: FetchSource['name']) => Promise<{ bytes: Uint8Array; source: FetchSource['name'] }>;
+  /**
+   * One chunk by its hash: RPC `bitswap_v1_get`, then `mirror`, then the
+   * gateway; the gateway first when `gatewayFirst` (a chunk over 512 KB, see
+   * `sourceOrder`); or only `only`.
+   */
+  fetchChunk: (hash: Uint8Array, mirror: string | null, only?: FetchSource['name'], gatewayFirst?: boolean) => Promise<{ bytes: Uint8Array; source: FetchSource['name'] }>;
   dispose: () => void;
 };
 
@@ -388,7 +403,7 @@ export function createBulletinService(
     return result;
   };
 
-  const fetchChunk = (hash: Uint8Array, mirror: string | null, only?: FetchSource['name']) => {
+  const fetchChunk = (hash: Uint8Array, mirror: string | null, only?: FetchSource['name'], gatewayFirst = false) => {
     if (hash.length !== 32) return Promise.reject(new Error('A content hash is 32 bytes.'));
     const sources: FetchSource[] = [
       { name: 'bitswap', get: async cid => fromHex(await chain.client._request<string, [string]>('bitswap_v1_get', [cid])) },
@@ -396,7 +411,7 @@ export function createBulletinService(
     const safeMirror = httpsPrefix(mirror);
     if (safeMirror) sources.push({ name: 'mirror', get: cid => httpGet(`${safeMirror}${cid}`) });
     sources.push({ name: 'gateway', get: cid => httpGet(`${chain.gateway}${cid}`) });
-    return fetchVerified(hash, only ? sources.filter(source => source.name === only) : sources);
+    return fetchVerified(hash, only ? sources.filter(source => source.name === only) : sourceOrder(sources, gatewayFirst));
   };
 
   return { address, genesis: chain.genesis, allowance, ensureBudget, store, fetchChunk, dispose: () => undefined };

@@ -501,7 +501,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
       if (!event.sender.isDestroyed()) event.sender.send(IPC.bulletinProgress, { uploadId, stored, total });
     });
   });
-  ipcMain.handle(IPC.bulletinFetch, async (_event, genesis: unknown, hash: unknown, mirror: unknown, only: unknown): Promise<{ bytes: Uint8Array; source: string }> => {
+  ipcMain.handle(IPC.bulletinFetch, async (_event, genesis: unknown, hash: unknown, mirror: unknown, only: unknown, gatewayFirst: unknown): Promise<{ bytes: Uint8Array; source: string }> => {
     if (typeof genesis !== 'string' || !GENESIS.test(genesis)) throw new Error('Invalid chain id.');
     if (typeof hash !== 'string' || !CONTENT_HASH.test(hash)) throw new Error('Invalid content hash.');
     if (mirror !== null && typeof mirror !== 'string') throw new Error('Invalid mirror.');
@@ -509,7 +509,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     const service = await bulletinFor(countBulletin);
     // Spec 0012: a client on another network refuses rather than fetch the wrong chain.
     if (genesis.toLowerCase() !== service.genesis.toLowerCase()) throw new Error('This attachment is on another network.');
-    return service.fetchChunk(Uint8Array.from(Buffer.from(hash.slice(2), 'hex')), mirror, only as 'bitswap' | 'mirror' | 'gateway' | undefined);
+    return service.fetchChunk(Uint8Array.from(Buffer.from(hash.slice(2), 'hex')), mirror, only as 'bitswap' | 'mirror' | 'gateway' | undefined, gatewayFirst === true);
   });
   ipcMain.handle(IPC.fileOpen, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<void> => openFile(bytes, name, mime));
   ipcMain.handle(IPC.fileSave, (_event, bytes: unknown, name: unknown, mime: unknown): Promise<boolean> => saveFile(getWindow(), bytes, name, mime));

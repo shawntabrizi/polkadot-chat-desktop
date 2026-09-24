@@ -80,6 +80,13 @@
 //                   downloading (blurhash), one of ours storing chunk 1 of 2
 //   composer-attach M15a an image picked with the Paperclip: the attach row,
 //                   its size, Remove, the first-attachment notice, a caption
+//   room-file       M15b files (fixture): a received PDF not yet downloaded
+//                   ("Download · 2.2 MB") and a sent ZIP with Open / Save…
+//   room-album      M15b albums (fixture): a received album of 4 and a sent
+//                   one of 3, one caption each, in grid bubbles
+//   room-voice      M15b voice notes (fixture bytes recorded in the page by
+//                   MediaRecorder, WebM/Opus): a received one playing
+//                   (progress on the waveform) and a sent one
 //   settings-agent  M13 Settings › Agent, published for real on devnet with
 //                   PCD_SCREENSHOT_AGENT_IDENTITY (a path, default
 //                   .agent-runs/identity-pcdbenchcold/identity.json) as the
@@ -148,7 +155,7 @@ const WORKER_SHOTS = {
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'settings-agent', 'demo-onboarding', 'settings-demo',
-    'room-attachment', 'composer-attach',
+    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
@@ -799,22 +806,57 @@ const attachmentFixture = async () => {
     expiresAt: Date.now() + 13 * 24 * 3_600_000, attempts: 0, firstFailedAt: null, error: null, updatedAt: Date.now(),
   });
   const attachment = (image, chunks, caption = null) => ({ type: 'attachment', items: [item(image, chunks)], caption });
+  // M15b: files, albums and voice notes.
+  const { waveformOf } = await loadTs('src/renderer/domain/chat/voice.ts');
+  const plain = (size, byte) => ({ ...item({ png: new Uint8Array(1) }, Math.max(1, Math.ceil(size / 2_000_000))), size, key: fill(32, byte), nonce: fill(12, byte) });
+  const fileItem = (name, mime, size, byte) => ({ ...plain(size, byte), mime, name, media: { kind: 'file' }, blurhash: null });
+  const voiceItem = (durationMs, seed, byte) => ({
+    ...plain(4_000 * Math.ceil(durationMs / 1000), byte),
+    mime: 'audio/webm; codecs=opus',
+    name: null,
+    blurhash: null,
+    media: { kind: 'voice', durationMs, waveform: waveformOf(Float32Array.from({ length: 3_200 }, (_, i) => Math.sin(i / 7) * (0.15 + 0.85 * Math.abs(Math.sin(i / (90 + seed)) * Math.cos(i / (400 + seed)))))) },
+  });
+  const report = fileItem('Island trip budget.pdf', 'application/pdf', 2_300_000, 0x41);
+  const archive = fileItem('ferry-tickets.zip', 'application/zip', 412_000, 0x42);
+  const archiveBytes = new Uint8Array(412_000).fill(7);
+  const albumIn = [sunset, harbour, dusk, beach];
+  const albumOut = [
+    scene(360, 360, { top: [150, 200, 240], bottom: [250, 230, 200], sun: [255, 250, 220], sea: [10, 130, 160] }),
+    scene(360, 360, { top: [30, 40, 90], bottom: [200, 90, 110], sun: [255, 170, 120], sea: [30, 30, 70] }),
+    scene(360, 360, { top: [100, 170, 210], bottom: [230, 240, 250], sun: [255, 255, 230], sea: [40, 120, 120] }),
+  ];
+  const albumItems = images => images.map(image => item(image, 1));
+  const voiceIn = voiceItem(4_000, 13, 0x51);
+  const voiceOut = voiceItem(4_000, 61, 0x52);
+  const album = (id, images, status) => images.map((image, index) => ({ ...local(id, image, status, 1, 1), index }));
   return {
     contacts: [contactRow(SOFIA)],
-    rooms: [roomRow(SOFIA, ATTACH_CAPTION, t(5))],
+    rooms: [roomRow(SOFIA, 'Voice message (0:04)', t(12))],
     messages: [
       messageRow('fixture-sofia-hello', SOFIA, t(0), 'incoming', { type: 'text', text: 'Back from the islands! Photos coming.' }),
       messageRow('fixture-sofia-harbour', SOFIA, t(1), 'outgoing', attachment(harbour, 1, 'Ours from the harbour')),
       messageRow('fixture-sofia-dusk', SOFIA, t(2), 'incoming', attachment(dusk, 2)),
       messageRow('fixture-sofia-beach', SOFIA, t(3), 'outgoing', attachment(beach, 2), { status: 'sending' }),
       messageRow('fixture-sofia-sunset', SOFIA, t(5), 'incoming', attachment(sunset, 1, ATTACH_CAPTION)),
+      messageRow('fixture-sofia-pdf', SOFIA, t(6), 'incoming', { type: 'attachment', items: [report], caption: 'The budget, before I forget' }),
+      messageRow('fixture-sofia-zip', SOFIA, t(7), 'outgoing', { type: 'attachment', items: [archive], caption: null }),
+      messageRow('fixture-sofia-album-in', SOFIA, t(8), 'incoming', { type: 'attachment', items: albumItems(albumIn), caption: 'Best of the week' }),
+      messageRow('fixture-sofia-album-out', SOFIA, t(9), 'outgoing', { type: 'attachment', items: albumItems(albumOut), caption: 'And ours' }),
+      messageRow('fixture-sofia-voice-in', SOFIA, t(11), 'incoming', { type: 'attachment', items: [voiceIn], caption: null }),
+      messageRow('fixture-sofia-voice-out', SOFIA, t(12), 'outgoing', { type: 'attachment', items: [voiceOut], caption: null }),
     ],
     attachments: [
       local('fixture-sofia-sunset', sunset, 'ready', 1, 1),
       local('fixture-sofia-harbour', harbour, 'ready', 1, 1),
       local('fixture-sofia-dusk', dusk, 'downloading', 1, 2),
       local('fixture-sofia-beach', beach, 'uploading', 1, 2),
+      { ...local('fixture-sofia-zip', beach, 'ready', 1, 1), bytes: bytes(archiveBytes), mime: 'application/zip' },
+      ...album('fixture-sofia-album-in', albumIn, 'ready'),
+      ...album('fixture-sofia-album-out', albumOut, 'ready'),
     ],
+    // The voice rows' bytes are recorded in the page (recordFixtureVoice): a real WebM/Opus file.
+    voiceRows: ['fixture-sofia-voice-in', 'fixture-sofia-voice-out'],
     // The image the composer shot picks with the Paperclip.
     pick: drawScene(480, 320, { top: [60, 110, 170], bottom: [250, 200, 140], sun: [255, 230, 170], sea: [30, 80, 120] }).png,
   };
@@ -874,8 +916,9 @@ const mainWorker = async () => {
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
     await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
-    const { pick, ...attachRows } = await attachmentFixture();
+    const { pick, voiceRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
+    await recordFixtureVoice(app, voiceRows);
     writeFileSync(join(profile, 'pick.png'), pick);
     await app.reload(app.exists('[data-testid=chat-row-assistant]'));
     log('fixture written');
@@ -891,6 +934,55 @@ const mainWorker = async () => {
   }
 };
 
+/**
+ * M15b: a real voice note for the fixture: the page records 4 s of a
+ * modulated tone with MediaRecorder (WebM/Opus, as the app records the
+ * microphone) and stores it as the local copy of each voice row, so the
+ * player plays real audio.
+ */
+const recordFixtureVoice = (app, messageIds) =>
+  app.evaluate(`(async () => {
+    const context = new AudioContext({ sampleRate: 48000 });
+    const tone = context.createOscillator();
+    const gain = context.createGain();
+    const wobble = context.createOscillator();
+    const depth = context.createGain();
+    tone.frequency.value = 220;
+    wobble.frequency.value = 3;
+    depth.gain.value = 0.4;
+    wobble.connect(depth).connect(gain.gain);
+    const out = context.createMediaStreamDestination();
+    out.channelCount = 1;
+    tone.connect(gain).connect(out);
+    tone.start();
+    wobble.start();
+    const recorder = new MediaRecorder(out.stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
+    const parts = [];
+    recorder.ondataavailable = event => parts.push(event.data);
+    const stopped = new Promise(done => { recorder.onstop = done; });
+    recorder.start();
+    await new Promise(done => setTimeout(done, 4000));
+    recorder.stop();
+    await stopped;
+    await context.close();
+    const bytes = new Uint8Array(await new Blob(parts).arrayBuffer());
+    const ids = ${JSON.stringify(messageIds)};
+    await new Promise((done, fail) => {
+      const open = indexedDB.open('polkadot-chat-web');
+      open.onerror = () => fail(open.error);
+      open.onsuccess = () => {
+        const tx = open.result.transaction(['attachments'], 'readwrite');
+        for (const messageId of ids) {
+          tx.objectStore('attachments').put({ messageId, index: 0, status: 'ready', done: 1, total: 1, bytes, mime: 'audio/webm; codecs=opus',
+            expiresAt: Date.now() + 13 * 24 * 3600000, attempts: 0, firstFailedAt: null, error: null, updatedAt: Date.now() });
+        }
+        tx.oncomplete = () => { open.result.close(); done(true); };
+        tx.onerror = () => fail(tx.error);
+      };
+    });
+    return bytes.length;
+  })()`);
+
 /** M15a: the image bubble states and the composer's attach row (fixture rows, no chain). */
 const attachmentShots = async (app, pickPath) => {
   const openSofia = async () => {
@@ -905,6 +997,35 @@ const attachmentShots = async (app, pickPath) => {
     // The decoded images paint a frame later than the rows.
     await app.waitFor(`[...document.querySelectorAll('[data-testid=attachment-image]')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
     await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-sunset"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('room-file', async () => {
+    await openSofia();
+    const shown = `${app.exists('[data-message-id="fixture-sofia-pdf"] [data-testid=attachment-download]')} && ${app.exists('[data-message-id="fixture-sofia-zip"] [data-testid=attachment-open]')}`;
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('the file rows did not show (Download on the PDF, Open on the ZIP)');
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-pdf"]')?.scrollIntoView({ block: 'start' }); true`);
+  });
+
+  await app.shot('room-album', async () => {
+    await openSofia();
+    const tiles = id => `document.querySelectorAll('[data-message-id="${id}"] [data-testid=attachment-album] [data-testid=attachment-image]').length`;
+    const shown = `${tiles('fixture-sofia-album-in')} === 4 && ${tiles('fixture-sofia-album-out')} === 3`;
+    if (!(await app.waitFor(shown, 15_000))) throw new Error('the album grids did not show 4 and 3 images');
+    await app.waitFor(`[...document.querySelectorAll('[data-testid=attachment-album] img')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-album-out"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('room-voice', async () => {
+    await openSofia();
+    const play = `document.querySelector('[data-message-id="fixture-sofia-voice-in"] [data-testid=voice-play]')`;
+    if (!(await app.waitFor(`${play} && !${play}.disabled`, 15_000))) throw new Error('the voice player did not get its audio');
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-voice-out"]')?.scrollIntoView({ block: 'end' }); true`);
+    // Play the received one: its waveform fills as the audio plays (proves the WebM/Opus copy plays).
+    await app.evaluate(`${play}.click(); true`);
+    if (!(await app.waitFor(`/^0:0[1-3] \\/ 0:04$/.test(document.querySelector('[data-message-id="fixture-sofia-voice-in"] [data-testid=voice-duration]')?.textContent ?? '')`, 8_000))) {
+      throw new Error('the voice note did not play (no progress)');
+    }
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-sofia-voice-in"] audio')?.pause(); true`);
   });
 
   await app.shot('composer-attach', async () => {

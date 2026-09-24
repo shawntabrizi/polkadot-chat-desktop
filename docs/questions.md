@@ -192,3 +192,11 @@ Write the question, what you did meanwhile, and the date.
 - **"Open" leaves a copy in the OS temp folder** (`$TMPDIR/polkadot-chat-attachments/<uuid>/`), which macOS clears on its own schedule. Delete it on quit instead?
 - **The attachment key sits in the message row**, not in `secrets` (database.ts keeps private keys apart). It is message content, like the text it protects; M16 asked the same about epoch keys. One answer for both?
 - **Flag for M16 cleanup (not changed here):** `docs/acceptance.md` "## M16" › "npm run e2e:group (v1 unchanged)" holds three lines of an `e2e:attach` run (PEOPLE, BOT_DESCRIBE_SKIPPED, ATTACH_OK), not e2e:group output.
+
+## M15b (2026-09-24)
+
+- **The fleet guide bot does not describe images, so `BOT_DESCRIBE_OK` cannot pass.** pcdguide.70 (REVISION 587159f) fetches the image and then answers "I can't see images—tools are disabled. The operator can enable image viewing with `/tools read,web`." (live, 2026-09-24; it first sends "Welcome! 👋 I'm your Polkadot support guide…"). The e2e now fails on that, as it must. Passing needs a fleet change this agent may not make: pca's `--media-analyzer` for the guide bot (M15.md pca step 3), or `/tools read,web` from its operator. Which one, and who does it?
+- **Voice container (0012 Unresolved 5).** Electron 44 cannot record Ogg (`isTypeSupported('audio/ogg;codecs=opus')` is false). Voice notes go out as `audio/webm; codecs=opus`. Accept WebM in the spec (pca and phone apps must then play WebM/Opus), or require a remux to Ogg before send?
+- **Keys table.** Review M15a item 5 (one `keys` table for attachment and epoch keys) and review M16 (keys table in M16b's carry) name the same table. M15b did not add it, so two agents do not add two Dexie versions for one table. Attachment keys stay in the message row until M16b's table lands; then they move with a migration. Right?
+- **Video** (M15.md "Later: M15b … video (poster frame as thumbnail)") was not in this run's brief and is not built; a received video shows as a file row. M15c, or its own step?
+- **Album stores run one image after the other.** Four photos wait four best blocks (~6 s each on devnet). One store call with every chunk of the album (at most 14) would put them in flight at once; the renderer then maps progress back to the items. Worth it?

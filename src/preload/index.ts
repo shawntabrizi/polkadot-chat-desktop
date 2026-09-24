@@ -93,7 +93,7 @@ const api: DesktopApi = {
   bulletin: {
     store: (uploadId, chunks) => ipcRenderer.invoke(IPC.bulletinStore, uploadId, chunks),
     onProgress: listen(IPC.bulletinProgress),
-    fetch: (genesis, hash, mirror, only) => ipcRenderer.invoke(IPC.bulletinFetch, genesis, hash, mirror, only),
+    fetch: (genesis, hash, mirror, only, gatewayFirst) => ipcRenderer.invoke(IPC.bulletinFetch, genesis, hash, mirror, only, gatewayFirst),
   },
   files: {
     open: (bytes, name, mime) => ipcRenderer.invoke(IPC.fileOpen, bytes, name, mime),

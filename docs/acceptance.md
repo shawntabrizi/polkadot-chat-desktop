@@ -3511,3 +3511,97 @@ New: `room-attachment.png` (a received photo with caption, Open and Save…; one
 ### git status --short
 
 Clean after the commit (the `.agent-runs` link is removed first).
+
+## M15b — Attachments: files, albums, voice notes, cleanup (2026-09-24)
+
+### npm run check
+
+```
+ Test Files  85 passed (85)
+      Tests  731 passed (731)
+check:tokens: clean (176 files)
+```
+
+tsc, vitest, eslint and the token lint exit 0. New or changed specs: `attachments.spec.ts` (a file goes out as `media = file` with its name and the peer decrypts the same bytes; a long name stays within the receiver's 128 bytes; a 2.3 MB file fetches its 2 MB chunk gateway first and its 300 KB chunk bitswap first; an album of 4 is one message, one statement, four stores, four keys; a fifth image, a mixed pick, an empty or 25 MB+ pick are refused; a voice note over 5 minutes is refused and 5:00 goes; a voice note carries its duration and 32-bar waveform, no name), `voice.spec.ts` (waveform peaks 0–255, silence stays 0), `files.spec.ts` ("Open" copies removed at quit, only this process's), `bulletin.spec.ts` (source order), `scripts/lib/botDescribe.spec.mjs` (the M15a greeting, the welcome and the live refusal all fail; a description passes).
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<throwaway> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### PCD_HEADLESS=1 npm run e2e:attach — exit 1 (BOT_DESCRIBE_FAILED)
+
+Every desktop step passes (FILE_OK, ALBUM_OK, VOICE_OK). The bot step fails, as it now must: pcdguide.70 (fleet REVISION 587159f) fetched the image and answered that it cannot view images without tools. The stricter check is right; the fleet is not set up to describe (docs/questions.md "## M15b"). No `ATTACH_OK` line is printed. `[bulletin]` log lines left out.
+
+```
+[a] SELF pcdecejakd.11 0xdce64f1a9918e03187650ca7c10ceeaf2efbe98afe028c50aaa1ca05355a4653
+[b] SELF pcdeceb.89 0x8a2444c042d4e4fdc8b2355362baa1c853e66ac6963c4d170cfed31b5c4a805b
+[a] READY username=pcdecejakd.11 bulletin=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT
+[b] READY username=pcdeceb.89 bulletin=5GEPcEE6F6dDEA2aST5AmkYzAzSWxHPjXFNd5tzCSSwb4n75
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=3.6s
+[a] CHAT_REQUEST_SENT id=4dba3f55-b0f8-4266-ae2d-998fc8ab303b to=pcdeceb.89
+[b] ACCEPTED pcdecejakd.11
+[a] CONTACT pcdeceb.89 devices=1
+[a] AUTH_OK account=5HbWpmFufMbqLfcfPdJPZorHRcLXUdnFFPoTd1fFBCV9D3eT granted=no (had storage) transactions_left=81 bytes_left=58949460 expires_block=1172674
+[a] IMAGE bytes=303840 sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] STORED bafk2bzacebu7hahswv5ptyi3om2ehthgqzm3q7anqqigfhlqbc2wt7zpw5aae block=971575 best=yes
+[a] SENT id=23615e64-635c-4dab-b1ae-3790ab594d6b sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a statements_delta=1 messages_delta=1 bulletin_tx_delta=1 status=sent
+[b] FETCH_OK id=23615e64-635c-4dab-b1ae-3790ab594d6b status=ready sources=bitswap sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a chunks=1 cid0=bafk2bzacebu7hahswv5ptyi3om2ehthgqzm3q7anqqigfhlqbc2wt7zpw5aae
+[b] GATEWAY_OK id=23615e64-635c-4dab-b1ae-3790ab594d6b status=ready sources=gateway sha256=7a2992f82b27c346d01259d9789b3f74e8c8703b764f1489567b24433a49f89a
+[a] STORED bafk2bzacecn45d3eitdvghx4tlhjnoa5cymv44n6avhsvyoz733ou3uvu54fs block=971580 best=yes
+[a] STORED bafk2bzaceac6bdzgqvnw7pbul25kjplpigeh44nyj726c6ucy4ck3fh65lyjm block=found-by-content-hash best=yes
+[a] FILE_SENT id=d85bd27f-08ab-4060-82b7-2b322bbf5354 sha256=e5c438377f408ceb44ea932b1484f584cc0ca3182db90789a061f64aaddc1163 size=2300000 name=m15b-e2e-archive.bin mime=application/octet-stream chunks=2 statements_delta=1 bulletin_tx_delta=2
+[b] FILE_OK id=d85bd27f-08ab-4060-82b7-2b322bbf5354 name=m15b-e2e-archive.bin media=file size=2300000 order=gateway-first,bitswap-first sources=gateway,bitswap sha256=e5c438377f408ceb44ea932b1484f584cc0ca3182db90789a061f64aaddc1163
+[a] STORED bafk2bzaced3rhbd7ngkoiwx2u5d4ongq6oshq4xe2qtklf2mbkesbsgmrv22e block=971591 best=yes
+[a] STORED bafk2bzacecdbqriu7jymi2wctucpjir45dgo7upq3jqtgu25mko5widpzl4ps block=971592 best=yes
+[a] STORED bafk2bzacebzq75bv6uykm7hthnfocoy2ebqk27zuxcksrfsah6o6lchek7veo block=971593 best=yes
+[a] STORED bafk2bzacede7rvr7kqod67jl5t55v6rq5z52qe4anbmentg6axie2ie6zdwru block=971595 best=yes
+[a] ALBUM_SENT id=cd21e69e-4a9d-4bab-9452-9205217f45f6 sha256=b37080031ed4d58e3d79abdcceff0230f3443236bf3745fd93f4e8538da0afd4,810421120a7b917a8952434f8a6637156cc644562fbc25f8148d9c8a20fbfdff,8616167072ab7c08293f78eb04a67176264ef87d129227071e66212a4b4ce862,a6c3d73529834fdcdab0185748d46acf172c8d75bfa909d310b6b168eeda275a items=4 statements_delta=1 bulletin_tx_delta=4
+[b] ALBUM_OK id=cd21e69e-4a9d-4bab-9452-9205217f45f6 items=4 kinds=image,image,image,image caption="M15b: an album of four" sources=bitswap,bitswap,bitswap,bitswap ready=4
+[a] STORED bafk2bzacecdj6jiokwgab7iud4ysjaso5owkzzo72tflljs3pes4ijffclaa6 block=971596 best=yes
+[a] VOICE_SENT id=eb64d63c-61a0-4a9a-b8a1-ab5ef89d5396 sha256=503c5b1b2fe747e3e7e0b76aeba77f19b1ea043811a35c220e00fabc3dcdd30a size=180000 duration_ms=60000 bars=32 mime="audio/webm; codecs=opus" over_5min_refused=yes statements_delta=1 bulletin_tx_delta=1
+[b] VOICE_OK id=eb64d63c-61a0-4a9a-b8a1-ab5ef89d5396 media=voice duration_ms=60000 bars=32 mime="audio/webm; codecs=opus" sources=bitswap sha256=503c5b1b2fe747e3e7e0b76aeba77f19b1ea043811a35c220e00fabc3dcdd30a
+[a] BOT_CONTACT pcdguide.70 greeting_before_send=yes
+[a] STORED bafk2bzacecrspjkktlsbtzazwglndbalrls7h5ouk7wak6zx5zw65ybmnaabo block=971601 best=yes
+[a] BOT_ROW system at=2026-09-24T06:57:45.771Z id=accepted:7c92282a-60f2-497d-a907-eba5e3e813ec "contactAdded"
+[a] BOT_ROW system at=2026-09-24T06:57:45.772Z id=bot-greeting:0x98e64752115957c142e941a39adf7bcf9b479c51d6d9eb9955ea39741058ad06 "botGreeting"
+[a] BOT_ROW incoming at=2026-09-24T06:57:48.955Z id=0316424C-55AF-4AF3-8758-AF3095B10FB0 (before) "Hey! 👋 I'm your Polkadot support guide—feel free to ask me anything about staking, governance, para"
+[a] BOT_ROW outgoing at=2026-09-24T06:57:49.540Z id=fe5b26fc-5fff-4dcf-b03a-e77099e83799 "attachment"
+[a] BOT_ROW incoming at=2026-09-24T06:58:14.044Z id=814FFDDC-4544-4EFB-A879-CBEA7F6382EA "I can't view images without tools—the operator can enable them with `/tools read,web`."
+[a] BOT_DESCRIBE_FAILED bot=pcdguide.70 attachment=fe5b26fc-5fff-4dcf-b03a-e77099e83799 reply=814FFDDC-4544-4EFB-A879-CBEA7F6382EA reply_type=text text="I can't view images without tools—the operator can enable them with `/tools read,web`."
+bot describes the image: BOT_DESCRIBE_FAILED bot=pcdguide.70 attachment=fe5b26fc-5fff-4dcf-b03a-e77099e83799 reply=814FFDDC-4544-4EFB-A879-CBEA7F6382EA reply_type=text text="I can't view images without tools—the operator can enable them with `/tools read,web`."
+```
+
+The one `block=found-by-content-hash`: a 2 MB chunk took longer than the 60 s wait to reach a best block (a probe measured 41 s for one 2 MB store alone); the `TransactionByContentHash` check then found it stored, and nothing was sent twice.
+
+An earlier run with the first version of the bot check (the bot's first text after the attachment) failed on the bot's welcome, sent 2 s after the attachment: "Welcome! 👋 I'm your Polkadot support guide—ask me anything about staking, governance, the Polkadot app, or Polkadot in general!". Its real answer came 44 s later: "I can't see images—tools are disabled. The operator can enable image viewing with `/tools read,web`." The check now skips texts that do not describe until a description or a refusal comes.
+
+### npm run screenshots -- --only room-attachment,composer-attach,room-file,room-album,room-voice
+
+```
+PNGs:
+  .agent-runs/screens/berlin-day/room-attachment.png
+  .agent-runs/screens/berlin-night/room-attachment.png
+  .agent-runs/screens/berlin-day/room-file.png
+  .agent-runs/screens/berlin-night/room-file.png
+  .agent-runs/screens/berlin-day/room-album.png
+  .agent-runs/screens/berlin-night/room-album.png
+  .agent-runs/screens/berlin-day/room-voice.png
+  .agent-runs/screens/berlin-night/room-voice.png
+  .agent-runs/screens/berlin-day/composer-attach.png
+  .agent-runs/screens/berlin-night/composer-attach.png
+SCREENSHOTS_OK in 15.5 s
+exit=0
+```
+
+Reviewed by the agent: `room-file` shows a received PDF row ("Download · 2.2 MB") and a sent ZIP row with Open and Save…; `room-album` a received 2×2 grid and a sent grid of 3 (first image across the top), one caption each; `room-voice` a received voice note playing ("0:01 / 0:04", played bars dark) and a sent one. The voice bytes were recorded in the page by MediaRecorder (WebM/Opus, 4 s of a tone), so the player played a real recording. Full `npm run screenshots` not run (only the attachment shots changed).
+
+### Not run
+
+- **Recording from a real microphone.** In a headless Electron here, `getUserMedia` waits for the macOS microphone permission and never resolves (a probe with `--use-fake-device-for-media-stream` hung too). The recorder's parts were checked instead: `MediaRecorder` with `audio/webm;codecs=opus` at 24 kbps records and `decodeAudioData` reads it back (2 s → 6,248 bytes, 1.92 s decoded; Electron 44.4.1), and the `room-voice` shot records and plays through the same APIs. The mic button and strip were not pressed in a shot.
+- **Packaged app** (`npm run package`): not run; `electron-builder.yml` gains `NSMicrophoneUsageDescription`.
+
+### git status --short
+
+(clean after the commit)

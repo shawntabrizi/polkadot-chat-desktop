@@ -412,9 +412,11 @@ export type DesktopBulletinApi = {
   /**
    * One chunk by its content hash (0x-hex) on the Bulletin chain `genesis`:
    * `bitswap_v1_get`, then `mirror`, then the network's gateway (or only
-   * `only`). The bytes match the hash; the renderer checks again.
+   * `only`). `gatewayFirst` (a chunk over 512 KB, spec 0012 "Source order")
+   * puts the gateway first and bitswap last. The bytes match the hash; the
+   * renderer checks again.
    */
-  fetch: (genesis: string, hash: string, mirror: string | null, only?: 'bitswap' | 'mirror' | 'gateway') => Promise<{ bytes: Uint8Array; source: string }>;
+  fetch: (genesis: string, hash: string, mirror: string | null, only?: 'bitswap' | 'mirror' | 'gateway', gatewayFirst?: boolean) => Promise<{ bytes: Uint8Array; source: string }>;
 };
 
 /** Spec 0012: a decrypted attachment leaves the renderer only through these. */
