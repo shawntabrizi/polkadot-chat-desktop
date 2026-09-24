@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1-preview (2026-09-24)
+
+- Fix: reopening from the Dock no longer crashes after the app was moved while running (for example from the build folder into Applications). The app now says it was moved and quits cleanly; open it again from its new place.
+- Deleted chats stay deleted across restarts; the signing strip docks above the composer; expired transaction buttons explain themselves and offer to ask for a new one; buttons that never expire (top-ups); long button labels are shortened instead of dropping the keyboard.
+- Demo mode lists six bots (the Faucet is built into the app); the Color bot answers with swatch images, including the dominant colour of a PNG or JPEG you send.
+
 ## 0.2.0-preview
 
 The first build for testers. macOS on Apple Silicon, Polkadot devnet only.
