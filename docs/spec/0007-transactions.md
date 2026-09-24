@@ -69,3 +69,10 @@ Fee payment by persons (PGAS allowance vs funded account) is outside this spec; 
 ### Person-to-person payments (M12g, 2026-09-24)
 
 No new wire kind. A **request** is a `buttons` message (0006) with one `tx` button whose intent is `Balances.transfer_keep_alive(requester, amount)` with `display.title = "Pay <requester> <amount> PAS"`, `expiresAt = now + 7 d`. A **payment** is the payer's `transactionReference` with `note = "req:<request messageId> <words>"`; the requester marks the request paid only when such a reference is in a block AND the chain shows the transfer to it for that amount. A **direct send** posts a reference with `note = "Sent <amount> PAS[ · <words>]"`; the receiver SHOULD verify the transfer on chain before presenting it as received. A "Decline" is a plain text "Declined: <title>". Unresolved: a second device may pay a request twice (v1 accepts this; the first paid reference wins).
+
+### Limits of a Revive call (revision 2026-09-24, from the flip race)
+
+A dry-run sizes one contract path; the extrinsic may run another (a reorg, or another caller landing first). Seen live: the flip's second stake failed with `StorageDepositLimitExhausted`, and the mirror race with `OutOfGas`. Rules:
+- The **author** of a `tx` intent sets each kind-1 call's `storageDepositLimit`, `gasRefTime` and `gasProofSize` from the call's worst case over all contract paths: deposit limit = max(deposit × 1.5, deposit + 0.1 PAS); gas = measured × 1.5. These are caps; the signer pays only what the call uses.
+- The **signer** signs with, per field, the larger of the intent's value and its own estimate plus margin. For an intent without limits (a brain's buttons block), the signer floors the deposit at estimate + 0.1 PAS; gas stays at estimate + 20 %, so such intents remain exposed to path changes.
+- A reference's "in block" may name a best block later reorged away; the bubble tracks finality from the chain (M12c), so the final block can differ.
