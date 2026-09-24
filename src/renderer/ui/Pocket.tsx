@@ -128,7 +128,7 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
               <QrCode value={address} size={144} alt="QR code of your address" />
             </div>
             <div className="flex min-w-0 flex-col gap-3">
-              <p className="text-body-m font-mono break-all text-fg-primary" data-testid="pocket-address">
+              <p className="text-code font-mono overflow-hidden text-ellipsis whitespace-nowrap text-fg-primary" title={address} data-testid="pocket-address">
                 {address}
               </p>
               <p className="text-body-s text-fg-secondary">The same address on Asset Hub and the People chain. Test funds on this network have no value.</p>
