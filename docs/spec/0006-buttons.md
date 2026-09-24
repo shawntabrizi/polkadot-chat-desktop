@@ -121,3 +121,7 @@ The fenced block is a host convention for text-only models, not wire format. A s
 A received `buttons` whose rows, buttons per row, or label length exceed the limits is treated as undecodable: the client shows the base spec's unsupported message and never renders a partial keyboard. Hosts (pca, desktop) agree on this rule.
 
 Hosts with tool-calling engines (M13) MAY offer a `send_buttons` tool built from the same schema; a tool call yields the same `buttons` content as the fenced block. Hosts SHOULD accept bare-string buttons (label = command) and a flat row from a tool call.
+
+### Long labels (2026-09-24)
+
+Seen live: a model wrote quiz answers as button labels over 40 characters and the whole keyboard was dropped. Hosts SHOULD shorten a label over 40 characters to 39 characters plus an ellipsis rather than reject the keyboard (the wire limit stays 40), and SHOULD tell the model that labels are short (a few words) with the full text in the message.
