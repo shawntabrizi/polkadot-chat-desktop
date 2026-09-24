@@ -7,12 +7,13 @@ import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 
 
 import { type HexString, bytesToHex } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
-import { type MessageRow, type PeerId, isLocalPeer } from '../app/database';
+import { type MessageRow, type PeerId, groupIdOf, isGroupPeer, isLocalPeer } from '../app/database';
 import type { NetworkProfile } from '../app/network';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import type { BotInfo } from '../domain/chat/content';
 import type { ChatManager } from '../domain/chat/manager';
 import { displayName } from '../domain/chat/chatActions';
+import { groupDisplayName } from '../domain/chat/groupNames';
 import { parseInviteLink } from '../domain/chat/groupsV2';
 import { searchMessages } from '../domain/chat/messages';
 import { FAUCET_PEER, FAUCET_USERNAME } from '../domain/faucet/faucet';
@@ -87,6 +88,9 @@ const peerNameOf = (data: ListData | undefined, peer: PeerId): string => {
   if (peer === FAUCET_PEER) return FAUCET_USERNAME;
   const contact = data?.contacts.find(row => row.accountId === peer);
   if (contact) return displayName(contact);
+  // A message found in a group: the group's name, or its members' names when it has none.
+  const group = isGroupPeer(peer) ? data?.groups.find(row => row.id === groupIdOf(peer)) : undefined;
+  if (group && data) return groupDisplayName(group, data.self, data.contacts);
   return data?.requests.find(row => row.peerAccountId === peer)?.peerUsername ?? 'Unknown';
 };
 

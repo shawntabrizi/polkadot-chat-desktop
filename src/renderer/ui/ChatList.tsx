@@ -18,6 +18,7 @@ import {
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
 import { isLiveFrame } from '../domain/chat/content';
 import { displayName } from '../domain/chat/chatActions';
+import { groupDisplayName, readSelfAccount } from '../domain/chat/groupNames';
 import { draftPreview } from '../domain/chat/drafts';
 import { clearKey, deleteKey, withdrawKey } from '../domain/chat/undo';
 import { DEMO_NO_ANSWER_MS } from '../domain/demo/demo';
@@ -60,11 +61,13 @@ export type ListData = {
   groups: GroupRow[];
   /** M12e: peers this device blocked (the menu offers Unblock). */
   blocked: Map<HexString, BlockedRow>;
+  /** Our identity account: an unnamed group's derived name leaves it out. */
+  self: HexString | null;
 };
 
 /** Everything the list shows, read in one go (exported for the specs). */
 export const loadList = async (): Promise<ListData> => {
-  const [contacts, rooms, requests, drafts, peerInfo, groups, blocked] = await Promise.all([
+  const [contacts, rooms, requests, drafts, peerInfo, groups, blocked, self] = await Promise.all([
     db.contacts.toArray(),
     db.rooms.toArray(),
     db.requests.toArray(),
@@ -72,6 +75,7 @@ export const loadList = async (): Promise<ListData> => {
     db.peerInfo.toArray(),
     db.groups.toArray(),
     db.blocked.toArray(),
+    readSelfAccount(),
   ]);
   const lastMessages = new Map<PeerId, MessageRow>();
   await Promise.all(
@@ -92,6 +96,7 @@ export const loadList = async (): Promise<ListData> => {
     peerInfo: new Map(peerInfo.map(row => [row.peerId, row])),
     groups,
     blocked: new Map(blocked.map(row => [row.accountId, row])),
+    self,
   };
 };
 
@@ -348,9 +353,11 @@ export const buildRows = (
       const room = data.rooms.get(peer);
       const last = lastOf(peer);
       const target: ChatTarget = { kind: 'room', peer };
+      // Owner ask 2026-09-24: an unnamed group shows (and is found by) its members' names.
+      const name = groupDisplayName(group, data.self, data.contacts);
       return {
         key: peer,
-        name: group.name,
+        name,
         at: room && room.lastMessageAt > 0 ? room.lastMessageAt : group.createdAt,
         target,
         archived: room?.archived === true,
@@ -359,8 +366,8 @@ export const buildRows = (
           <ChatRow
             key={peer}
             testId="chat-row-group"
-            avatar={<GroupAvatar name={group.name} />}
-            name={group.name}
+            avatar={<GroupAvatar name={name} />}
+            name={name}
             time={last ? formatListTime(last.timestamp) : null}
             preview={previewWithDraft(data, peer, groupPreview(group, last))}
             unread={room?.unreadCount ?? 0}
@@ -368,7 +375,7 @@ export const buildRows = (
             highlighted={highlighted}
             onClick={() => open(target)}
             {...stateOf(room)}
-            menu={<ChatMenuItems subject={{ peer, name: group.name, kind: 'group', room, member: group.self === 'member' }} />}
+            menu={<ChatMenuItems subject={{ peer, name, kind: 'group', room, member: group.self === 'member' }} />}
           />
         ),
       };
@@ -454,7 +461,7 @@ export const useForwardTargets = (): readonly ForwardTarget[] => {
     const at = (peer: PeerId) => data.rooms.get(peer)?.lastMessageAt ?? 0;
     const entries = [
       ...data.contacts.filter(contact => data.rooms.has(contact.accountId) && !data.blocked.has(contact.accountId)).map(contact => ({ peer: contact.accountId as PeerId, name: displayName(contact) })),
-      ...data.groups.filter(group => group.self === 'member').map(group => ({ peer: groupPeerOf(group.id) as PeerId, name: group.name })),
+      ...data.groups.filter(group => group.self === 'member').map(group => ({ peer: groupPeerOf(group.id) as PeerId, name: groupDisplayName(group, data.self, data.contacts) })),
     ];
     targets.push(...entries.sort((a, b) => at(b.peer) - at(a.peer)));
   }

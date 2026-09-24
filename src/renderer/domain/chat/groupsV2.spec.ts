@@ -749,6 +749,45 @@ describe('M16b: pins, slow mode, settings', () => {
   });
 });
 
+describe('group names: rename and clear (owner ask 2026-09-24)', () => {
+  const lines = (person: Person) => person.storage.rows.filter(r => r.content.type === 'groupEvent').map(r => (r.content as { text: string }).text);
+
+  it('an unnamed group can be created; the owner names it and every member sees "<name> named the group “X”"', async () => {
+    const w = world(['A', 'B']);
+    for (const person of w.people) await person.service.start();
+    const { groupId } = await w.p('A').service.create('', [{ account: w.p('B').hex, username: 'B', joinedAt: w.clock.t }]);
+    await waitFor(async () => (await w.p('B').storage.getGroup(groupId))?.state?.version === 1);
+    expect((await w.p('B').storage.getGroup(groupId))?.name).toBe('');
+    expect(lines(w.p('A'))).toContain('You created the group');
+    expect(lines(w.p('B'))).toContain('A added you to the group');
+    await w.p('A').service.setSettings(groupId, { name: 'Crew' });
+    await waitFor(async () => (await w.p('B').storage.getGroup(groupId))?.name === 'Crew');
+    expect(lines(w.p('A'))).toContain('You named the group “Crew”');
+    expect(lines(w.p('B'))).toContain('A named the group “Crew”');
+    // Empty clears it back to the derived name.
+    await w.p('A').service.setSettings(groupId, { name: '' });
+    await waitFor(async () => (await w.p('B').storage.getGroup(groupId))?.name === '');
+    expect(lines(w.p('B'))).toContain('A removed the group name');
+  });
+
+  it('a member or an admin without `change info` cannot rename: refused before anything is sent, and receivers reject such a state', async () => {
+    const { store, p, groupId } = await created();
+    const before = store.submittedBy(p('B').signer);
+    await expect(p('B').service.setSettings(groupId, { name: 'Mine' })).rejects.toThrow();
+    await p('A').service.setRole(groupId, p('B').hex, 1);
+    await waitFor(async () => (await stateOf(p('B'), groupId))?.members.find(m => m.account === p('B').hex)?.role === ROLES.admin);
+    await p('A').service.setPermissions(groupId, p('B').hex, ADMIN_PERMISSIONS & ~PERMISSIONS.info);
+    await waitFor(async () => ((await stateOf(p('B'), groupId))?.members.find(m => m.account === p('B').hex)?.permissions ?? PERMISSIONS.info) & PERMISSIONS.info ? null : true);
+    await expect(p('B').service.setSettings(groupId, { name: 'Mine' })).rejects.toThrow();
+    expect(store.submittedBy(p('B').signer)).toBe(before);
+    const state = (await stateOf(p('A'), groupId))!;
+    const b = state.members.find(m => m.account === p('B').hex)!;
+    expect(stateChangeRefusal(state, { ...state, name: 'Mine', version: state.version + 1 }, b)).toBe('no-info');
+    // With the flag (an admin's default), the same rename goes through.
+    expect(stateChangeRefusal(state, { ...state, name: 'Mine', version: state.version + 1 }, { ...b, permissions: ADMIN_PERMISSIONS })).toBeNull();
+  });
+});
+
 describe('M16b: roles and permissions', () => {
   it('the owner promotes B to admin (default flags, not `manage admins`); B then removes C; B cannot demote the owner', async () => {
     const { store, p, groupId } = await created();

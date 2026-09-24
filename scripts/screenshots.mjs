@@ -57,7 +57,13 @@
 //                   row, in block, submitted; the Meter balance in the header
 //   room-typing     (group) the local "working…" after a message to pcdguide.70
 //   pocket          the Pocket: both balances, the address, its QR
-//   group-create    (group) "+" → New group, the name typed, both checked
+//   group-create    (group) "+" → New group, no name (the header shows the
+//                   members' names), both checked
+//   group-rename    the fixture private group's members panel: a new name
+//                   typed in Settings › Name, Save shown
+//   group-picker-gated  New group with fixture contacts: one capable, one
+//                   with a phone that never advertised groups, one never
+//                   heard from; the last two greyed with their reason
 //   room-group      (group) "hello all", the member's answer, the bot's reply
 //   group-members   (group) the members panel, the member's row hovered
 //   room-flip       (flip) the "Stake 0.5 PAS" signing strip after its dry-run
@@ -178,7 +184,6 @@ const agentIdentitySource = process.env.PCD_SCREENSHOT_AGENT_IDENTITY ?? join(ro
 const BOT = 'pcdpeer.47';
 const FLIP_BOT = 'pcdflip';
 const GROUP_BOT = 'pcdguide.70';
-const GROUP_NAME = 'Weekend crew';
 const DRAFT = 'Ask about the People chain later';
 const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
 
@@ -188,7 +193,7 @@ const WORKER_SHOTS = {
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-tx-expired', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
-    'group-invite', 'group-roles', 'room-pinned', 'room-dao',
+    'group-invite', 'group-roles', 'room-pinned', 'room-dao', 'group-rename', 'group-picker-gated',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'room-own-markdown', 'settings-storage',
     'settings-profiles', 'settings-security',
@@ -742,6 +747,37 @@ const daoFixture = async self => {
   };
 };
 
+/**
+ * group-picker-gated (owner ask 2026-09-24): three fictional contacts with no
+ * chat room (so the list does not show them). Aurora's one desktop advertised
+ * groups (0013 feature bit 0); Ben's desktop did, his phone never sent a set
+ * (a baseline client); Clara never sent one at all. Nothing is ever sent to them.
+ */
+const PICKER = {
+  capable: { account: account('c1'), username: 'aurorafield.21', device: 0x61 },
+  phone: { account: account('c2'), username: 'bennorth.47', device: 0x62, phone: 0x63 },
+  unknown: { account: account('c3'), username: 'clarawest.09', device: 0x64 },
+};
+const pickerFixture = () => {
+  const at = Date.now() - 86_400_000;
+  const device = byte => ({ statementAccountId: fill(32, byte), encryptionPublicKey: fill(32, byte + 0x10) });
+  const deviceHex = byte => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
+  // A set that lists every kind with groups v2 and tx buttons (features 3).
+  const groupsSet = { version: 1, kinds: fill(32, 0xff), fileVariants: [0, 1], hopDialects: [0, 1], features: 3 };
+  const { capable, phone, unknown } = PICKER;
+  return {
+    contacts: [
+      contactRow({ ...capable, at }, [device(capable.device)]),
+      contactRow({ ...phone, at }, [device(phone.device), device(phone.phone)]),
+      contactRow({ ...unknown, at }, [device(unknown.device)]),
+    ],
+    peerCapabilities: [
+      { peer: capable.account, device: deviceHex(capable.device), caps: groupsSet, timestamp: at },
+      { peer: phone.account, device: deviceHex(phone.device), caps: groupsSet, timestamp: at },
+    ],
+  };
+};
+
 /** An incoming request from a fictional person (requests.png). Never answered. */
 const ASKER = { requestId: 'fixture-request-incoming', account: account('d7'), username: 'orbitfan.64', at: Date.now() - 12 * 60_000 };
 
@@ -800,9 +836,12 @@ const mainFixture = ({ txIntent, expiredIntent, pay, self }) => {
   ];
   const m = MANAGE;
   const g2 = group2Fixture(self);
+  const picker = pickerFixture();
   const stores = {
     groups: [g2.group],
+    peerCapabilities: picker.peerCapabilities,
     contacts: [
+      ...picker.contacts,
       ...m.contacts.map(c => contactRow(c, [])),
       contactRow(METER),
       contactRow(h),
@@ -1711,6 +1750,7 @@ const mainShots = async (app, log, pay) => {
   await paymentShots(app, log, pay);
   await group2Shots(app);
   await daoShots(app);
+  await groupNameShots(app);
   if (WORKER_SHOTS.main.slice(-2).some(wanted)) await demoShots(app, log);
 };
 
@@ -2318,18 +2358,56 @@ const group2Shots = async app => {
   );
 };
 
+/** Owner ask 2026-09-24: renaming the fixture private group, and the capability-gated New group picker. */
+const groupNameShots = async app => {
+  const back = async () => {
+    if (await app.evaluate(app.exists('[aria-label="Back to chats"]'))) await app.click('[aria-label="Back to chats"]');
+    if (await app.evaluate(app.exists('[data-testid=assistant-key-state]'))) await app.esc();
+  };
+  await app.shot('group-rename', async () => {
+    const row = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(GROUP2.name)}))`;
+    if (!(await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(GROUP2.name)}`))) {
+      await back();
+      if (!(await app.waitFor(`!!${row}`, 10_000))) throw new Error('the fixture private group is not in the list');
+      await app.evaluate(`${row}.click(); true`);
+    }
+    if (!(await app.evaluate(app.exists('[data-testid=members-panel]')))) await app.click('[data-testid=members-toggle]');
+    if (!(await app.waitFor(app.exists('[data-testid=group-rename]'), 10_000))) throw new Error('no name field in the members panel');
+    await app.evaluate(`document.querySelector('[data-testid=member-manage][aria-expanded=true]')?.click(); document.querySelector('[data-testid=group-settings]').scrollIntoView({ block: 'start' }); true`);
+    await app.clearField('[data-testid=group-rename]');
+    await app.type('[data-testid=group-rename]', 'Saturday hikers');
+    if (!(await app.waitFor(app.exists('[data-testid=group-rename-save]'), 5_000))) throw new Error('no Save for the new name');
+  });
+  await app.shot('group-picker-gated', async () => {
+    await back();
+    await app.click('[aria-label="New chat"]');
+    if (!(await app.waitFor(app.exists('[data-testid=new-group]'), 5_000))) throw new Error('no "New group" in the New chat panel');
+    await app.click('[data-testid=new-group]');
+    const candidate = name => `[...document.querySelectorAll('[data-testid=group-candidate]')].find(r => r.textContent.includes(${JSON.stringify(name)}))`;
+    const { capable, phone, unknown } = PICKER;
+    const ready = `!!${candidate(capable.username)} && !${candidate(capable.username)}.dataset.gated && ${candidate(phone.username)}?.dataset.gated === 'true' && ${candidate(unknown.username)}?.dataset.gated === 'true'`;
+    if (!(await app.waitFor(ready, 10_000))) throw new Error('the picker does not grey the phone and the unknown contact');
+    await app.evaluate(`${candidate(capable.username)}.querySelector('[role=checkbox]').click(); true`);
+    if (!(await app.waitFor(`${candidate(capable.username)}.querySelector('[role=checkbox]').dataset.state === 'checked'`, 5_000))) throw new Error('the capable contact was not checked');
+  });
+};
+
 const groupShots = async (app, log, ask, memberName) => {
-  const groupRow = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(GROUP_NAME)}))`;
+  // Owner ask 2026-09-24: the group is made without a name; it shows its members' names.
+  const derived = [memberName, GROUP_BOT].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }) || a.localeCompare(b)).join(', ');
+  const groupRow = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(derived)}))`;
   if (await app.evaluate(app.exists('textarea[aria-label=Message]'))) await app.esc();
   await app.shot('group-create', async () => {
+    // The member's capabilities (0013) ride a DM: until then the picker greys it ("Not known yet").
+    const dm = await ask('DM_OTHER Hi! Add me to the group.', /^DM_SENT|_FAILED /, 60_000);
+    if (!dm || /_FAILED/.test(dm)) throw new Error(`${memberName} could not send its DM: ${dm}`);
     await app.click('[aria-label="New chat"]');
     if (!(await app.waitFor(app.exists('[data-testid=new-group]'), 5_000))) throw new Error('no "New group" in the New chat panel');
     await app.click('[data-testid=new-group]');
     if (!(await app.waitFor(app.exists('[aria-label="Group name"]'), 5_000))) throw new Error('the New group view did not open');
-    await app.type('[aria-label="Group name"]', GROUP_NAME);
     for (const name of [memberName, GROUP_BOT]) {
-      const box = `[...document.querySelectorAll('[data-testid=group-candidate]')].find(r => r.textContent.includes(${JSON.stringify(name)}))?.querySelector('[role=checkbox]')`;
-      if (!(await app.waitFor(`!!${box}`, 10_000))) throw new Error(`${name} is not among the contacts to pick`);
+      const box = `[...document.querySelectorAll('[data-testid=group-candidate]:not([data-gated])')].find(r => r.textContent.includes(${JSON.stringify(name)}))?.querySelector('[role=checkbox]')`;
+      if (!(await app.waitFor(`!!${box}`, 90_000))) throw new Error(`${name} is not among the contacts that can be picked`);
       await app.evaluate(`${box}.click(); true`);
     }
     if (!(await app.waitFor(`document.querySelectorAll('[data-testid=group-candidate] [role=checkbox][data-state=checked]').length === 2 && !document.querySelector('[data-testid=group-create]').disabled`, 5_000))) {
@@ -2339,7 +2417,7 @@ const groupShots = async (app, log, ask, memberName) => {
   await app.shot('room-group', async () => {
     if (!(await app.evaluate(app.exists('[data-testid=group-create]:not([disabled])')))) throw new Error('nothing to create');
     await app.click('[data-testid=group-create]');
-    if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(GROUP_NAME)} && ${app.exists('[data-testid=group-status]')}`, 30_000))) throw new Error('the group room did not open');
+    if (!(await app.waitFor(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(derived)} && ${app.exists('[data-testid=group-status]')}`, 30_000))) throw new Error('the group room did not open');
     const joined = await ask('WAIT_GROUP any', /^JOINED /, 90_000);
     if (!joined) throw new Error(`${memberName} did not receive the roster (see .agent-runs/screens/group-peer.log)`);
     await app.type('textarea[aria-label=Message]', 'hello all');

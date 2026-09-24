@@ -17,8 +17,8 @@ import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
 import { type GroupInfo, type OutgoingContent, toWire } from './content';
 import { compareGroupRows, getGroup } from './groups';
-import { type GroupsV2Storage, type IncomingGroupMessage, createGroupsV2 } from './groupsV2';
-import { OWN_CAPABILITIES } from './capabilities';
+import { type GroupsV2Storage, type IncomingGroupMessage, createGroupsV2, inviteLinkText } from './groupsV2';
+import { type Capabilities, OWN_CAPABILITIES } from './capabilities';
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, GroupInfoWire, GroupMessageWire, IdentityChannelEvent } from './identityEvents';
 import { listMessages } from './messages';
@@ -103,8 +103,11 @@ const openTransport = (store: Store, self: Member, web: Member) => {
 };
 type Transport = ReturnType<typeof openTransport>;
 
-/** The member sends a chat request, the client accepts, the member learns the client's device. */
-const connect = async (store: Store, web: Member, peer: Member, manager: ChatManager): Promise<Transport> => {
+/**
+ * The member sends a chat request, the client accepts, the member learns the client's device.
+ * `caps`: the set the member's device advertises; null = a baseline client that never sends one.
+ */
+const connect = async (store: Store, web: Member, peer: Member, manager: ChatManager, caps: Capabilities | null = OWN_CAPABILITIES): Promise<Transport> => {
   const transport = openTransport(store, peer, web);
   const { requestId } = await sendChatRequest({
     recipientAccountId: web.identity.identityAccountId,
@@ -122,8 +125,9 @@ const connect = async (store: Store, web: Member, peer: Member, manager: ChatMan
   const accepted = await waitFor(() => transport.events.find(event => event.tag === 'accepted'));
   if (accepted.tag === 'accepted') transport.roster.set([accepted.device]);
   // Spec 0013: the member's device lists every kind (a capable client).
+  if (!caps) return transport;
   const before = await db.peerCapabilities.count();
-  await transport.send({ type: 'capabilities', capabilities: OWN_CAPABILITIES });
+  await transport.send({ type: 'capabilities', capabilities: caps });
   await waitFor(async () => (await db.peerCapabilities.count()) > before);
   return transport;
 };
@@ -486,4 +490,73 @@ describe('spec 0011 private groups through the manager', () => {
     expect(row.senderAccountId).toBe(bot.hex);
     expect((await getGroup(groupId))?.epoch).toBe(1);
   });
+
+  /**
+   * Owner ask 2026-09-24: a device that did not advertise groups v2 (0013
+   * feature bit 0) must never get an invite, a welcome, a roster or history:
+   * it would show "Unsupported message" and could never hold the key. The
+   * manager refuses such a member before any statement, not after.
+   */
+  it('send guard: a contact without group support is refused before anything is sent; an upgrade does not invite it', async () => {
+    const { adapter: store, submittedBy } = makeGroupStore();
+    const web = member('web');
+    const alice = member('alice');
+    const phone = member('phone');
+    const old = member('old');
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf([alice, phone, old, web]), username: 'web' });
+    const toAlice = await connect(store, web, alice, manager);
+    const toPhone = await connect(store, web, phone, manager, null);
+    const toOld = await connect(store, web, old, manager, { ...OWN_CAPABILITIES, features: OWN_CAPABILITIES.features & ~1 });
+    transports = [toAlice, toPhone, toOld];
+    const webSigner = bytesToHex(web.device.statementAccountPublicKey);
+    const pick = (m: Member) => ({ account: m.hex, username: m.name });
+    const start = submittedBy(webSigner);
+
+    await expect(manager.createGroup('', [pick(alice), pick(phone)])).rejects.toThrow(/phone cannot be added: not known yet/);
+    await expect(manager.createGroup('', [pick(alice), pick(old)])).rejects.toThrow(/old cannot be added: uses a client without group support/);
+    expect(submittedBy(webSigner)).toBe(start);
+    expect(await db.groups.count()).toBe(0);
+
+    const groupId = await manager.createGroup('', [pick(alice)]);
+    // The state statement (and alice's welcome, which may ride the DM batch).
+    expect(submittedBy(webSigner)).toBeGreaterThan(start);
+    const welcomed = (id: string) => toAlice.of('groupControl').some(m => m.content.tag === 'groupControl' && m.content.value.tag === 'welcome' && m.content.value.value.groupId === id);
+    await waitFor(() => welcomed(groupId));
+    await new Promise(done => setTimeout(done, 200));
+    const statements = submittedBy(webSigner);
+    await expect(manager.addGroupMember(groupId, pick(phone))).rejects.toThrow(/not known yet/);
+    await expect(manager.addGroupMember(groupId, pick(old))).rejects.toThrow(/without group support/);
+    expect(submittedBy(webSigner)).toBe(statements);
+    expect((await getGroup(groupId))?.state?.members.map(m => m.account).sort()).toEqual([alice.hex, web.hex].sort());
+
+    // A v1 room whose roster (from before the 0013 gate) holds all three, upgraded:
+    // alice gets her welcome; phone and old get no welcome and no invite request.
+    const v1 = await manager.createGroup('Old crew', [pick(alice)], { fanOut: true });
+    const v1Row = (await getGroup(v1))!;
+    await db.groups.put({ ...v1Row, members: [...v1Row.members, { ...pick(phone), joinedAt: 1 }, { ...pick(old), joinedAt: 1 }] });
+    await manager.upgradeGroup(v1);
+    await waitFor(() => welcomed(v1));
+    expect((await getGroup(v1))?.invites ?? []).toEqual([]);
+    const outgoing = await db.requests.toArray();
+    expect(outgoing.some(r => r.direction === 'outgoing' && (r.peerAccountId === phone.hex || r.peerAccountId === old.hex))).toBe(false);
+    for (const transport of [toPhone, toOld]) {
+      expect(transport.of('groupControl')).toEqual([]);
+      expect(transport.of('groupInfo')).toEqual([]);
+    }
+  }, 20_000);
+
+  it('a join by link still reaches an admin whose set we never got: the link is that admin’s groups client speaking', async () => {
+    const store = createInMemoryStatementStore();
+    const web = member('web');
+    const admin = member('admin');
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf([admin, web]), username: 'web' });
+    // The admin's device has sent nothing yet: to the 0013 gate it is a baseline client.
+    const toAdmin = await connect(store, web, admin, manager, null);
+    transports = [toAdmin];
+    const link = inviteLinkText({ groupId: 'g-link', name: 'admin', admins: [admin.hex], inviteId: new Uint8Array(16).fill(1), secret: new Uint8Array(16).fill(2) });
+    const result = await manager.joinGroupByLink(link);
+    expect(result.member).toBe(false);
+    await waitFor(() => toAdmin.of('groupControl').find(m => m.content.tag === 'groupControl' && m.content.value.tag === 'joinRequest'));
+  });
 });
+

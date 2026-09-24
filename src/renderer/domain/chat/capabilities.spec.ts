@@ -15,6 +15,7 @@ import {
   effectiveOf,
   fileRailOf,
   formFor,
+  groupSupportOf,
   hasKind,
   intersect,
   kindsBitmap,
@@ -207,5 +208,46 @@ describe('the form of each content (0013 fallback table)', () => {
     expect(formFor(aesOnly, hop)).toEqual({ refuse: NO_FILE_RAIL });
     expect(fileRailOf(aesOnly)).toBeNull();
     expect(NO_FILE_RAIL).toBe("This contact's app cannot receive files from this app.");
+  });
+});
+
+describe('who may be put in a private group (owner ask 2026-09-24)', () => {
+  // The picker and the manager's guard read this: a "ready" peer whose device cannot read
+  // kind 249 would be sent a welcome it shows as "Unsupported message", and never get the key.
+  const row = (device: typeof desktop, caps: typeof OWN_CAPABILITIES) => ({ device: hexOf(device.statementAccountId), caps });
+  const noGroups = { ...OWN_CAPABILITIES, features: OWN_CAPABILITIES.features & ~1 };
+
+  it('ready only when every known device advertised feature bit 0', () => {
+    expect(groupSupportOf([desktop], [row(desktop, OWN_CAPABILITIES)], false)).toBe('ready');
+  });
+
+  it('a device that advertised a set without the bit: a client without group support', () => {
+    expect(groupSupportOf([desktop], [row(desktop, noGroups)], false)).toBe('unsupported');
+  });
+
+  it('a phone that never advertised, next to a capable desktop, keeps the person out (0013: silent = baseline)', () => {
+    expect(groupSupportOf([desktop, phone], [row(desktop, OWN_CAPABILITIES)], false)).toBe('unsupported');
+  });
+
+  it('nothing stored for the contact: not known yet (message them first), never ready', () => {
+    expect(groupSupportOf([desktop, phone], [], false)).toBe('unknown');
+    expect(groupSupportOf([], [], false, desktop.statementAccountId)).toBe('unknown');
+  });
+
+  it('a bot with its botInfo and no set counts as the pca transition set (M20), which has groups', () => {
+    expect(groupSupportOf([desktop], [], true)).toBe('ready');
+    expect(groupSupportOf([desktop], [row(desktop, noGroups)], true)).toBe('unsupported');
+  });
+
+  it('agrees with the send gate: ready exactly when a welcome (kind 249) would be sent', () => {
+    const welcome = { type: 'groupControl', control: { tag: 'keyRequest', value: { groupId: 'g', epoch: 1 } } } as unknown as OutgoingContent;
+    for (const [devices, rows] of [
+      [[desktop], [row(desktop, OWN_CAPABILITIES)]],
+      [[desktop], [row(desktop, noGroups)]],
+      [[desktop, phone], [row(desktop, OWN_CAPABILITIES)]],
+    ] as const) {
+      const effective = effectiveOf(devices, new Map(rows.map(r => [r.device, r.caps])), BASELINE);
+      expect(groupSupportOf(devices, rows, false) === 'ready').toBe('send' in formFor(effective, welcome));
+    }
   });
 });

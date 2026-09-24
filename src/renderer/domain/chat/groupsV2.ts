@@ -67,6 +67,7 @@ import {
   seal,
 } from './groupKeys';
 import { putGroupWithKeys, withStoredKeys } from './groupKeyStore';
+import { sharedGroupName } from './groupNames';
 import { ensureGroupRoom, groupSystemRow } from './groups';
 import { ChatMessageCodec, type ChatContent, type GroupControl, type HistorySinceWire } from './identityEvents';
 import { addMessage, listMessages, setMessageStatus } from './messages';
@@ -581,14 +582,15 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     const actor = signer === ownSigner ? 'You' : nameOf(memberBySigner(state, signer)?.account ?? memberBySigner(before, signer)?.account ?? signer);
     const lines: string[] = [];
     if (!before) {
-      if (signer !== ownSigner) lines.push(`${nameOf(owner)} added you to ${state.name}`);
+      if (signer !== ownSigner) lines.push(`${nameOf(owner)} added you to ${state.name ? state.name : 'the group'}`);
     } else {
       for (const m of state.members) if (!memberOf(before, m.account)) lines.push(`${actor} added ${nameOf(m.account)}`);
       for (const m of before.members) {
         if (memberOf(state, m.account)) continue;
         lines.push(m.account === self ? `${actor} removed you` : `${actor} removed ${nameOf(m.account)}`);
       }
-      if (state.name !== before.name) lines.push(`${actor} renamed the group to ${state.name}`);
+      // Owner ask 2026-09-24: an empty name clears it (the room shows its members' names).
+      if (state.name !== before.name) lines.push(state.name ? `${actor} named the group “${state.name}”` : `${actor} removed the group name`);
       for (const m of state.members) {
         const was = memberOf(before, m.account);
         if (!was || was.role === m.role) continue;
@@ -1143,7 +1145,7 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     };
     await putRow(row);
     await storage.ensureRoom(groupId, now());
-    await note(groupId, `group2-open:${groupId}`, base ? 'You upgraded this group to a private group' : `You created ${name}`);
+    await note(groupId, `group2-open:${groupId}`, base ? 'You upgraded this group to a private group' : name ? `You created ${name}` : 'You created the group');
     await reindex();
     return welcomeAll(
       row,
@@ -1557,7 +1559,8 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
         state = (await changeStateLocked(groupId, s => ({ ...s, joinPolicy: s.joinPolicy === 0 ? 1 : s.joinPolicy, invites: invite ? s.invites : [...s.invites, fresh] }))).state!;
         invite = fresh;
       }
-      return inviteLinkText({ groupId, name: state.name, admins: await linkAdmins(state), inviteId: invite.inviteId, secret: invite.secret });
+      // An unnamed group's link names it by its members (usernames), as a joiner would see it.
+      return inviteLinkText({ groupId, name: sharedGroupName(row, null), admins: await linkAdmins(state), inviteId: invite.inviteId, secret: invite.secret });
     });
 
   /** Sends the newcomer the group's recent messages over the DM (0011 "History for late joiners"), when `historyShare` > 0. */

@@ -11,11 +11,14 @@ import { toast } from 'sonner';
 
 import type { HexString } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
-import { type ContactRow, type GroupRow, type MessageRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
+import { type ContactRow, type GroupRow, type MessageRow, type PeerCapabilitiesRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
+import { hexToBytes } from '../app/bytes';
 import { type TxRunner, referenceNote } from '../domain/chain/transactions';
+import { GROUP_SUPPORT_WORDS, type GroupSupport, groupSupportOf } from '../domain/chat/capabilities';
 import type { BotCommand, TxStatus } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import { PERMISSIONS, ROLES } from '../domain/chat/groupCodec';
+import { derivedName, groupDisplayName } from '../domain/chat/groupNames';
 import { getGroup, memberName } from '../domain/chat/groups';
 import { can, heirOf, isV2, memberOf, slowModeWait, slowModeWords } from '../domain/chat/groupsV2';
 import type { ChatManager } from '../domain/chat/manager';
@@ -60,6 +63,27 @@ export const memberStatus = (group: GroupRow, account: HexString, self: HexStrin
   return 'member';
 };
 
+/**
+ * Owner ask 2026-09-24: may this contact be picked for a private group? Only
+ * when every known device advertised groups v2 (0013 feature bit 0; a bot by
+ * its `botInfo`). The manager checks the same again before anything is sent.
+ */
+export const contactGroupSupport = (contact: ContactRow, capabilities: readonly PeerCapabilitiesRow[], peerInfo: ReadonlyMap<string, PeerInfoRow>): GroupSupport =>
+  groupSupportOf(
+    contact.devices,
+    capabilities.filter(row => row.peer === contact.accountId),
+    (peerInfo.get(contact.accountId)?.botInfo ?? null) !== null,
+    hexToBytes(contact.accountId),
+  );
+
+/** A contact the picker cannot take: greyed, with the reason as its caption and on hover. */
+const GatedReason = ({ support }: { support: GroupSupport }) =>
+  support === 'ready' ? null : (
+    <span className="block truncate text-caption text-fg-tertiary" data-testid="candidate-reason">
+      {GROUP_SUPPORT_WORDS[support]}
+    </span>
+  );
+
 const IconToggle = ({ label, pressed, onClick, children, testId }: { label: string; pressed: boolean; onClick: () => void; children: ReactNode; testId?: string }) => (
   <Tooltip>
     <TooltipTrigger asChild>
@@ -83,6 +107,7 @@ type PanelProps = {
   group: GroupRow;
   self: HexString;
   contacts: readonly ContactRow[];
+  capabilities: readonly PeerCapabilitiesRow[];
   peerInfo: ReadonlyMap<string, PeerInfoRow>;
   manager: ChatManager;
   onClose: () => void;
@@ -106,7 +131,7 @@ export const mayRemove = (group: GroupRow, self: HexString, account: HexString):
 };
 
 /** The members side panel: who is in, their state; the admin adds and removes; anyone leaves. */
-const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: PanelProps) => {
+const MembersPanel = ({ group, self, contacts, capabilities, peerInfo, manager, onClose }: PanelProps) => {
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +158,7 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
   };
 
   const add = (contact: ContactRow) => {
+    if (v2 && contactGroupSupport(contact, capabilities, peerInfo) !== 'ready') return;
     setError(null);
     setQuery('');
     const member = { account: contact.accountId, username: contact.username };
@@ -248,7 +274,9 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
         })}
         {v2 && active && (can(me, PERMISSIONS.approve) || can(me, PERMISSIONS.add)) ? <JoinRequests group={group} manager={manager} run={run} /> : null}
         {v2 && active && can(me, PERMISSIONS.add) ? <InviteSection group={group} manager={manager} run={run} later={later} /> : null}
-        {v2 && active && can(me, PERMISSIONS.info) ? <GroupSettings key={group.name} group={group} manager={manager} run={run} /> : null}
+        {v2 && active && can(me, PERMISSIONS.info) ? (
+          <GroupSettings key={group.name} group={group} derived={groupDisplayName({ ...group, name: '' }, self, contacts)} manager={manager} run={run} />
+        ) : null}
       </div>
       {admin && active ? (
         <div className="flex shrink-0 flex-col gap-1 px-4 pt-2">
@@ -261,18 +289,29 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
             spellCheck={false}
             className="h-9 rounded-nested bg-surface-container px-2 text-body-m md:text-body-m"
           />
-          {candidates.map(contact => (
-            <button
-              key={contact.accountId}
-              type="button"
-              onClick={() => add(contact)}
-              className="flex cursor-pointer items-center gap-2 rounded-nested px-2 py-1.5 text-left transition-colors hover:bg-surface-container"
-              data-testid="member-candidate"
-            >
-              <UserPlus className="size-4 text-fg-secondary" aria-hidden />
-              <span className="truncate text-body-m text-fg-primary">{contact.username}</span>
-            </button>
-          ))}
+          {candidates.map(contact => {
+            // A v1 room fans out by kind (0013 gate per message); a private group takes only capable contacts.
+            const support = v2 ? contactGroupSupport(contact, capabilities, peerInfo) : 'ready';
+            const gated = support !== 'ready';
+            return (
+              <button
+                key={contact.accountId}
+                type="button"
+                onClick={() => add(contact)}
+                disabled={gated}
+                title={gated ? GROUP_SUPPORT_WORDS[support] : undefined}
+                className="flex cursor-pointer items-center gap-2 rounded-nested px-2 py-1.5 text-left transition-colors hover:bg-surface-container disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                data-testid="member-candidate"
+                data-gated={gated || undefined}
+              >
+                <UserPlus className={cn('size-4 shrink-0', gated ? 'text-fg-tertiary' : 'text-fg-secondary')} aria-hidden />
+                <span className="min-w-0">
+                  <span className={cn('block truncate text-body-m', gated ? 'text-fg-tertiary' : 'text-fg-primary')}>{contact.username}</span>
+                  <GatedReason support={support} />
+                </span>
+              </button>
+            );
+          })}
           {needle !== '' && candidates.length === 0 ? <p className="px-2 py-1 text-body-s text-fg-tertiary">No contact with that name.</p> : null}
         </div>
       ) : null}
@@ -313,7 +352,7 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
               className="cursor-pointer rounded-medium"
               data-testid="group-leave"
               disabled={pending.has('leave') || ownerStuck}
-              onClick={() => later('leave', `You left ${group.name}`, () => manager.leaveGroup(group.id))}
+              onClick={() => later('leave', `You left ${groupDisplayName(group, self, contacts)}`, () => manager.leaveGroup(group.id))}
             >
               {pending.has('leave') ? 'Leaving…' : 'Leave group'}
             </Button>
@@ -454,6 +493,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
   const room = useLiveQuery(() => db.rooms.get(peer), [peer]);
   const contacts = useLiveQuery(() => db.contacts.toArray(), []) ?? [];
   const peerInfoRows = useLiveQuery(() => db.peerInfo.toArray(), []) ?? [];
+  const capabilityRows = useLiveQuery(() => db.peerCapabilities.toArray(), []) ?? [];
   const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
   const [panel, setPanel] = useState(false);
   const [draft, setDraft] = useState('');
@@ -504,6 +544,8 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
   );
 
   if (!group) return null;
+  // Owner ask 2026-09-24: an unnamed group shows its members' names, recomputed as the roster changes.
+  const title = groupDisplayName(group, self, contacts);
   const active = group.self === 'member';
   const v2 = isV2(group);
   const me = v2 ? memberOf(group.state, self) : null;
@@ -648,7 +690,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
         : undefined;
     const proposal = proposals.get(row.messageId);
     // M12e Forward: a copy of the text, captioned with its author on this device only.
-    const author = row.direction === 'outgoing' ? 'you' : (senderOf(row) ?? group.name);
+    const author = row.direction === 'outgoing' ? 'you' : (senderOf(row) ?? title);
     const forward = forwardText(row) !== null ? (target: ForwardTarget) => chatActions.forward(target, row, author) : undefined;
     return {
       ...(keyboard ? { keyboard } : {}),
@@ -690,8 +732,8 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
         <RoomHeader
-          avatar={<GroupAvatar name={group.name} />}
-          name={group.name}
+          avatar={<GroupAvatar name={title} />}
+          name={title}
           status={
             <span data-testid="group-status">
               {isV2(group) ? `${memberCount(group)} · epoch ${group.epoch ?? 1} · one statement per message` : `${memberCount(group)} · admin ${memberName(group, group.admin)}`}
@@ -708,7 +750,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
               {muted ? <BellOff className="size-5 text-fg-secondary" /> : <Bell className="size-5 text-fg-secondary" />}
             </IconToggle>
           ) : null}
-          <RoomMenu subject={{ peer, name: group.name, kind: 'group', room, member: active }} />
+          <RoomMenu subject={{ peer, name: title, kind: 'group', room, member: active }} />
         </RoomHeader>
         <PinBar
           pinned={pinned}
@@ -723,7 +765,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
         />
         <MessageFlow
           rows={clearing ? NO_ROWS : (messages ?? [])}
-          peerName={group.name}
+          peerName={title}
           requests={[]}
           assistant={false}
           actionsFor={actionsFor}
@@ -792,7 +834,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
         )}
       </div>
       {panel ? (
-        <MembersPanel group={group} self={self} contacts={contacts} peerInfo={peerInfo} manager={manager} onClose={() => setPanel(false)} />
+        <MembersPanel group={group} self={self} contacts={contacts} capabilities={capabilityRows} peerInfo={peerInfo} manager={manager} onClose={() => setPanel(false)} />
       ) : null}
     </div>
   );
@@ -803,16 +845,26 @@ type NewGroupProps = {
   onCreated: (groupId: string) => void;
 };
 
-/** "New group": a name, contacts as checkbox rows, Create (the view's one main action). */
+/**
+ * "New group": an optional name, contacts as checkbox rows, Create (the view's
+ * one main action). Owner ask 2026-09-24: without a name the group shows its
+ * members' names; only contacts whose devices all advertised groups can be picked.
+ */
 export const NewGroupRoom = ({ manager, onCreated }: NewGroupProps) => {
   const contacts = useLiveQuery(() => db.contacts.toArray(), []) ?? [];
   const peerInfoRows = useLiveQuery(() => db.peerInfo.toArray(), []) ?? [];
+  const capabilityRows = useLiveQuery(() => db.peerCapabilities.toArray(), []) ?? [];
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sorted = [...contacts].sort((a, b) => a.username.localeCompare(b.username));
-  const ready = name.trim() !== '' && picked.size > 0 && !busy && manager !== null;
+  const peerInfo = new Map(peerInfoRows.map(row => [row.peerId, row]));
+  const supportOf = (contact: ContactRow) => contactGroupSupport(contact, capabilityRows, peerInfo);
+  // A pick whose contact stopped qualifying (a new device without groups) no longer counts.
+  const chosen = sorted.filter(contact => picked.has(contact.accountId) && supportOf(contact) === 'ready');
+  const ready = chosen.length > 0 && !busy && manager !== null;
+  const title = name.trim() || (chosen.length > 0 ? derivedName(chosen.map(contact => contact.nickname ?? contact.username)) : 'New group');
 
   const toggle = (account: string) =>
     setPicked(current => {
@@ -827,7 +879,7 @@ export const NewGroupRoom = ({ manager, onCreated }: NewGroupProps) => {
     setError(null);
     setBusy(true);
     try {
-      const members = sorted.filter(contact => picked.has(contact.accountId)).map(contact => ({ account: contact.accountId, username: contact.username }));
+      const members = chosen.map(contact => ({ account: contact.accountId, username: contact.username }));
       onCreated(await manager.createGroup(name, members));
     } catch (cause) {
       setError(plainError(cause, 'The group was not created. Check your connection and try again.'));
@@ -837,7 +889,7 @@ export const NewGroupRoom = ({ manager, onCreated }: NewGroupProps) => {
 
   return (
     <>
-      <RoomHeader avatar={<GroupAvatar name={name.trim() || 'Group'} />} name={name.trim() || 'New group'} status={`${picked.size + 1} ${picked.size === 0 ? 'member' : 'members'}`} />
+      <RoomHeader avatar={<GroupAvatar name={chosen.length > 0 || name.trim() ? title : 'Group'} />} name={title} status={`${chosen.length + 1} ${chosen.length === 0 ? 'member' : 'members'}`} />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4" data-testid="new-group">
         <label className="flex max-w-md flex-col gap-1.5">
           <span className="text-label-m text-fg-primary">Group name</span>
@@ -845,29 +897,44 @@ export const NewGroupRoom = ({ manager, onCreated }: NewGroupProps) => {
             value={name}
             maxLength={60}
             onChange={event => setName(event.target.value)}
-            placeholder="Weekend plans"
+            placeholder="Group name (optional)"
             aria-label="Group name"
             className="h-10 rounded-nested px-2 text-body-m md:text-body-m"
           />
+          <span className="text-caption text-fg-tertiary">Without a name, the group shows its members’ names.</span>
         </label>
         <section className="flex flex-col gap-1" aria-label="Members">
           <h3 className="text-label-m text-fg-primary">Members</h3>
-          <p className="text-body-s text-fg-secondary">Pick from your contacts. Each gets the group on the chat you already share.</p>
+          <p className="text-body-s text-fg-secondary">Pick from your contacts. Each gets the group on the chat you already share. Only contacts whose apps support private groups can be picked.</p>
           <div className="mt-1 flex max-w-md flex-col gap-0.5">
             {sorted.length === 0 ? <p className="py-2 text-body-s text-fg-tertiary">No contacts yet. Start a chat first.</p> : null}
             {sorted.map(contact => {
-              const info = peerInfoRows.find(row => row.peerId === contact.accountId)?.botInfo;
-              const checked = picked.has(contact.accountId);
+              const info = peerInfo.get(contact.accountId)?.botInfo;
+              const support = supportOf(contact);
+              const gated = support !== 'ready';
+              const checked = !gated && picked.has(contact.accountId);
               return (
                 <label
                   key={contact.accountId}
-                  className="flex cursor-pointer items-center gap-3 rounded-nested px-2 py-2 transition-colors hover:bg-selection-container-hover focus-within:bg-selection-container-hover"
+                  title={gated ? GROUP_SUPPORT_WORDS[support] : undefined}
+                  className={cn(
+                    'flex items-center gap-3 rounded-nested px-2 py-2 transition-colors',
+                    gated ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-selection-container-hover focus-within:bg-selection-container-hover',
+                  )}
                   data-testid="group-candidate"
+                  data-gated={gated || undefined}
                 >
-                  <Checkbox checked={checked} onCheckedChange={() => toggle(contact.accountId)} aria-label={contact.username} />
-                  <PeerAvatar name={contact.username} size="sm" />
-                  <span className="truncate text-label-m text-fg-primary">{contact.username}</span>
-                  {info ? <BotBadge kind={info.kind} /> : null}
+                  <Checkbox checked={checked} disabled={gated} onCheckedChange={() => toggle(contact.accountId)} aria-label={contact.username} />
+                  <span className={cn(gated && 'opacity-50')}>
+                    <PeerAvatar name={contact.username} size="sm" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className={cn('truncate text-label-m', gated ? 'text-fg-tertiary' : 'text-fg-primary')}>{contact.username}</span>
+                      {info ? <BotBadge kind={info.kind} /> : null}
+                    </span>
+                    <GatedReason support={support} />
+                  </span>
                 </label>
               );
             })}

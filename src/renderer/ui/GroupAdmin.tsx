@@ -212,8 +212,11 @@ export const InviteSection = ({ group, manager, run, later }: { group: GroupRow;
   );
 };
 
-/** Name, who can join, slow mode, history for newcomers: for an admin who may change the group's info. */
-export const GroupSettings = ({ group, manager, run }: { group: GroupRow; manager: ChatManager; run: Run }) => {
+/**
+ * Name, who can join, slow mode, history for newcomers: for an admin who may change the group's info.
+ * `derived` is the name the group shows without one (owner ask 2026-09-24): an empty name clears it back to that.
+ */
+export const GroupSettings = ({ group, derived, manager, run }: { group: GroupRow; derived: string; manager: ChatManager; run: Run }) => {
   const [name, setName] = useState(group.name);
   const state = group.state;
   if (!state) return null;
@@ -228,15 +231,18 @@ export const GroupSettings = ({ group, manager, run }: { group: GroupRow; manage
             value={name}
             maxLength={60}
             onChange={event => setName(event.target.value)}
+            placeholder={derived}
             aria-label="Group name"
+            data-testid="group-rename"
             className="h-9 rounded-nested bg-surface-container px-2 text-body-m md:text-body-m"
           />
-          {name.trim() !== group.name && name.trim() !== '' ? (
-            <Button variant="secondary" className="cursor-pointer rounded-medium" onClick={() => save({ name }, 'The name did not change.')}>
-              Save
+          {name.trim() !== group.name ? (
+            <Button variant="secondary" className="cursor-pointer rounded-medium" data-testid="group-rename-save" onClick={() => save({ name: name.trim() }, 'The name did not change.')}>
+              {name.trim() === '' ? 'Clear' : 'Save'}
             </Button>
           ) : null}
         </div>
+        <span className="text-caption text-fg-tertiary">Empty: the group shows its members’ names.</span>
       </label>
       <label className="flex flex-col gap-1">
         <span className="text-body-s text-fg-secondary">Who can join</span>

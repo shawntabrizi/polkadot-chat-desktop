@@ -47,11 +47,14 @@ import {
   capabilitiesUnsent,
   dropDeviceCapabilities,
   fileRailOf,
+  GROUP_SUPPORT_WORDS,
   formFor,
   loadEffective,
+  loadGroupSupport,
   markCapabilitiesSent,
   storeCapabilities,
 } from './capabilities';
+import { sharedGroupName } from './groupNames';
 import { admitAfterDelete, deleteChatLocally, isBlocked, unfinishedDeletes, withdrawRequestLocally } from './chatActions';
 import {
   type Attachment,
@@ -702,6 +705,21 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     return loadEffective(peer, contact?.devices ?? [], bot, hexToBytes(peer));
   };
 
+  /**
+   * Owner ask 2026-09-24: nobody is put in a private group unless every known
+   * device of theirs advertised groups v2 (0013 feature bit 0; a bot through
+   * its `botInfo`). Checked before any state statement, so a refused member
+   * costs nothing and no invite, welcome, roster or history goes to them.
+   */
+  const assertGroupReady = async (members: readonly GroupMemberInput[]): Promise<void> => {
+    for (const member of members) {
+      if (member.account === self) continue;
+      const [contact, info] = await Promise.all([getContact(member.account), getPeerInfo(member.account)]);
+      const support = await loadGroupSupport(member.account, contact?.devices ?? [], (info?.botInfo ?? null) !== null, hexToBytes(member.account));
+      if (support !== 'ready') throw new Error(`${member.username} cannot be added: ${GROUP_SUPPORT_WORDS[support].toLowerCase()}.`);
+    }
+  };
+
   // ── Contact establishment (both directions) ────────────────────────────
 
   /** Contact row, room, "chat accepted" system row, session. Idempotent. */
@@ -929,7 +947,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     // Spec 0013 (owner ruling 2026-09-24): every extension kind only to a
     // peer whose every device listed it; else its fallback, or nothing.
     const effective = await effectiveFor(peer);
-    const form = formFor(effective, content);
+    // A `joinRequest` goes only to an admin an invite link names: the link is that admin's own
+    // groups v2 client speaking, and the admin sends nothing (so no set) until this request
+    // arrives. Gating it on a set would stall every join by link (seen in e2e:group2b after M20).
+    const joinRequest = content.type === 'groupControl' && content.control.tag === 'joinRequest';
+    const form: ReturnType<typeof formFor> = joinRequest ? { send: content } : formFor(effective, content);
     if ('drop' in form) return;
     if ('refuse' in form) throw new Error(form.refuse);
     const due = await capabilitiesDue(peer);
@@ -1000,14 +1022,27 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     await sendRequestTo(peer, `${deps.username ?? 'Someone'} invited you to the group “${groupName}”`);
   };
 
-  /** Spec 0011: members no DM reached get a chat request; their `welcome` follows the accept (`sendPendingInvites`). */
-  const inviteUnreached = async (groupId: string, groupName: string, members: readonly GroupMemberInput[], unreached: readonly HexString[]): Promise<void> => {
+  /**
+   * Spec 0011: members no DM reached get a chat request; their `welcome` follows the accept (`sendPendingInvites`).
+   * Only a member whose devices all advertised groups v2 (an upgraded v1 roster can hold others): no invite text to anyone else.
+   * An unnamed group's invite names it as the invitee will see it (their derived name, usernames only).
+   */
+  const inviteUnreached = async (groupId: string, members: readonly GroupMemberInput[], unreached: readonly HexString[]): Promise<void> => {
     if (unreached.length === 0) return;
+    const group = await getGroup(groupId);
+    const invited: HexString[] = [];
     for (const account of unreached) {
       const member = members.find(entry => entry.account === account);
-      if (member) await inviteByRequest(member, groupName).catch(error => console.warn('[chat] group invite failed', error));
+      if (!member) continue;
+      const ready = await assertGroupReady([member]).then(
+        () => true,
+        (error: unknown) => (console.warn('[chat] no group invite', error), false),
+      );
+      if (!ready) continue;
+      invited.push(account);
+      await inviteByRequest(member, group ? sharedGroupName(group, account) : '').catch(error => console.warn('[chat] group invite failed', error));
     }
-    await db.groups.update(groupId, { invites: [...unreached] });
+    await db.groups.update(groupId, { invites: invited });
   };
 
   const rosterOf = (members: readonly GroupMemberInput[], previous: readonly GroupMember[], now: number): GroupMember[] => {
@@ -1382,19 +1417,22 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     createGroup: async (name, members, options = {}) => {
+      // Owner ask 2026-09-24: the name is optional; an unnamed group shows its members' names.
       const title = name.trim();
-      if (title === '' || [...title].length > MAX_GROUP_NAME) throw new Error(`A group name has 1 to ${MAX_GROUP_NAME} characters.`);
+      if ([...title].length > MAX_GROUP_NAME) throw new Error(`A group name has at most ${MAX_GROUP_NAME} characters.`);
       if (!deps.username) throw new Error('Your username is not known yet.');
       const now = Date.now();
       const roster = [{ account: self, username: deps.username, joinedAt: now }, ...rosterOf(members, [], now)];
       if (roster.length < 2) throw new Error('Pick at least one member.');
       if (!options.fanOut) {
         // Spec 0011: the state on ChState_1, then a `welcome` to each member; a member without a chat gets a request first.
+        await assertGroupReady(roster.slice(1));
         const { groupId, unreached } = await groupsV2.create(title, roster.slice(1));
-        await inviteUnreached(groupId, title, members, unreached);
+        await inviteUnreached(groupId, members, unreached);
         return groupId;
       }
       if (roster.length > MAX_GROUP_MEMBERS) throw new Error(`A group has at most ${MAX_GROUP_MEMBERS} members.`);
+      if (title === '') throw new Error('A v1 group needs a name.');
       const info: GroupInfo = { groupId: randomId(), name: title, admin: self, members: roster, version: 1, createdAt: now };
       await saveOwnGroupInfo(info, [], now);
       const invites = await distribute(info, roster);
@@ -1413,14 +1451,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     addGroupMember: async (groupId, member) => {
+      await assertGroupReady([member]);
       const reached = await groupsV2.add(groupId, member.account, member.username);
-      if (!reached) await inviteUnreached(groupId, (await getGroup(groupId))?.name ?? '', [member], [member.account]);
+      if (!reached) await inviteUnreached(groupId, [member], [member.account]);
     },
 
     upgradeGroup: async groupId => {
       const group = await getGroup(groupId);
       const unreached = await groupsV2.upgrade(groupId);
-      await inviteUnreached(groupId, group?.name ?? '', group?.members ?? [], unreached);
+      await inviteUnreached(groupId, group?.members ?? [], unreached);
     },
 
     requestGroupHistory: (groupId, to, since) => groupsV2.requestHistory(groupId, to, since === undefined ? undefined : { tag: 'timestamp', value: since }),
@@ -1461,7 +1500,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     pinGroupMessage: (groupId, messageId, pinned) => groupsV2.setPinned(groupId, messageId, pinned),
     setGroupSettings: async (groupId, settings) => {
       const name = settings.name?.trim();
-      if (name !== undefined && (name === '' || [...name].length > MAX_GROUP_NAME)) throw new Error(`A group name has 1 to ${MAX_GROUP_NAME} characters.`);
+      // Empty clears the name: the group shows its members' names again.
+      if (name !== undefined && [...name].length > MAX_GROUP_NAME) throw new Error(`A group name has at most ${MAX_GROUP_NAME} characters.`);
       await groupsV2.setSettings(groupId, { ...settings, ...(name !== undefined ? { name } : {}) });
     },
     setGroupRole: (groupId, account, role) => groupsV2.setRole(groupId, account, role),

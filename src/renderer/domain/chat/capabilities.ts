@@ -259,6 +259,40 @@ export const loadEffective = async (peer: HexString, devices: readonly PeerDevic
   return effectiveOf(roster, new Map(rows.map(row => [row.device, row.caps])), bot ? PCA_TRANSITION : BASELINE);
 };
 
+/**
+ * May this peer be put in a private group (owner ask 2026-09-24)? `ready`:
+ * every known device reads kind 249 with feature bit 0, the same test the
+ * send gate (`formFor`, `groupControl`) applies. `unknown`: no device of the
+ * peer sent a set yet (and it is not a bot, whose `botInfo` counts as the
+ * pca transition set). `unsupported`: a set without the bit, or a silent
+ * device next to one that sent a set (a baseline client, 0013).
+ */
+export type GroupSupport = 'ready' | 'unsupported' | 'unknown';
+
+export const GROUP_SUPPORT_WORDS: Record<Exclude<GroupSupport, 'ready'>, string> = {
+  unsupported: 'Uses a client without group support',
+  unknown: 'Not known yet: message them first',
+};
+
+export const groupSupportOf = (
+  devices: readonly Pick<PeerDevice, 'statementAccountId'>[],
+  rows: readonly Pick<PeerCapabilitiesRow, 'device' | 'caps'>[],
+  bot: boolean,
+  identity?: Uint8Array,
+): GroupSupport => {
+  // The same device list `loadEffective` intersects over.
+  const roster = devices.length === 0 && identity ? [{ statementAccountId: identity }] : devices;
+  const sets = new Map(rows.map(row => [row.device, row.caps]));
+  const effective = effectiveOf(roster, sets, bot ? PCA_TRANSITION : BASELINE);
+  if (hasKind(effective, KIND.groupControl) && (effective.features & FEATURE_GROUPS_V2) !== 0) return 'ready';
+  const heard = roster.some(device => sets.has(deviceKey(device.statementAccountId)));
+  return heard || bot ? 'unsupported' : 'unknown';
+};
+
+/** `groupSupportOf` from the stored rows (the manager's guard). */
+export const loadGroupSupport = async (peer: HexString, devices: readonly PeerDevice[], bot: boolean, identity?: Uint8Array): Promise<GroupSupport> =>
+  groupSupportOf(devices, await db.peerCapabilities.where('peer').equals(peer).toArray(), bot, identity);
+
 /** Whether our set must ride the next message to `peer`: never sent this chat, or sent before a set change. */
 export const capabilitiesDue = async (peer: HexString, own: Capabilities = OWN_CAPABILITIES): Promise<boolean> =>
   (await db.capabilitiesSent.get(peer))?.hash !== capabilitiesHash(own);

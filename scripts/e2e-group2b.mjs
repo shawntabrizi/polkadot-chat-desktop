@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // M16b e2e (spec 0011 supergroup features) on devnet: two people through this
 // repo's domain code and a throwaway pca v2 bot as the third member.
-//   npm run e2e:group2b -- [--profile devnet] [--identity-a pcdbenchfinb] [--identity-b pcdbenchfina] [--pca <polkadot-chat-agents checkout>]
+//   npm run e2e:group2b -- [--profile devnet] [--identity-a pcdbenchfinb] [--identity-b pcdbenchfina] [--pca <polkadot-chat-agents checkout>] [--register-wait <s>]
 //
 // a and b are the identities with room in their statement allowance (review
 // M16: pcde2e and pcdeceb are full of never-expiring DM statements and get
@@ -21,6 +21,13 @@
 //                   b hears "pending"; a approves (one state) and b holds the group
 //   HISTORY_OK      b has a's and the bot's messages from before it joined and
 //                   the line "History shared by <a>"
+//   DERIVED_NAME_OK the group was made with NO name (owner ask 2026-09-24): a
+//                   showed the bot's name alone at creation; after b joins, a
+//                   shows "<b>, <bot>" and b shows "<a>, <bot>" (sorted, never
+//                   oneself); a's creation waited until the bot's devices were
+//                   known to support groups (the capability-gated picker)
+//   RENAME_OK       a names the group (one state statement); b's state has the
+//                   name and b's room has the line "<a> named the group “X”"
 //   PIN_OK          a pins a message (one state); b's state lists the pin
 //   SLOW_OK         slow mode 10 s: b's second message waits on b's side
 //                   (nothing submitted for 3 s), a carrier b forges too soon is
@@ -86,11 +93,11 @@ async function parent() {
   const botName = `pcdgrp${Array.from({ length: 5 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('')}`;
   const pcaEnv = { ...process.env, PCA_BOTS_DIR: botsDir };
   console.log(`BOT_CREATE ${botName} (scratch PCA_BOTS_DIR, brain echo, allow ${who.a.username}) at=${at()}`);
-  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', '180'], {
+  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', flag('register-wait') ?? '180'], {
     cwd: pcaRoot,
     env: pcaEnv,
     encoding: 'utf8',
-    timeout: 6 * 60_000,
+    timeout: (Number(flag('register-wait') ?? 180) + 180) * 1000,
   });
   const botConfigFile = join(botsDir, botName, 'config.json');
   const botConfig = existsSync(botConfigFile) ? JSON.parse(readFileSync(botConfigFile, 'utf8')) : null;
@@ -262,6 +269,25 @@ async function parent() {
   if (failed(history)) timeout(`history for b${history ? ` (${history.line})` : ''}`);
   else console.log(`HISTORY_OK b has both earlier messages and the line ${field(history.line, 'note')} at=${at()}`);
 
+  // 2b. The derived name (the group has no name), then a rename.
+  const expectName = (...names) => [...names].sort((x, y) => x.localeCompare(y, undefined, { sensitivity: 'base' }) || x.localeCompare(y)).join(', ');
+  const [nameA, nameB] = joined ? await Promise.all([ask('a', 'NAME', /^NAME /), ask('b', 'NAME', /^NAME /)]) : [null, null];
+  const createdName = field(create.line, 'derived');
+  if (!nameA || !nameB) timeout('the derived names');
+  else if (
+    JSON.parse(createdName) !== bot.username ||
+    JSON.parse(field(nameA.line, 'shown')) !== expectName(who.b.username, bot.username) ||
+    JSON.parse(field(nameB.line, 'shown')) !== expectName(who.a.username, bot.username) ||
+    field(nameA.line, 'stored') !== '""'
+  )
+    return fail(1, `DERIVED_NAME_BAD created=${createdName} a="${nameA.line}" b="${nameB.line}"`);
+  else console.log(`DERIVED_NAME_OK created unnamed; a saw ${createdName} at creation, now a sees ${field(nameA.line, 'shown')} and b sees ${field(nameB.line, 'shown')} at=${at()}`);
+  const newName = `Trail crew ${new Date().toISOString().slice(11, 19)}`;
+  const renamed = nameA ? await ask('a', `RENAME ${newName}`, /^RENAMED |_FAILED /) : null;
+  const renameSeen = renamed && !failed(renamed) ? await ask('b', `WAIT_RENAME ${who.a.username} ${newName}`, /^RENAME_SEEN /) : null;
+  if (!renameSeen) timeout(`rename (${renamed?.line ?? 'not asked'})`);
+  else console.log(`RENAME_OK cost ${field(renamed.line, 'submissions')} statement(s); b shows ${field(renameSeen.line, 'shown')} with the line ${field(renameSeen.line, 'line')} at=${at()}`);
+
   // 3. a pins its first message; b holds the pin.
   const pin = joined ? await ask('a', `PIN ${field(before.line, 'id')}`, /^PINNED |_FAILED /) : null;
   const pinned = pin && !failed(pin) ? await ask('b', `WAIT_PIN ${field(before.line, 'id')}`, /^PIN_SEEN /) : null;
@@ -348,6 +374,8 @@ async function child() {
   const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
   const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
   const { getGroup } = await load('src/renderer/domain/chat/groups.ts');
+  const { groupDisplayName, readSelfAccount } = await load('src/renderer/domain/chat/groupNames.ts');
+  const { loadGroupSupport } = await load('src/renderer/domain/chat/capabilities.ts');
   const { isLiveFrame } = await load('src/renderer/domain/chat/content.ts');
   const { VARIANT, createGroupExpiryAllocator, deriveEpoch, seal } = await load('src/renderer/domain/chat/groupKeys.ts');
   const { encodeGroupData, encodeGroupMessages } = await load('src/renderer/domain/chat/groupCodec.ts');
@@ -408,6 +436,8 @@ async function child() {
   const rows = () => listMessages(groupPeerOf(groupId));
   const textRow = async (text) => (await rows()).find((r) => !isLiveFrame(r.content) && r.content.type !== 'deleted' && (r.content.text ?? '') === text) ?? null;
   const me = async () => (await getGroup(groupId))?.state?.members.find((m) => m.account === saved.accountHex) ?? null;
+  // The name the room header, the list and notifications show (the UI's own function).
+  const shownName = async () => groupDisplayName(await getGroup(groupId), await readSelfAccount(), await db.contacts.toArray());
 
   const commands = createInterface({ input: process.stdin });
   for await (const line of commands) {
@@ -422,11 +452,38 @@ async function child() {
       }
       if (command === 'CREATE2') {
         const [botHex, botName] = rest;
+        // The picker takes the bot only once its devices are known to support groups (its set, or its botInfo).
+        const support = await waitFor(async () => {
+          const [contact, info] = await Promise.all([db.contacts.get(botHex), db.peerInfo.get(botHex)]);
+          const found = await loadGroupSupport(botHex, contact?.devices ?? [], (info?.botInfo ?? null) !== null, bytesOf(botHex));
+          return found === 'ready' ? found : null;
+        }, BOT_WAIT_MS);
+        console.log(`BOT_GROUP_SUPPORT ${support ?? 'not known in time'}`);
+        // Owner ask 2026-09-24: no name; the group shows its members' names.
         const statements = await cost(async () => {
-          groupId = await manager.createGroup(`M16b e2e ${new Date().toISOString().slice(11, 19)}`, [{ account: botHex, username: botName }]);
+          groupId = await manager.createGroup('', [{ account: botHex, username: botName }]);
         });
         const group = await getGroup(groupId);
-        console.log(`GROUP2_CREATED id=${groupId} epoch=${group.epoch} statements=${statements}`);
+        console.log(`GROUP2_CREATED id=${groupId} epoch=${group.epoch} statements=${statements} derived=${JSON.stringify(await shownName())}`);
+      }
+      if (command === 'NAME') {
+        const group = await getGroup(groupId);
+        console.log(`NAME shown=${JSON.stringify(await shownName())} stored=${JSON.stringify(group?.name ?? null)} members=${group?.members.length}`);
+      }
+      if (command === 'RENAME') {
+        const name = rest.join(' ');
+        const statements = await cost(() => manager.setGroupSettings(groupId, { name }));
+        console.log(`RENAMED submissions=${statements} name=${JSON.stringify((await getGroup(groupId)).state.name)}`);
+      }
+      if (command === 'WAIT_RENAME') {
+        const [actor, ...words] = rest;
+        const name = words.join(' ');
+        const line = `${actor} named the group “${name}”`;
+        const found = await waitFor(async () => {
+          const group = await getGroup(groupId);
+          return group?.name === name && (await rows()).find((r) => r.content.type === 'groupEvent' && r.content.text.split(' · ').includes(line));
+        }, WAIT_MS);
+        if (found) console.log(`RENAME_SEEN shown=${JSON.stringify(await shownName())} line=${JSON.stringify(line)}`);
       }
       if (command === 'SETTINGS') {
         const settings = JSON.parse(rest.join(' '));

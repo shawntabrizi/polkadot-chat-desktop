@@ -120,7 +120,7 @@ GroupState = {
     groupId: String
     epoch: u32
     version: u32                  // +1 on every change, across epochs
-    name: String                  // <= 60 characters
+    name: String                  // <= 60 characters; may be empty (clients show a name made from the roster)
     avatar: Option<[u8; 32]>      // reserved: content hash; transfer not defined in v2
     defaultPermissions: u16       // given to members added from now on
     slowModeSecs: u32             // 0 = off

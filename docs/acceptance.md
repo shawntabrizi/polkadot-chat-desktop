@@ -4283,3 +4283,44 @@ The scratch bot's Bulletin account could not get an authorization: `//Eve` refus
 - `npm run screenshots`: no new screenshot required by the brief; the HOP detail line ("Sent over HOP; available for 24 hours") is not captured.
 - A real phone: needs the owner's phone.
 - `e2e:group2`, `e2e:group2b` and other desktop-pair e2es: not rerun. A desktop pair that creates a group before the peer sent anything now gets "cannot take part in groups yet" (question in docs/questions.md "## M20").
+
+## Group names and gated picker (2026-09-24)
+
+```
+$ npm run check (last lines)
+Test Files  105 passed (105)
+check:tokens: clean (204 files)
+
+$ PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run smoke
+SMOKE_OK
+
+$ PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run e2e:group2b -- --identity-a pcdtestggji --register-wait 900
+BOT_CREATE pcdgrpuyvnp (scratch PCA_BOTS_DIR, brain echo, allow pcdtestggji.38) at=0.0s
+BOT_REGISTERED pcdgrpuyvnp.27 0xd43502abfe7d6e62b1387fd03548a8e1318d67c2d189e9f47507cca5bd06443c at=103.6s
+PEOPLE a=pcdtestggji.38 b=pcdbenchfina.25 bot=pcdgrpuyvnp.27 at=106.6s
+[a] BOT_GROUP_SUPPORT ready
+[a] GROUP2_CREATED id=b214ea24-b50c-4090-8c17-32ff34fc80df epoch=1 statements=1 derived="pcdgrpuyvnp.27"
+GROUP_READY group=b214ea24-b50c-4090-8c17-32ff34fc80df a=7bc2be76-6e12-43b2-ab8a-ad4459f05211 bot=0CAC3A10-CCF5-467D-B570-FBB375345637 at=121.5s
+JOIN_APPROVED policy=1 a accepted the chat request itself (auto-accepted), b heard pending, approve cost 2 submissions (the state; the welcome and the history ride the DM), b epoch=1 at=127.1s
+HISTORY_OK b has both earlier messages and the line "History shared by pcdtestggji.38" at=127.1s
+DERIVED_NAME_OK created unnamed; a saw "pcdgrpuyvnp.27" at creation, now a sees "pcdbenchfina.25, pcdgrpuyvnp.27" and b sees "pcdgrpuyvnp.27, pcdtestggji.38" at=127.1s
+RENAME_OK cost 1 statement(s); b shows "Trail crew 21:50:25" with the line "pcdtestggji.38 named the group “Trail crew 21:50:25”" at=128.4s
+PIN_OK cost 1 statement(s); b's state pins 1 at=129.7s
+[b] SEND2_FAILED Your account’s space on the network is full of chat statements, so a group statement cannot be stored.
+E2E_TIMEOUT slow mode (held=false first=false hidden=no second=false)
+PROMOTED_OK cost 1 statement(s); b is admin with flags 0xbf at=132.6s
+[b] REMOVE2_FAILED Your account’s space on the network is full of chat statements, so a group statement cannot be stored.
+E2E_TIMEOUT b removes the bot (REMOVE2_FAILED Your account’s space on the network is full of chat statements, so a group statement cannot be stored.)
+GROUP2B_INCOMPLETE 2 step(s) timed out: slow mode (held=false first=false hidden=no second=false); b removes the bot (REMOVE2_FAILED Your account’s space on the network is full of chat statements, so a group statement cannot be stored.)
+```
+
+Earlier runs today: default a (`pcdbenchfinb`) and `pcdtestjaia` got AccountFull at CREATE2; several runs had BOT_CREATE_FAILED (devnet confirmed new usernames after more than 180 s; hence `--register-wait`); one run (before the joinRequest fix) showed b refusing its own `joinRequest` under the M20 gate; one run with `pcdtestjaia` timed out on "the bot holds epoch 1". A last run with `--identity-b pcdrevchibacbfcc` got AccountFull for a (`pcdtestggji`) at APPROVE.
+
+### Screenshots
+
+`group-create` (group worker, live, pcdbenchqmwk + pcdbenchfina + pcdguide.70), `group-rename` and `group-picker-gated` (main worker, fixtures), both themes, `SCREENSHOTS_OK`. Checked by eye.
+
+### Not run
+
+- `e2e:group2`, `e2e:dao`: not rerun (they create v2 groups right after a chat opens; see decisions).
+- GROUP2B_OK: SLOW_OK and BOT_REMOVED_OK did not run (AccountFull for b; see decisions).

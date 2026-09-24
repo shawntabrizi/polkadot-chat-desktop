@@ -313,6 +313,12 @@ async function child() {
         await manager.acceptRequest(requestId);
         console.log(`ACCEPTED ${request.peerUsername} id=${requestId}`);
       }
+      if (command === 'DM_OTHER') {
+        // A DM to the other person: this client's capabilities (0013) ride it, so their
+        // New group picker can take us (owner ask 2026-09-24: only capable contacts).
+        await manager.sendMessage(otherHex, { type: 'text', text: rest.join(' ') });
+        console.log('DM_SENT');
+      }
       if (command === 'WAIT_CONTACT') {
         const contact = await waitFor(() => db.contacts.get(otherHex), WAIT_MS);
         if (contact) console.log(`CONTACT ${contact.username} devices=${contact.devices.length}`);

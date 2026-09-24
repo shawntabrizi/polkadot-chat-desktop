@@ -11,6 +11,7 @@ import { useEffect, useRef } from 'react';
 import { readChatPrefs } from '../app/chatPrefs';
 import { type MessageRow, type PeerId, type RequestRow, db, groupIdOf, isGroupPeer, isLocalPeer } from '../app/database';
 import { previewOf } from '../domain/chat/content';
+import { groupDisplayName, readSelfAccount } from '../domain/chat/groupNames';
 
 import type { DesktopAppApi } from '../../shared/desktop-api';
 
@@ -62,7 +63,9 @@ export const useNotifications = (app: DesktopAppApi | null, selectedPeer: PeerId
         const group = await db.groups.get(groupIdOf(peer));
         if (!group) return null;
         const sender = group.members.find(member => member.account === row.senderAccountId)?.username ?? null;
-        return { title: group.name, sender };
+        // Owner ask 2026-09-24: an unnamed group is titled by its members' names.
+        const [self, contacts] = await Promise.all([readSelfAccount(), db.contacts.toArray()]);
+        return { title: groupDisplayName(group, self, contacts), sender };
       }
       const contact = await db.contacts.get(peer);
       // M12e: a nickname is the name this device shows.
