@@ -413,3 +413,7 @@ thumbnail.
 ### Voice note containers (2026-09-24)
 
 A voice note is Opus in either WebM (`audio/webm; codecs=opus`, what Chromium records) or Ogg (`audio/ogg; codecs=opus`). Receivers MUST play both; senders SHOULD NOT remux.
+
+### Ask to resend (host convention, 2026-09-24)
+
+A receiver whose copy is gone (expired on Bulletin or freed locally) sends a plain text "Please resend <name>" whose link is the fragment `#resend/<messageId>`; a client that knows the convention shows a Resend action to the sender, who re-stores the same ciphertext (same keys, same nonces, same CIDs) so the original message works again; no new message kind and no new statement beyond the request text.
