@@ -8,9 +8,12 @@
  * - The opener is never empty: pca bots do not greet an empty first message,
  *   so an empty opener leaves the new person looking at a silent chat.
  * - A bot that does not answer reads "No answer yet" (M12e), never an error.
+ * - Nothing goes out before this identity's key is readable on the People
+ *   chain: a bot drops a request from a sender whose key it cannot read, and
+ *   the request is then lost (seen live: all seven, 17 s after sign-up).
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type HexString, bytesToHex } from '../../app/bytes';
 import { appDatabase, db } from '../../app/database';
@@ -19,9 +22,12 @@ import type { PeerIdentity } from '../identity/lookup';
 import type { DemoBot } from '../../../shared/demoBots';
 
 import {
+  DEMO_KEY_POLL_MS,
+  DEMO_KEY_WAIT_MS,
   DEMO_NO_ANSWER_MS,
   DEMO_OPENER,
   type DemoDeps,
+  type DemoKeyWait,
   type DemoSnapshot,
   demoChatsToRemove,
   demoPeerState,
@@ -40,12 +46,17 @@ const accountOf = (username: string): Uint8Array => {
 };
 
 /** A fake network and device: `pcdghost.99` is owned by no one; sends write the rows the app would write. */
-const world = (options: { failOnce?: string } = {}) => {
+const world = (options: { failOnce?: string; keyVisible?: () => boolean } = {}) => {
   const snapshot: DemoSnapshot = { contacts: [], rooms: [], requests: [], blocked: [] };
   const requests: { username: string; text: string }[] = [];
   const messages: { peer: HexString; text: string }[] = [];
   let failing = options.failOnce ?? null;
+  let keyReads = 0;
   const deps: DemoDeps = {
+    selfKeyVisible: async () => {
+      keyReads += 1;
+      return options.keyVisible?.() ?? true;
+    },
     snapshot: async () => structuredClone(snapshot),
     resolveUsername: async username => (username === 'pcdghost.99' ? null : accountOf(username)),
     getPeerIdentity: async accountId => ({
@@ -86,7 +97,7 @@ const world = (options: { failOnce?: string } = {}) => {
     snapshot.contacts.push({ accountId: account, username, chatPublicKey: new Uint8Array(32), devices: [], createdAt: 0, updatedAt: 0 });
     snapshot.rooms.push({ peerAccountId: account, unreadCount: 0, lastMessageAt: 0, lastPreview: '', createdAt: 0, updatedAt: 0 });
   };
-  return { snapshot, deps, requests, messages, accept };
+  return { snapshot, deps, requests, messages, accept, keyReads: () => keyReads };
 };
 
 describe('startDemoChats', () => {
@@ -154,6 +165,94 @@ describe('startDemoChats', () => {
     const outcomes = await startDemoChats([bot('pcdpirate.81')], w.deps);
     expect(outcomes.get('pcdpirate.81')).toBe('skipped');
     expect(w.requests).toEqual([]);
+  });
+});
+
+describe('the wait for this identity\'s key', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sends nothing while the key is not on the chain, and sends once it is', async () => {
+    let visible = false;
+    const w = world({ keyVisible: () => visible });
+    const steps: string[] = [];
+    const waits: DemoKeyWait[] = [];
+    const run = startDemoChats(
+      [bot('pcdpeer.47')],
+      w.deps,
+      (username, step) => steps.push(`${username}:${step}`),
+      wait => waits.push(wait),
+    );
+
+    await vi.advanceTimersByTimeAsync(3 * DEMO_KEY_POLL_MS);
+    // Three polls later: still nothing out, and the row says it waits.
+    expect(w.requests).toEqual([]);
+    expect(steps).toEqual(['pcdpeer.47:waiting']);
+    expect(w.keyReads()).toBe(4);
+
+    visible = true;
+    await vi.advanceTimersByTimeAsync(DEMO_KEY_POLL_MS + 10);
+    const outcomes = await run;
+
+    expect(outcomes.get('pcdpeer.47')).toBe('sent');
+    expect(w.requests).toEqual([{ username: 'pcdpeer.47', text: DEMO_OPENER }]);
+    expect(waits).toEqual([{ visible: true, waitedMs: 4 * DEMO_KEY_POLL_MS, reads: 5 }]);
+  });
+
+  it('does not wait or show "waiting" when the key is already there', async () => {
+    const w = world();
+    const steps: string[] = [];
+    const run = startDemoChats([bot('pcdpeer.47')], w.deps, (_username, step) => steps.push(step));
+    await vi.advanceTimersByTimeAsync(10);
+    await run;
+    expect(steps).toEqual(['sending', 'sent']);
+    expect(w.keyReads()).toBe(1);
+  });
+
+  it('gives up after the wait, sends nothing, and a later press tries again', async () => {
+    let visible = false;
+    const w = world({ keyVisible: () => visible });
+    const waits: DemoKeyWait[] = [];
+    const run = startDemoChats(BOTS, w.deps, undefined, wait => waits.push(wait));
+
+    await vi.advanceTimersByTimeAsync(DEMO_KEY_WAIT_MS + DEMO_KEY_POLL_MS);
+    const outcomes = await run;
+
+    expect(w.requests).toEqual([]);
+    expect([...outcomes.values()]).toEqual(['notRegistered', 'notRegistered', 'notRegistered']);
+    expect(waits).toHaveLength(1);
+    expect(waits[0]?.visible).toBe(false);
+    expect(waits[0]?.waitedMs).toBeLessThanOrEqual(DEMO_KEY_WAIT_MS);
+    // No poll runs after the give-up.
+    const reads = w.keyReads();
+    await vi.advanceTimersByTimeAsync(10 * DEMO_KEY_POLL_MS);
+    expect(w.keyReads()).toBe(reads);
+    // The row is ready for another press, and that press sends once the key is there.
+    expect(demoRowStatus({ kind: 'none' }, 'notRegistered', 0)).toBe('idle');
+    visible = true;
+    const again = startDemoChats([bot('pcdpeer.47')], w.deps);
+    await vi.advanceTimersByTimeAsync(10);
+    expect((await again).get('pcdpeer.47')).toBe('sent');
+  });
+
+  it('counts a failed key read as "not yet", not as a failure', async () => {
+    let calls = 0;
+    const w = world();
+    const deps: DemoDeps = {
+      ...w.deps,
+      selfKeyVisible: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('read timed out');
+        return true;
+      },
+    };
+    const run = startDemoChats([bot('pcdpeer.47')], deps);
+    await vi.advanceTimersByTimeAsync(DEMO_KEY_POLL_MS + 10);
+    expect((await run).get('pcdpeer.47')).toBe('sent');
   });
 });
 

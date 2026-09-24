@@ -2859,3 +2859,116 @@ check:tokens: clean (155 files)
 ### git status --short
 
 This file is part of the commit, so the result is in the M12g hand-off report. The M12i agent committed while my hunks were staged, so the M12g code is in b9b0c88 and 88043de (see questions.md "## M12g"). The runs below "On the committed tree" used a tree whose M12g files are identical to HEAD's (checked file by file); the combined tree is checked under "Combined tree".
+
+## M12i (follow-up) (2026-09-24)
+
+The demo action waits until this identity's key is visible on the People chain (best block, every 2 s, up to 90 s) before it sends.
+
+### npm run check
+
+```
+ Test Files  68 passed (68)
+      Tests  570 passed (570)
+check:tokens: clean (155 files)
+```
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<scratch dir> npm run smoke
+
+```
+✓ built in 188ms
+SMOKE_OK
+```
+
+### npm run e2e:demo (three runs; `[ws]` and "Waiting for the network" lines left out)
+
+**Run A, 03:42 UTC, before the pca identifier-retry fix reached the fleet (its `index.mjs` is dated 03:43:50 UTC): DEMO_FAIL.** The app read the key at once, at the best block, and every request went out. All seven bots dropped them: pcdpeer logged `BOT_OPENER_NO_IDENTIFIER from=b04a2581…` at 03:42:29, about 9 s after the app read the key. The bots also read `Resources.Consumers` at the best block, through `people-paseo.rotko.net`, so their node did not yet show what the app read. The client wait cannot close that gap; the pca retry does.
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:demo
+> node scripts/e2e-demo.mjs
+identity register pcddemowjtk on devnet
+  Creating keys
+  Claiming username
+identity registered pcddemowjtk.16 confirmed=true finalized=false at=17.6s
+SELF 0xb04a258125de086cee8f9e983dc9d82d1482d5791f2c4326a9f97396ddd26b72 pcddemowjtk.16
+people best block #7057776
+DEMO_START bots=pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05 opener="Hi!"
+DEMO_KEY_VISIBLE at=once (359ms)
+DEMO_STEP pcdpirate.81 sent at=20.8s
+DEMO_STEP pcdguide.70 sent at=21.7s
+DEMO_STEP pcdmeter.01 sent at=22.6s
+DEMO_STEP pcdflip.44 sent at=23.5s
+DEMO_STEP pcdfaucet.77 sent at=24.4s
+DEMO_STEP pcdpeer.47 sent at=25.4s
+DEMO_STEP pcdcolor.05 sent at=26.3s
+RUN1 sent=7 of 7 at=26.3s
+DEMO_FAIL accepted=0 (need 4) no-answer=pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05
+```
+
+**Run B, 03:45 UTC, after the fix: DEMO_OK n=7, DEMO_IDEMPOTENT.** The fleet logged no identifier retry event for this account: the first lookup found the key.
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:demo
+> node scripts/e2e-demo.mjs
+identity register pcddemoplss on devnet
+  Creating keys
+  Claiming username
+identity registered pcddemoplss.87 confirmed=true finalized=false at=8.7s
+SELF 0x22caa6f4884b24abb976470aa9d6d143534e7a235c97069205e3518f29ffcd3e pcddemoplss.87
+people best block #7057792
+DEMO_START bots=pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05 opener="Hi!"
+DEMO_KEY_VISIBLE at=once (343ms)
+DEMO_STEP pcdpirate.81 sent at=11.8s
+DEMO_STEP pcdguide.70 sent at=12.8s
+DEMO_STEP pcdmeter.01 sent at=13.8s
+DEMO_STEP pcdflip.44 sent at=14.8s
+DEMO_STEP pcdfaucet.77 sent at=15.7s
+DEMO_STEP pcdpeer.47 sent at=16.7s
+DEMO_STEP pcdcolor.05 sent at=17.7s
+RUN1 sent=7 of 7 at=17.7s
+ACCEPTED pcdpirate.81 after=7.2s
+ACCEPTED pcdguide.70 after=7.2s
+ACCEPTED pcdmeter.01 after=7.2s
+ACCEPTED pcdflip.44 after=7.2s
+ACCEPTED pcdfaucet.77 after=7.2s
+ACCEPTED pcdpeer.47 after=7.2s
+ACCEPTED pcdcolor.05 after=8.2s
+DEMO_OK n=7 within=8.2s no-answer=none
+GREETED 7/7 pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05
+DEMO_IDEMPOTENT sent=0 pcdpirate.81=skipped pcdguide.70=skipped pcdmeter.01=skipped pcdflip.44=skipped pcdfaucet.77=skipped pcdpeer.47=skipped pcdcolor.05=skipped
+```
+
+**Run C, 03:46 UTC: DEMO_OK n=7, DEMO_IDEMPOTENT.** No identifier event in the fleet logs since the 03:44 restart, so the bot retry was not used.
+
+```
+> polkadot-chat-desktop@0.1.0 e2e:demo
+> node scripts/e2e-demo.mjs
+identity register pcddemonjhg on devnet
+  Creating keys
+  Claiming username
+identity registered pcddemonjhg.87 confirmed=true finalized=false at=54.7s
+SELF 0x2662557764d86b6b64346dba41956935021faa52c8bffb880ef11371c69b8d52 pcddemonjhg.87
+people best block #7057817
+DEMO_START bots=pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05 opener="Hi!"
+DEMO_KEY_VISIBLE at=once (620ms)
+DEMO_STEP pcdpirate.81 sent at=60.0s
+DEMO_STEP pcdguide.70 sent at=60.9s
+DEMO_STEP pcdmeter.01 sent at=61.9s
+DEMO_STEP pcdflip.44 sent at=62.9s
+DEMO_STEP pcdfaucet.77 sent at=63.9s
+DEMO_STEP pcdpeer.47 sent at=64.9s
+DEMO_STEP pcdcolor.05 sent at=65.9s
+RUN1 sent=7 of 7 at=65.9s
+ACCEPTED pcdpirate.81 after=7.8s
+ACCEPTED pcdguide.70 after=7.8s
+ACCEPTED pcdmeter.01 after=7.8s
+ACCEPTED pcdflip.44 after=7.8s
+ACCEPTED pcdfaucet.77 after=7.8s
+ACCEPTED pcdpeer.47 after=7.8s
+ACCEPTED pcdcolor.05 after=8.8s
+DEMO_OK n=7 within=8.8s no-answer=none
+GREETED 7/7 pcdpirate.81,pcdguide.70,pcdmeter.01,pcdflip.44,pcdfaucet.77,pcdpeer.47,pcdcolor.05
+DEMO_IDEMPOTENT sent=0 pcdpirate.81=skipped pcdguide.70=skipped pcdmeter.01=skipped pcdflip.44=skipped pcdfaucet.77=skipped pcdpeer.47=skipped pcdcolor.05=skipped
+```
+
+`DEMO_WAITED_FOR_KEY` did not appear in any run. Sign-up (`createIdentity`) already waits for the attestation at the best block, so the key was there at the first read each time. The waiting, send-after-visible and timeout paths are covered by `src/renderer/domain/demo/demo.spec.ts` "the wait for this identity's key" (fake timers).

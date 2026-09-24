@@ -12,12 +12,14 @@ import type { ChatManager } from '../domain/chat/manager';
 import { UNDO_MS, deleteKey, pendingActions } from '../domain/chat/undo';
 import {
   type DemoDeps,
+  type DemoKeyWait,
   type DemoOutcome,
   type DemoRowStatus,
   demoChatsToRemove,
   demoPeerState,
   demoRowStatus,
   readDemoSnapshot,
+  selfKeyVisibleVia,
   startDemoChats,
 } from '../domain/demo/demo';
 import type { IdentityLookup, UsernameResolver } from '../domain/identity/lookup';
@@ -89,13 +91,20 @@ const depsOf = (runtime: DemoRuntime): DemoDeps => ({
   getPeerIdentity: accountId => runtime.lookup.getPeerIdentity(accountId),
   sendRequest: (peer, text) => runtime.manager.sendRequest(peer, text),
   sendMessage: (peer, text) => runtime.manager.sendMessage(peer, { type: 'text', text }),
+  selfKeyVisible: selfKeyVisibleVia(runtime.lookup),
 });
 
-type Local = ReadonlyMap<string, DemoOutcome | 'sending'>;
+type Local = ReadonlyMap<string, DemoOutcome | 'sending' | 'waiting'>;
+type Step = DemoOutcome | 'sending' | 'waiting';
+
+/** Shown when this identity's key did not reach the chain within the wait; nothing was sent. */
+const NOT_REGISTERED_TEXT = 'The network has not registered you yet. Try again in a minute.';
 
 /** The press's own record per bot, and a clock for "No answer yet". */
 const useDemoRun = (runtime: DemoRuntime | null) => {
   const [local, setLocal] = useState<Local>(new Map());
+  // The last press found no key for this identity on the chain.
+  const [notRegistered, setNotRegistered] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const snapshot = useLiveQuery(readDemoSnapshot, []);
   useEffect(() => {
@@ -104,17 +113,31 @@ const useDemoRun = (runtime: DemoRuntime | null) => {
   }, []);
   const statusOf = (bot: DemoBot): DemoRowStatus =>
     snapshot ? demoRowStatus(demoPeerState(snapshot, bot.username), local.get(bot.username), now) : 'idle';
-  const start = (targets: readonly DemoBot[], onStep?: (username: string, step: DemoOutcome | 'sending') => void): Promise<unknown> => {
+  const start = (
+    targets: readonly DemoBot[],
+    onStep?: (username: string, step: Step) => void,
+    onKeyWait?: (wait: DemoKeyWait) => void,
+  ): Promise<unknown> => {
     if (!runtime) return Promise.resolve();
-    return startDemoChats(targets, depsOf(runtime), (username, step) => {
-      setLocal(current => new Map(current).set(username, step));
-      onStep?.(username, step);
-    });
+    setNotRegistered(false);
+    return startDemoChats(
+      targets,
+      depsOf(runtime),
+      (username, step) => {
+        setLocal(current => new Map(current).set(username, step));
+        onStep?.(username, step);
+      },
+      wait => {
+        setNotRegistered(!wait.visible);
+        onKeyWait?.(wait);
+      },
+    );
   };
-  return { snapshot, statusOf, start };
+  return { snapshot, statusOf, start, notRegistered };
 };
 
 const STATUS_TEXT: Record<Exclude<DemoRowStatus, 'idle' | 'chatting'>, string> = {
+  waiting: 'Waiting for the network…',
   sending: 'Sending…',
   sent: 'Sent',
   noAnswer: 'No answer yet',
@@ -138,6 +161,12 @@ const StatusText = ({ status, chattingText }: { status: DemoRowStatus; chattingT
     </span>
   );
 };
+
+const NotRegistered = () => (
+  <p className="max-w-md text-body-m text-fg-secondary" data-testid="demo-not-registered" aria-live="polite">
+    {NOT_REGISTERED_TEXT}
+  </p>
+);
 
 const DemoRow = ({ bot, children }: { bot: DemoBot; children?: ReactNode }) => (
   <li className="flex items-center gap-3 rounded-nested px-2 py-2" data-testid="demo-row" data-username={bot.username}>
@@ -167,7 +196,7 @@ type IntroProps = {
 
 export const DemoIntro = ({ profileId, runtime, onDone }: IntroProps) => {
   const bots = useDemoBots(profileId);
-  const { statusOf, start } = useDemoRun(runtime);
+  const { statusOf, start, notRegistered } = useDemoRun(runtime);
   const [running, setRunning] = useState(false);
   // The bots this press reached: their accept ends the step.
   const [sentHere, setSentHere] = useState<ReadonlySet<string>>(new Set());
@@ -196,11 +225,19 @@ export const DemoIntro = ({ profileId, runtime, onDone }: IntroProps) => {
 
   const startAll = () => {
     setRunning(true);
-    timer.current = setTimeout(() => done.current(), DEMO_INTRO_MAX_WAIT_MS);
     // The sends go on after the step closes; their rows are in the chat list.
-    void start(bots, (username, step) => {
-      if (step === 'sent' || step === 'resumed') setSentHere(current => new Set(current).add(username));
-    });
+    void start(
+      bots,
+      (username, step) => {
+        if (step === 'sent' || step === 'resumed') setSentHere(current => new Set(current).add(username));
+      },
+      // The 5 s count starts once the key is on the chain: the wait for it
+      // stays on this pane, and without the key the person stays here to press again.
+      wait => {
+        if (wait.visible) timer.current = setTimeout(() => done.current(), DEMO_INTRO_MAX_WAIT_MS);
+        else setRunning(false);
+      },
+    );
   };
 
   return (
@@ -223,6 +260,7 @@ export const DemoIntro = ({ profileId, runtime, onDone }: IntroProps) => {
             </DemoRow>
           ))}
         </ul>
+        {notRegistered ? <NotRegistered /> : null}
         <div className="flex items-center gap-2">
           <Button
             className="h-auto w-fit cursor-pointer rounded-full px-8 py-3 text-label-l disabled:cursor-not-allowed"
@@ -247,7 +285,7 @@ type ListProps = { profileId: NetworkProfileId; bots: readonly DemoBot[]; runtim
 
 /** The rows, "Start chat" per row, "Start all", and "Remove demo chats". Empty on a network with no demo bots. */
 export const DemoSettings = ({ profileId, bots, runtime }: ListProps) => {
-  const { snapshot, statusOf, start } = useDemoRun(runtime);
+  const { snapshot, statusOf, start, notRegistered } = useDemoRun(runtime);
   const [busy, setBusy] = useState(false);
   const removable = snapshot ? demoChatsToRemove(snapshot, bots) : [];
   const startable = (status: DemoRowStatus) => status === 'idle' || status === 'failed' || status === 'notOnNetwork';
@@ -293,6 +331,7 @@ export const DemoSettings = ({ profileId, bots, runtime }: ListProps) => {
           );
         })}
       </ul>
+      {notRegistered ? <NotRegistered /> : null}
       <div className="flex flex-wrap gap-2">
         <Button className="w-fit rounded-medium text-label-m" disabled={runtime === null || busy} onClick={startAll} data-testid="demo-settings-start-all">
           {busy ? 'Starting…' : 'Start all'}

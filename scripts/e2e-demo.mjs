@@ -9,12 +9,16 @@
 // 2. Dexie on fake-indexeddb, seeded as the app seeds it; the People
 //    connection, the chat manager, the identity lookup and the username
 //    resolver (Resources.UsernameOwnerOf at the best block).
-// 3. Run 1 over the built-in devnet list (shared/demoBots.ts): one line per
+// 3. Run 1 over the built-in devnet list (shared/demoBots.ts). The action
+//    first waits until this identity's key reads back from the People chain
+//    (best block, every 2 s, up to 90 s): DEMO_WAITED_FOR_KEY <ms> when the
+//    key was not there at the first read, DEMO_KEY_VISIBLE at=once when it
+//    was, DEMO_FAIL key-not-visible when the wait ran out. Then one line per
 //    bot (DEMO_STEP), then wait up to 60 s from the press for accepts (a
 //    contact with a room, as the chat list shows it). DEMO_OK n=<accepts>
 //    when n >= 4. GREETED lists the bots whose answer arrived (information).
 // 4. Run 2: the same action again must send nothing (no request, no message):
-//    DEMO_IDEMPOTENT sent=0.
+//    DEMO_IDEMPOTENT sent=0. The key is known by then, so it must not wait.
 // Exit 0 on DEMO_OK and DEMO_IDEMPOTENT; 1 DEMO_FAIL / DEMO_NOT_IDEMPOTENT / any
 // other failure. Prints no secret.
 
@@ -65,7 +69,7 @@ const { createIdentityLookup, createUsernameResolver } = await load('src/rendere
 const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
 const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
 const { BUILT_IN_DEMO_BOTS } = await load('src/shared/demoBots.ts');
-const { DEMO_OPENER, demoPeerState, readDemoSnapshot, startDemoChats } = await load('src/renderer/domain/demo/demo.ts');
+const { DEMO_OPENER, demoPeerState, readDemoSnapshot, selfKeyVisibleVia, startDemoChats } = await load('src/renderer/domain/demo/demo.ts');
 
 setMetadataCacheDir(join(root, '.agent-runs', 'metadata'));
 setMetadataCache(metadataCache());
@@ -150,15 +154,30 @@ const deps = {
     sends += 1;
     await manager.sendMessage(peer, { type: 'text', text });
   },
+  selfKeyVisible: selfKeyVisibleVia(lookup),
 };
 
 // ── 3. Run 1 ──────────────────────────────────────────────────────────────
 
 console.log(`DEMO_START bots=${bots.map((bot) => bot.username).join(',')} opener=${JSON.stringify(DEMO_OPENER)}`);
 const pressedAt = Date.now();
-const first = await startDemoChats(bots, deps, (username, step, detail) => {
-  if (step !== 'sending') console.log(`DEMO_STEP ${username} ${step}${detail ? ` (${detail})` : ''} at=${at()}`);
-});
+let firstWait = null;
+const first = await startDemoChats(
+  bots,
+  deps,
+  (username, step, detail) => {
+    if (step !== 'sending' && step !== 'waiting') console.log(`DEMO_STEP ${username} ${step}${detail ? ` (${detail})` : ''} at=${at()}`);
+  },
+  (wait) => {
+    firstWait = { ...wait, sendsBefore: sends };
+    if (!wait.visible) console.log(`DEMO_KEY_NOT_VISIBLE after=${wait.waitedMs}ms reads=${wait.reads}`);
+    else if (wait.reads > 1) console.log(`DEMO_WAITED_FOR_KEY ${wait.waitedMs} reads=${wait.reads} at=${at()}`);
+    else console.log(`DEMO_KEY_VISIBLE at=once (${wait.waitedMs}ms)`);
+  },
+);
+if (!firstWait) finish(1, 'DEMO_FAIL the action did not report its wait for the key');
+if (!firstWait.visible) finish(1, `DEMO_FAIL key-not-visible sent=${sends}`);
+if (firstWait.sendsBefore !== 0) finish(1, `DEMO_FAIL sent=${firstWait.sendsBefore} before the key wait ended`);
 const sentTo = bots.filter((bot) => first.get(bot.username) === 'sent' || first.get(bot.username) === 'resumed');
 console.log(`RUN1 sent=${sends} of ${bots.length} at=${at()}`);
 
@@ -205,7 +224,11 @@ console.log(`GREETED ${greeted.length}/${accepted.length} ${greeted.join(',')}`)
 // ── 4. Run 2: nothing more goes out ───────────────────────────────────────
 
 const before = sends;
-const second = await startDemoChats(bots, deps);
+let secondWait = null;
+const second = await startDemoChats(bots, deps, undefined, (wait) => {
+  secondWait = wait;
+});
+if (!secondWait?.visible || secondWait.reads !== 1) finish(1, `DEMO_FAIL run 2 waited for a key already known: ${JSON.stringify(secondWait)}`);
 const secondSent = sends - before;
 const summary = bots.map((bot) => `${bot.username}=${second.get(bot.username)}`).join(' ');
 if (secondSent !== 0) finish(1, `DEMO_NOT_IDEMPOTENT sent=${secondSent} ${summary}`);
