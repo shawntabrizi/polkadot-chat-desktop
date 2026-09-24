@@ -389,7 +389,7 @@ async function child(name) {
       const before = await freeNow();
       const dryRun = await service.dryRun(position.button.action.intent);
       console.log(
-        `DRYRUN "${position.button.label}" ok=${dryRun.ok} value=${formatPas(BigInt(dryRun.value))} fee=${dryRun.fee ? formatPas(BigInt(dryRun.fee)) : '-'} mapsAccount=${dryRun.mapsAccount}${dryRun.error ? ` error="${dryRun.error}"` : ''}`,
+        `DRYRUN "${position.button.label}" ok=${dryRun.ok} value=${formatPas(BigInt(dryRun.value))} fee=${dryRun.fee ? formatPas(BigInt(dryRun.fee)) : '-'} mapsAccount=${dryRun.mapsAccount}${dryRun.caps ? ` caps=deposit:${formatPas(BigInt(dryRun.caps.deposit))},gas:x${dryRun.caps.gasFactor}` : ' caps=-'}${dryRun.error ? ` error="${dryRun.error}"` : ''}`,
       );
       if (!dryRun.ok) {
         console.log(`STAKE_FAILED dry-run refused: ${dryRun.error}`);

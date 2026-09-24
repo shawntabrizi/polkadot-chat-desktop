@@ -205,6 +205,12 @@ export type TxDryRun = {
   mapsAccount: boolean;
   /** 0x-hex return data of the last contract call, when there is one. */
   returnData: string | null;
+  /**
+   * The limits signed for the contract calls whose intent set them (spec 0007
+   * "Limits of a Revive call"): the deposit limit, planck, and the gas limit
+   * over this client's estimate ("1.5"). Null when no call's intent set any.
+   */
+  caps: { deposit: string; gasFactor: string } | null;
 };
 
 /** One state of a submitted transaction (spec 0007 `TransactionReference.status`). */

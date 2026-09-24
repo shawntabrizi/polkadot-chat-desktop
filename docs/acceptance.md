@@ -3227,3 +3227,33 @@ Clean after the commit (checked before the push).
 ### Not run
 
 - `npm run package` / the packaged app with the agent (not in M13's acceptance; questions.md).
+
+## Tx limits (2026-09-24)
+
+The signer takes, per field, the larger of the intent limit and its estimate + 20 %; an intent without a deposit limit gets estimate + 0.1 PAS (spec 0007 "Limits of a Revive call"). pcdflip.44 sends the limits of pca 8d0b959. Test identities pcde2e (pcdecejakd.11) and pcdeceb (pcdeceb.89); `PCD_HEADLESS=1`, throwaway `PCD_USER_DATA_DIR`. The DRYRUN line now prints the caps the strip shows: x3.4 for a first stake (the intent sizes the settling path, 2.3x the weight), x1.5 for the settling stake.
+
+Run 1, settlement (the settling stake) in block #13632089:
+
+```
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 pending=0x0000000000000000000000000000000000000000 at=14.0s
+[a] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.0023 PAS mapsAccount=false caps=deposit:0.1052 PAS,gas:x3.4
+[a] STAKED a hash=0xa1c0333bac674a09e80ced7591c055786b42e2a4a386530edb1dca8a70b01cd3 block=13632086 free_before=37.5173 PAS
+[b] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.0023 PAS mapsAccount=false caps=deposit:0.1052 PAS,gas:x1.5
+[b] STAKED b hash=0x1597bbe98ce25c08a2f4dd7369c124b09a369408dc2232f2f672a64f00d1dd8b block=13632089 free_before=49.8577 PAS
+WINNER b pcdeceb.89: BALANCE_WIN before=49.8577 PAS after=50.3557 PAS delta=0.498 PAS expected=(0.4, 0.5] ok=yes
+FLIP_OK at=28.0s
+```
+
+Run 2, settlement in block #13632105:
+
+```
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 pending=0x0000000000000000000000000000000000000000 at=13.7s
+[a] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.0023 PAS mapsAccount=false caps=deposit:0.1052 PAS,gas:x3.4
+[a] STAKED a hash=0xb1f00e592883a794a907f0772695507ea6debaebf5d44065ce698dbe09483387 block=13632103 free_before=38.0103 PAS
+[b] DRYRUN "Stake 0.5 PAS" ok=true value=0.5 PAS fee=0.0023 PAS mapsAccount=false caps=deposit:0.1052 PAS,gas:x1.5
+[b] STAKED b hash=0x00a51cf7e0b3f74d2c02437a9b3d223789907d5fd2781709581b635b2db3701d block=13632105 free_before=51.3557 PAS
+WINNER a pcdecejakd.11: BALANCE_WIN before=38.0103 PAS after=38.5034 PAS delta=0.493 PAS expected=(0.4, 0.5] ok=yes
+FLIP_OK at=24.5s
+```
+
+`npm run check`: 74 files, 614 tests passed; eslint clean; `check:tokens: clean (158 files)`. `PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run smoke`: `SMOKE_OK`.

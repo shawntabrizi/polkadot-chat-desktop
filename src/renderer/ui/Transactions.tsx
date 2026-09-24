@@ -49,6 +49,9 @@ const Row = ({ label, children, testId }: { label: string; children: React.React
 const amountText = (intent: TxIntent): string | null =>
   intent.display.amount ? `${intent.display.amount}${intent.display.asset ? ` ${intent.display.asset}` : ''}` : null;
 
+/** Caps, not charges: the most the calls may take; the fee line is what it costs. */
+export const capsLine = (caps: NonNullable<TxDryRun['caps']>): string => `Caps: deposit up to ${formatUnits(BigInt(caps.deposit))} PAS, gas ×${caps.gasFactor}`;
+
 export const TxStrip = ({ intent, state, signerName, outcome, onSign, onCancel }: StripProps) => {
   const dryRun = state.phase === 'checking' ? null : state.dryRun;
   const fee = dryRun?.fee ? `≈ ${formatUnits(BigInt(dryRun.fee))} PAS` : state.phase === 'checking' ? 'Checking…' : '—';
@@ -69,6 +72,11 @@ export const TxStrip = ({ intent, state, signerName, outcome, onSign, onCancel }
         </Row>
         <Row label="Signs as">{signerName}</Row>
         {dryRun?.mapsAccount ? <Row label="First contract use">Links your account to contracts, once</Row> : null}
+        {dryRun?.caps ? (
+          <p className="text-body-s text-fg-secondary" data-testid="tx-caps">
+            {capsLine(dryRun.caps)}
+          </p>
+        ) : null}
       </div>
       <p
         className={cn('text-body-s', state.phase === 'refused' ? 'text-fg-error' : 'text-fg-secondary')}

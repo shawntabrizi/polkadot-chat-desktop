@@ -52,6 +52,13 @@ const AT_BEST = { at: 'best' } as const;
 export const DRY_RUN_VALID_MS = 120_000;
 /** Weight and storage-deposit limits are the dry-run's estimate plus this share. */
 const MARGIN_PERCENT = 20n;
+/**
+ * Spec 0007 "Limits of a Revive call": a call whose intent sets no deposit
+ * limit may still take another contract path than the dry-run's (the flip's
+ * second stake hit `StorageDepositLimitExhausted`), so its deposit limit is at
+ * least the estimate plus 0.1 PAS. A cap, not a charge.
+ */
+export const DEPOSIT_FLOOR = 1_000_000_000n;
 /** Asset Hub's extension without a default (a bool): false, the "not used" value. */
 export const CUSTOM_EXTENSIONS = { RestrictOrigins: { value: false } } as const;
 /** `ReturnFlags::REVERT` of pallet-revive. */
@@ -126,6 +133,31 @@ export const dispatchErrorText = (error: DispatchErrorLike | undefined): string 
 // ── Building the call ───────────────────────────────────────────────────────
 
 type ReviveEstimate = { returnData: Uint8Array; refTime: bigint; proofSize: bigint; deposit: bigint };
+export type ReviveLimits = { refTime: bigint; proofSize: bigint; deposit: bigint };
+
+const larger = (a: bigint, b: bigint): bigint => (a > b ? a : b);
+
+/**
+ * The limits a kind-1 call is signed with (spec 0007, revision 2026-09-24):
+ * per field, the larger of the intent's limit (the author's worst case over
+ * all contract paths) and this client's estimate plus margin (a stale or low
+ * intent never signs below what the chain needs now). No deposit limit in the
+ * intent: the estimate plus margin, floored at estimate + `DEPOSIT_FLOOR`.
+ */
+export const reviveLimits = (call: Pick<TxCall, 'gasRefTime' | 'gasProofSize' | 'storageDepositLimit'>, estimate: ReviveLimits): ReviveLimits => ({
+  refTime: larger(call.gasRefTime ?? 0n, withMargin(estimate.refTime)),
+  proofSize: larger(call.gasProofSize ?? 0n, withMargin(estimate.proofSize)),
+  deposit: larger(call.storageDepositLimit ?? estimate.deposit + DEPOSIT_FLOOR, withMargin(estimate.deposit)),
+});
+
+const carriesLimits = (call: TxCall): boolean => call.gasRefTime !== undefined || call.gasProofSize !== undefined || call.storageDepositLimit !== undefined;
+
+/** "×1.5": the signed ref-time over the estimate, one decimal, for the strip's caps line. */
+export const gasFactor = (signed: bigint, estimate: bigint): string => {
+  if (estimate <= 0n) return '1';
+  const tenths = (signed * 10n + estimate / 2n) / estimate;
+  return tenths % 10n === 0n ? String(tenths / 10n) : `${tenths / 10n}.${tenths % 10n}`;
+};
 
 /** `ReviveApi_call` at the best block: the result, the weight it needs, the storage deposit it charges. */
 async function estimateRevive(chain: AssetHubChain, origin: string, call: TxCall): Promise<ReviveEstimate | { revert: string }> {
@@ -149,12 +181,16 @@ async function isMapped(chain: AssetHubChain, origin: string): Promise<boolean> 
   return original != null;
 }
 
-type Built = { tx: Tx; mapsAccount: boolean; returnData: Uint8Array | null };
+type Built = { tx: Tx; mapsAccount: boolean; returnData: Uint8Array | null; caps: TxDryRun['caps'] };
 
 /** The extrinsic for the intent: one call, or `Utility.batch_all` of several (map_account first when needed). */
 async function buildTx(chain: AssetHubChain, origin: string, intent: TxIntent, needsMapping: boolean): Promise<Built | { revert: string }> {
   const calls: Tx[] = [];
   let returnData: Uint8Array | null = null;
+  // The caps line covers the calls whose intent set limits: their deposit
+  // limits summed, the largest gas factor.
+  let capDeposit: bigint | null = null;
+  let capGas = '1';
   const hasRevive = intent.calls.some(call => call.kind === CALL_KIND_REVIVE);
   const mapsAccount = hasRevive && needsMapping;
   if (mapsAccount) calls.push(chain.api.tx.Revive.map_account());
@@ -163,12 +199,18 @@ async function buildTx(chain: AssetHubChain, origin: string, intent: TxIntent, n
       const estimate = await estimateRevive(chain, origin, call);
       if ('revert' in estimate) return estimate;
       returnData = estimate.returnData;
+      const limits = reviveLimits(call, estimate);
+      if (carriesLimits(call)) {
+        capDeposit = (capDeposit ?? 0n) + limits.deposit;
+        const factor = gasFactor(limits.refTime, estimate.refTime);
+        if (Number(factor) > Number(capGas)) capGas = factor;
+      }
       calls.push(
         chain.api.tx.Revive.call({
           dest: hex(call.to ?? new Uint8Array()),
           value: call.value,
-          weight_limit: { ref_time: withMargin(estimate.refTime), proof_size: withMargin(estimate.proofSize) },
-          storage_deposit_limit: withMargin(estimate.deposit),
+          weight_limit: { ref_time: limits.refTime, proof_size: limits.proofSize },
+          storage_deposit_limit: limits.deposit,
           data: call.data,
         }) as unknown as Tx,
       );
@@ -179,7 +221,7 @@ async function buildTx(chain: AssetHubChain, origin: string, intent: TxIntent, n
   }
   const [only] = calls;
   const tx = calls.length === 1 && only ? only : (chain.api.tx.Utility.batch_all({ calls: calls.map(entry => entry.decodedCall) } as never) as unknown as Tx);
-  return { tx, mapsAccount, returnData };
+  return { tx, mapsAccount, returnData, caps: capDeposit === null ? null : { deposit: String(capDeposit), gasFactor: capGas } };
 }
 
 // ── Balances (M12g) ─────────────────────────────────────────────────────────
@@ -316,6 +358,7 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     fee: null,
     mapsAccount: false,
     returnData: null,
+    caps: null,
     value: '0',
     error,
     ...extra,
@@ -329,8 +372,8 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     const value = intent.calls.reduce((sum, call) => sum + call.value, 0n);
     const built = await buildTx(chain, origin, intent, await needsMapping());
     if ('revert' in built) return refusal(`The test run failed: ${built.revert}.`, { value: String(value) });
-    const { tx, mapsAccount, returnData } = built;
-    const base = { signer: origin, mapsAccount, returnData: returnData ? hex(returnData) : null, value: String(value) };
+    const { tx, mapsAccount, returnData, caps } = built;
+    const base = { signer: origin, mapsAccount, returnData: returnData ? hex(returnData) : null, caps, value: String(value) };
     // The fee of this exact extrinsic, with a placeholder signature, at the best block.
     const fake = await tx.create(getTxCreator(signer.publicKey, 'Sr25519', () => new Uint8Array(64)), { customSignedExtensions: CUSTOM_EXTENSIONS } as never);
     // `create` returns the extrinsic with its length prefix; the typed API adds
