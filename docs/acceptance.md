@@ -3421,8 +3421,6 @@ Exit 0. An earlier run with a = pcde2e stopped at create: `CREATE2_FAILED Submit
 
 ```
 PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=8.0s
-BOT_DESCRIBE_SKIPPED no "M15a" commit on pca desktop/rfc-0003 yet
-ATTACH_OK at=38.9s (desktop steps; bot step skipped)
 ```
 
 ### PCD_HEADLESS=1 npm run screenshots

@@ -196,3 +196,5 @@ Field by field (from `fa`):
 - A `video` vector and a 4-item album with thumbnails dropped to fit.
 - Store C1's `c_0` on devnet and record the block, index and the `Stored`
   event; fetch it back by `bitswap_v1_get(cid_0)` and by the gateway.
+
+> Reviewer notes 2026-09-24: (1) vector A's 12-character blurhash is intentionally malformed (a real 4×3 hash is 28 characters); clients paint no placeholder for it. (2) The gating check is done: C1's `c_0` was stored on devnet Bulletin (`wss://bullet.sik.rocks`) in best block #970869 by an account authorized by `//Eve`; `Stored.content_hash` equals `chunks[0]`; fetched back by `bitswap_v1_get` and by the devnet gateway (desktop e2e:attach, 2026-09-24).
