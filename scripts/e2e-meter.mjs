@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// M11 e2e (spec 0007) against the live pca bots `pcdfaucet.NN` and
-// `pcdmeter.NN` and devnet Asset Hub, through this repo's code:
+// M11 e2e (spec 0007) against the live pca bot `pcdmeter.NN` and devnet
+// Asset Hub, through this repo's code:
 //   npm run e2e:meter -- [--profile devnet] [--identity <name>=pcde2e] [--questions 3]
 // Same setup as e2e-botinfo.mjs (the identity file, fake-indexeddb, the
-// People connection). The bots' two digits are not fixed: both are found with
+// People connection). The bot's two digits are not fixed: it is found with
 // the app's username search (domain/identity/search.ts).
-//  1. Faucet: the pca faucet bot (scripts/lib/faucet-bot.ts, the app's M11 path) sends
-//     `/drip <address>` to pcdfaucet; a reference with status >= 1 must come
-//     back within 90 s (DRIP_OK).
+//  1. Funds: 1 PAS from a public dev account (scripts/lib/devFund.ts, the
+//     embedded Faucet's transfer; the pca faucet bot is retired), in a best
+//     block within 90 s (FUNDED).
 //  2. Meter: request/accept with pcdmeter, `/topup`, and the "Top up 1 PAS"
 //     `tx` button of its answer. The intent is dry-run and signed by the main
 //     process's module (main/chain/assetHub.ts, the identity wallet key) and
@@ -23,8 +23,7 @@
 //  4. M12f: two more answers (replies pending in the bot's batch), `/balance`,
 //     and the header's number (chain − the latest botInfo's `pending`, as the
 //     room header computes it) must equal the bot's (HEADER_MATCHES_BALANCE).
-// Exit 0 METER_OK then HEADER_MATCHES_BALANCE; 10 E2E_TIMEOUT <stage> on any timeout; 11 DRIP_REFUSED
-// (the faucet bot answered with a text, e.g. its 10 min limit); 3
+// Exit 0 METER_OK then HEADER_MATCHES_BALANCE; 10 E2E_TIMEOUT <stage> on any timeout; 3
 // PEER_KEY_UNSUPPORTED; 1 any other failure (NO_BALANCE_HINT: the bot's
 // botInfo declares no balance). Prints no secret.
 
@@ -45,8 +44,6 @@ const load = (path) => import(pathToFileURL(join(root, path)).href);
 
 const POLL_MS = 1_000;
 const ACCEPT_WAIT_MS = 120_000;
-/** M11 step 7: the faucet's reference within 90 s. */
-const DRIP_WAIT_MS = 90_000;
 const BUTTON_WAIT_MS = 90_000;
 const IN_BLOCK_WAIT_MS = 90_000;
 /** A Haiku turn, then the bot's charge in a best block. */
@@ -96,8 +93,7 @@ const { createIdentityLookup } = await load('src/renderer/domain/identity/lookup
 const { searchUsernames } = await load('src/renderer/domain/identity/search.ts');
 const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
 const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
-const { requestDrip } = await load('scripts/lib/faucet-bot.ts');
-const { toSs58 } = await load('src/renderer/ui/format.ts');
+const { fund } = await load('scripts/lib/devFund.ts');
 const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
 const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');
 const { decodeTxIntent, formatUnits } = await load('src/shared/txIntent.ts');
@@ -177,41 +173,13 @@ const rowsOf = async (peerHex) => listMessages(peerHex);
 const isStatus = (row) => row.content.type === 'text' && /^(?:⏳|🤔|✓) /u.test(row.content.text);
 const incomingAfter = async (peerHex, since) => (await rowsOf(peerHex)).filter((row) => row.direction === 'incoming' && row.timestamp >= since);
 
-// ── 1. Faucet: /drip through the Faucet's "Get 1 PAS" path ─────────────────
+// ── 1. Funds: 1 PAS from a public dev account ───────────────────────────────
 
-const faucet = await findBot('pcdfaucet');
-const dripStarted = Date.now() - 5_000;
-const drip = await requestDrip(
-  {
-    contacts: () => db.contacts.toArray(),
-    requests: () => db.requests.toArray(),
-    search,
-    getPeerIdentity: (accountId) => lookup.getPeerIdentity(accountId),
-    sendMessage: (peer, text) => manager.sendMessage(peer, { type: 'text', text }),
-    sendRequest: (peer, text) => manager.sendRequest(peer, text),
-  },
-  // The address the Faucet room sends (Shell passes toSs58 of the identity).
-  toSs58(selfKeys.accountId),
-);
-console.log(`DRIP_SENT via=${drip.via} to=${drip.username} (/drip ${toSs58(selfKeys.accountId)})`);
-const dripAnswer = await waitFor(async () => {
-  const rows = await incomingAfter(faucet.accountHex, dripStarted);
-  const reference = rows.find((row) => row.content.type === 'transactionReference');
-  if (reference) return { reference };
-  const text = rows.find((row) => row.content.type === 'text' && !isStatus(row));
-  return text ? { text } : null;
-}, DRIP_WAIT_MS);
-if (!dripAnswer) timeout('drip reference (90 s)');
-if (dripAnswer.text) {
-  // The reference may still follow a text; give it the rest of the window.
-  const late = await waitFor(async () => (await incomingAfter(faucet.accountHex, dripStarted)).find((row) => row.content.type === 'transactionReference'), 5_000);
-  if (!late) finish(11, `DRIP_REFUSED ${oneLine(dripAnswer.text.content.text)}`);
-  dripAnswer.reference = late;
-}
-{
-  const reference = dripAnswer.reference.content.reference;
-  if (reference.status === 'failed') finish(1, `DRIP_FAILED ${reference.note}`);
-  console.log(`DRIP_OK status=${reference.status} block=${reference.block} note="${reference.note}" hash=${reference.hash} at=${at()}`);
+try {
+  const funded = await fund(chain, selfKeys.accountId, 1);
+  console.log(`FUNDED 1 PAS from=${funded.from} block=#${funded.block} hash=${funded.hash} attempt=${funded.attempt} at=${at()}`);
+} catch (error) {
+  finish(1, `FUND_FAILED ${error instanceof Error ? error.message : String(error)}`);
 }
 
 // ── 2. Meter: accept, /topup, the Top up button ────────────────────────────

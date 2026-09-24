@@ -44,9 +44,9 @@ export const assertDevnetChain = (chainId: unknown): string => {
   return chainId;
 };
 
-/** The first dev account, in the fixed order, that holds at least 1.5 PAS; null when all are drained. */
-export const pickSource = (balances: readonly { account: DevAccount; free: bigint }[]): DevAccount | null =>
-  DEV_ACCOUNTS.find(account => (balances.find(entry => entry.account === account)?.free ?? 0n) >= SOURCE_MIN_PLANCK) ?? null;
+/** The first dev account, in the fixed order, that holds at least `min` (1.5 PAS for a 1 PAS drip); null when all are drained. */
+export const pickSource = (balances: readonly { account: DevAccount; free: bigint }[], min = SOURCE_MIN_PLANCK): DevAccount | null =>
+  DEV_ACCOUNTS.find(account => (balances.find(entry => entry.account === account)?.free ?? 0n) >= min) ?? null;
 
 /** A public dev account's pair. M15a also signs the devnet Bulletin grant with `//Eve` (chain/bulletin.ts). */
 export const devPair = (account: DevAccount) => deriveSr25519PairFromSeed(mnemonicToMiniSecret(DEV_PHRASE), `//${account}`);
@@ -58,23 +58,30 @@ const readFree = (chain: AssetHubChain, address: string): Promise<bigint> =>
   );
 
 /**
- * Sends 1 PAS to `to` (32-byte account) from the first funded dev account:
+ * Sends 1 PAS (or `value`: the e2e scripts' devFund) to `to` (32-byte
+ * account) from the first funded dev account (the same margin over `value`):
  * balances read at the best block, a dry-run of the very transfer first,
  * then sign and submit. Resolves with the hash once broadcast; later states
  * go to `onStatus` (in block at the first best block, finality after).
  */
-export async function dripDevnet(chain: AssetHubChain, chainId: string, to: Uint8Array, onStatus: (event: TxStatusEvent) => void): Promise<FaucetDrip> {
+export async function dripDevnet(
+  chain: AssetHubChain,
+  chainId: string,
+  to: Uint8Array,
+  onStatus: (event: TxStatusEvent) => void,
+  value: bigint = DRIP_PLANCK,
+): Promise<FaucetDrip> {
   assertDevnetChain(chainId);
   if (chain.genesis.toLowerCase() !== DEVNET_ASSET_HUB_GENESIS.toLowerCase()) throw new Error(DEVNET_ONLY);
   if (to.length !== 32) throw new Error('Invalid account.');
   const balances = await Promise.all(
     DEV_ACCOUNTS.map(async account => ({ account, free: await readFree(chain, ss58Address(devPair(account).publicKey, 42)) })),
   );
-  const account = pickSource(balances);
+  const account = pickSource(balances, value + SOURCE_MIN_PLANCK - DRIP_PLANCK);
   if (!account) throw new Error(NO_SOURCE);
   const pair = devPair(account);
   const origin = ss58Address(pair.publicKey, 42);
-  const tx = chain.api.tx.Balances.transfer_keep_alive({ dest: MultiAddress.Id(ss58Address(to, 42)), value: DRIP_PLANCK });
+  const tx = chain.api.tx.Balances.transfer_keep_alive({ dest: MultiAddress.Id(ss58Address(to, 42)), value });
   const dry = await retryOnNextEndpoint(
     () =>
       withTimeout(

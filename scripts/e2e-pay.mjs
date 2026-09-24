@@ -6,7 +6,8 @@
 // Each person is a child process (`--role a|b`): the app's database is one
 // per process (Dexie over fake-indexeddb, as in e2e-flip.mjs). The parent
 // says who does what and when:
-//  0. both hold at least 1 PAS (else a drip from the faucet bot pcdfaucet.NN);
+//  0. both hold at least 1 PAS (else 1 PAS from a public dev account,
+//     scripts/lib/devFund.ts);
 //     a sends b a chat request and b accepts it;
 //  1. a requests 0.2 PAS from b: a `buttons` message with one `tx` button
 //     (REQUEST_SENT); b sees it and reads it as a request (REQUEST_SEEN);
@@ -184,7 +185,6 @@ async function child(name) {
 
   const POLL_MS = 1_000;
   const WAIT_MS = 150_000;
-  const DRIP_WAIT_MS = 90_000;
   const MIN_FREE = 10_000_000_000n;
 
   const identityName = flag('identity');
@@ -212,11 +212,9 @@ async function child(name) {
   const { readUserIdentity } = await load('src/renderer/domain/identity/userIdentity.ts');
   const { getDeviceKeys } = await load('src/renderer/domain/device/repository.ts');
   const { createIdentityLookup } = await load('src/renderer/domain/identity/lookup.ts');
-  const { searchUsernames } = await load('src/renderer/domain/identity/search.ts');
   const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
   const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
-  const { requestDrip } = await load('scripts/lib/faucet-bot.ts');
-  const { toSs58 } = await load('src/renderer/ui/format.ts');
+  const { fund } = await load('scripts/lib/devFund.ts');
   const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
   const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');
   const { formatPas } = await load('src/shared/balanceHint.ts');
@@ -273,23 +271,15 @@ async function child(name) {
   manager = await createChatManager({ identity, deviceKeys, statementStore: connection.adapter, lookup, onConnectionStatus: connection.onStatus, username: saved.username });
   runner = createTxRunner({ chain: { sign: service.sign, onTxStatus: service.onStatus }, sendReference: manager.sendReference, recordReference: manager.recordReference });
 
-  // ── 0. Test funds: at least 1 PAS, or a drip from the faucet bot ──
+  // ── 0. Test funds: at least 1 PAS, or 1 PAS from a public dev account ──
   let free = await freeNow();
   if (free < MIN_FREE) {
-    const search = async (prefix) => (await searchUsernames(NETWORK_PROFILES[profile], prefix, selfKeys.accountId)).results;
-    const drip = await requestDrip(
-      {
-        contacts: () => db.contacts.toArray(),
-        requests: () => db.requests.toArray(),
-        search,
-        getPeerIdentity: (accountId) => lookup.getPeerIdentity(accountId),
-        sendMessage: (peer, text) => manager.sendMessage(peer, { type: 'text', text }),
-        sendRequest: (peer, text) => manager.sendRequest(peer, text),
-      },
-      toSs58(selfKeys.accountId),
-    );
-    console.log(`DRIP_SENT via=${drip.via} to=${drip.username}`);
-    if (!(await waitFor(async () => (await freeNow()) >= MIN_FREE, DRIP_WAIT_MS))) finish(TIMEOUT_EXIT, `E2E_TIMEOUT ${name}: drip`);
+    try {
+      const funded = await fund(chain, selfKeys.accountId, 1);
+      console.log(`FUNDED 1 PAS from=${funded.from} block=#${funded.block} hash=${funded.hash} attempt=${funded.attempt}`);
+    } catch (error) {
+      finish(1, `FUND_FAILED ${error instanceof Error ? error.message : String(error)}`);
+    }
     free = await freeNow();
   }
   console.log(`READY username=${saved.username} free=${formatPas(free)}`);

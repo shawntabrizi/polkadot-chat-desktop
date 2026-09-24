@@ -641,3 +641,11 @@ SKILL.md §11 says to ask before rewriting copy; M5 step 9 orders the pass and a
 - **Screenshot `room-dao.png`** is a fixture (main worker): a "Garden DAO" group with a pcddao bot, the proposal with real vote intents (never pressed), two tallies, a member's and our vote references, the proposal pinned; the shot clicks the pin bar so the card is in view.
 - **New files no step names:** `src/renderer/domain/chat/proposals.ts` (+ spec), `src/renderer/ui/ProposalCard.tsx` (+ spec).
 - **No new dependency.**
+
+## Dev funding (2026-09-24)
+
+- **The pca faucet bot is retired (owner ruling, 2026-09-24).** The e2e scripts no longer ask `pcdfaucet.NN`. `scripts/lib/faucet-bot.ts` is deleted; `e2e-meter.mjs`, `e2e-flip.mjs` and `e2e-pay.mjs` fund their test identities with `scripts/lib/devFund.ts`. Mentions of `pcdfaucet` in the older sections and in `docs/acceptance.md` are history. The open questions about the bot's 10-minute limit and its two drips at once (`docs/questions.md`) no longer apply to the e2e.
+- **Same logic as the embedded Faucet.** `fund(chain, accountId, amountPas)` calls `dripDevnet` of `src/main/chain/faucet.ts` (devnet Asset Hub only; `//Alice`, then `//Bob` … `//Ferdie` when one is short; dry-run of `Balances.transfer_keep_alive`; sign; submit) on the script's own Asset Hub connection, and resolves at the first best block with the transfer. It never waits for finality. `dripDevnet` and `pickSource` gained an optional amount (default 1 PAS; the source must hold the amount plus the same 0.5 PAS margin), so the app's path is unchanged.
+- **Nonce race.** The two flip (or pay) children fund at once from the same account, and the pool refuses one (`Invalid: Stale`). `fund` tries a refused or failed transfer again after a random 4–12 s pause, three times at most. The first flip run found it: b funded, a ended `FUND_FAILED` on the raw error; the rerun shows b `attempt=2`.
+- **Output.** `FUNDED 1 PAS from=//Alice block=#N hash=0x… attempt=N`; on error `FUND_FAILED <reason>`, exit 1. `e2e-meter.mjs` no longer has exit 11 (`DRIP_REFUSED`).
+- **`e2e-dao.mjs` is not switched.** It funds through the pca checkout's chain module (the bot, a and b, and the Dao treasury, which is a contract call `fund` does not do). It never used `pcdfaucet`. It was not run here.

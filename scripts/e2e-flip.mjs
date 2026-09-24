@@ -8,8 +8,8 @@
 // e2e-meter.mjs), so each person is a child process of this script
 // (`--role a|b`); this parent only says who stakes when and checks the end.
 // Each child, with its own identity file:
-//  1. asks the faucet bot for 1 PAS (the Faucet's "Get 1 PAS" path) and
-//     waits for its reference (DRIP_OK);
+//  1. gets 1 PAS from a public dev account (scripts/lib/devFund.ts, the
+//     embedded Faucet's transfer) in a best block (FUNDED);
 //  2. request/accept with pcdflip (found by username search); waits for the
 //     "Stake 0.5 PAS" `tx` button and the bot's spec 0008 `balance` hint
 //     ("your stake"), and reads the contract's `pending()` player (READY);
@@ -114,7 +114,7 @@ async function parent() {
   const field = (line, key) => line.match(new RegExp(`\\b${key}=(\\S+)`))?.[1] ?? null;
 
   const ready = await Promise.all(['a', 'b'].map((name) => expectLine(name, /^READY /, READY_WAIT_MS)));
-  if (ready.some((entry) => entry === null)) return fail(12, 'E2E_TIMEOUT both people ready (drip, accept, stake button)');
+  if (ready.some((entry) => entry === null)) return fail(12, 'E2E_TIMEOUT both people ready (funds, accept, stake button)');
   const who = Object.fromEntries(['a', 'b'].map((name, i) => [name, { username: field(ready[i].line, 'username'), h160: field(ready[i].line, 'h160') }]));
   let pending = field(ready[0].line, 'pending');
   console.log(`PEOPLE a=${who.a.username} b=${who.b.username} pending=${pending} at=${at()}`);
@@ -198,7 +198,6 @@ async function child(name) {
   const load = (path) => import(pathToFileURL(join(root, path)).href);
 
   const POLL_MS = 1_000;
-  const DRIP_WAIT_MS = 90_000;
   const ACCEPT_WAIT_MS = 120_000;
   const BUTTON_WAIT_MS = 90_000;
   const HINT_WAIT_MS = 30_000;
@@ -208,7 +207,6 @@ async function child(name) {
 
   const identityName = flag('identity');
   const hexOf = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
-  const oneLine = (text) => String(text).replace(/\s+/g, ' ').slice(0, 110);
   const waitFor = async (probe, timeoutMs) => {
     const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
@@ -232,8 +230,7 @@ async function child(name) {
   const { searchUsernames } = await load('src/renderer/domain/identity/search.ts');
   const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
   const { listMessages } = await load('src/renderer/domain/chat/messages.ts');
-  const { requestDrip } = await load('scripts/lib/faucet-bot.ts');
-  const { toSs58 } = await load('src/renderer/ui/format.ts');
+  const { fund } = await load('scripts/lib/devFund.ts');
   const { createTxRunner } = await load('src/renderer/domain/chain/transactions.ts');
   const { openAssetHub, createTxService } = await load('src/main/chain/assetHub.ts');
   const { decodeTxIntent, formatUnits } = await load('src/shared/txIntent.ts');
@@ -301,38 +298,17 @@ async function child(name) {
     console.log(`FOUND ${hit.username}`);
     return { username: hit.username, accountHex: hexOf(hit.accountId), accountId: hit.accountId };
   };
-  const isStatus = (row) => row.content.type === 'text' && /^(?:⏳|🤔|✓) /u.test(row.content.text);
   const incomingAfter = async (peerHex, since) => (await listMessages(peerHex)).filter((row) => row.direction === 'incoming' && row.timestamp >= since);
 
   // ── 1. Test funds ──
-  // Both people ask the one faucet account at once; the faucet can refuse the
-  // second transfer of a block ("did not go through"), so a refusal is asked again.
-  const faucet = await findBot('pcdfaucet');
-  const dripDeps = {
-    contacts: () => db.contacts.toArray(),
-    requests: () => db.requests.toArray(),
-    search,
-    getPeerIdentity: (accountId) => lookup.getPeerIdentity(accountId),
-    sendMessage: (peer, text) => manager.sendMessage(peer, { type: 'text', text }),
-    sendRequest: (peer, text) => manager.sendRequest(peer, text),
-  };
-  let dripped = null;
-  for (let attempt = 1; attempt <= 3 && !dripped; attempt++) {
-    if (attempt > 1) await delay(name === 'a' ? 8_000 : 16_000);
-    const dripStarted = Date.now() - 1_000;
-    const drip = await requestDrip(dripDeps, toSs58(selfKeys.accountId));
-    console.log(`DRIP_SENT via=${drip.via} to=${drip.username} attempt=${attempt}`);
-    const answer = await waitFor(async () => {
-      const rows = await incomingAfter(faucet.accountHex, dripStarted);
-      return rows.find((row) => row.content.type === 'transactionReference') ?? rows.find((row) => row.content.type === 'text' && !isStatus(row)) ?? null;
-    }, DRIP_WAIT_MS);
-    if (!answer) timeout('drip reference (90 s)');
-    if (answer.content.type === 'text') console.log(`DRIP_REFUSED ${oneLine(answer.content.text)}`);
-    else if (answer.content.reference.status === 'failed') console.log(`DRIP_FAILED ${answer.content.reference.note}`);
-    else dripped = answer;
+  // Both people fund at once from the same dev account; devFund asks again
+  // when the pool refuses the second transfer (the nonce race).
+  try {
+    const funded = await fund(chain, selfKeys.accountId, 1);
+    console.log(`FUNDED 1 PAS from=${funded.from} block=#${funded.block} hash=${funded.hash} attempt=${funded.attempt}`);
+  } catch (error) {
+    finish(1, `FUND_FAILED ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!dripped) finish(1, 'DRIP_GAVE_UP three faucet refusals');
-  console.log(`DRIP_OK status=${dripped.content.reference.status} block=${dripped.content.reference.block} note="${dripped.content.reference.note}"`);
 
   // ── 2. The flip bot: accept, the stake button, the balance hint ──
   const flip = await findBot('pcdflip');
