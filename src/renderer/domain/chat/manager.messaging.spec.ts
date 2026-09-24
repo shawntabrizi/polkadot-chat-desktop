@@ -3,10 +3,10 @@
  * that runs the same SDK sessions over one in-memory store.
  */
 
-import { createExpiryAllocator, createInMemoryStatementStore, createSr25519Prover } from '@novasamatech/statement-store';
+import { createExpiryAllocator, createInMemoryStatementStore, createRequestChannel, createSr25519Prover } from '@novasamatech/statement-store';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { type HexString, bytesToHex } from '../../app/bytes';
+import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 import { appDatabase, db } from '../../app/database';
 import { writeSetting } from '../../app/settings';
 import type { ConnectionStatus } from '../../app/statementStore';
@@ -20,6 +20,7 @@ import { listMessages } from './messages';
 import { type ChatManager, createChatManager } from './manager';
 import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
+import { SEEN_INTERVAL_MS } from './signals';
 
 const lookupOf = (peer: TestPeer): IdentityLookup => ({
   getPeerIdentity: async accountId =>
@@ -515,44 +516,137 @@ describe('chat manager: typing and seen (spec 0005)', () => {
     expect((await db.messages.get(first!.messageId))?.seenAt).toBe(777);
   });
 
-  it('sends seen for the newest peer message when the room is read, only with read receipts on', async () => {
+  it('sends no seen when read receipts are off', async () => {
     const { manager, transport, peerKey } = await setup();
     await transport.send({ tag: 'text', value: 'one' });
     await waitFor(() => db.messages.get('peer-1'));
-
     await writeSetting('chat.readReceipts', 'off');
     await manager.markRead(peerKey);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'marker' });
+    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'marker'));
     await sleep(100);
     expect(transport.received.some(m => m.content.tag === 'seen')).toBe(false);
-
-    await writeSetting('chat.readReceipts', 'on');
-    await manager.markRead(peerKey);
-    const seen = await waitFor(() => transport!.received.find(m => m.content.tag === 'seen'));
-    expect(seen.content.tag === 'seen' && seen.content.value.upTo).toBe('peer-1');
   });
 
-  it('sends typing{composing} while composing, and nothing then for the real message', async () => {
+  it('sends no typing by default, even while the user keeps typing', async () => {
     const { manager, transport, peerKey } = await setup();
     manager.composing(peerKey, 'h');
+    await sleep(1_200);
+    manager.composing(peerKey, 'hello');
+    await manager.sendMessage(peerKey, { type: 'text', text: 'marker' });
+    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'marker'));
+    await sleep(50);
+    expect(transport.received.some(m => m.content.tag === 'typing')).toBe(false);
+  });
+
+  it('with "Send typing indicators" on: typing{composing} after 1 s of editing, until now + 12 s, nothing for the real message', async () => {
+    const { manager, transport, peerKey } = await setup();
+    await writeSetting('chat.sendTyping', 'on');
+    manager.composing(peerKey, 'h');
+    await sleep(500);
+    expect(transport.received.some(m => m.content.tag === 'typing')).toBe(false);
+    await sleep(700);
     const typing = await waitFor(() => transport!.received.find(m => m.content.tag === 'typing'));
     expect(typing.content.tag === 'typing' && typing.content.value.kind).toBe(0);
     const until = typing.content.tag === 'typing' ? Number(typing.content.value.until) : 0;
-    expect(until - Date.now()).toBeGreaterThan(4_000);
-    expect(until - Date.now()).toBeLessThanOrEqual(6_000);
+    expect(until - Date.now()).toBeGreaterThan(10_000);
+    expect(until - Date.now()).toBeLessThanOrEqual(12_000);
 
     await manager.sendMessage(peerKey, { type: 'text', text: 'hello' });
     await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'hello'));
     expect(transport.received.filter(m => m.content.tag === 'typing')).toHaveLength(1);
   });
+});
 
-  it('sends no typing when the typing indicator is off', async () => {
-    const { manager, transport, peerKey } = await setup();
-    await writeSetting('chat.typingIndicator', 'off');
-    manager.composing(peerKey, 'h');
-    await manager.sendMessage(peerKey, { type: 'text', text: 'marker' });
-    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'marker'));
-    await sleep(50);
-    expect(transport.received.some(m => m.content.tag === 'typing')).toBe(false);
+/*
+ * M12c: what a conversation costs the shared network. Every submitted
+ * statement is validated and gossiped to every node (docs/spec/efficiency.md),
+ * so these count the web client's statements on its request channel as the
+ * store receives them, apart from the manager's own counter. If the `seen`
+ * stopped riding the reply, or the meter stopped merging the two sends, the
+ * count would be 2 where it must be 1.
+ */
+describe('chat manager: submission budget (M12c)', () => {
+  type Signed = Parameters<ReturnType<typeof createInMemoryStatementStore>['submitStatement']>[0];
+
+  const setup = async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    const requests: Signed[] = [];
+    // What leaves the web client, seen from the store's side.
+    const watched = {
+      ...store,
+      submitStatement: (statement: Signed) => {
+        const topic = statement.topics?.[0];
+        if (topic && statement.channel === bytesToHex(createRequestChannel(hexToBytes(topic)))) requests.push(statement);
+        return store.submitStatement(statement);
+      },
+    };
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: watched, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    return { manager, transport, peerKey, requests };
+  };
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('read, then reply within 5 s: the seen rides the reply, one submission', async () => {
+    const { manager, transport, peerKey, requests } = await setup();
+    await transport.send({ tag: 'text', value: 'question' });
+    await waitFor(() => db.messages.get('peer-1'));
+    const before = { wire: requests.length, counted: manager.submissions.snapshot() };
+
+    await manager.markRead(peerKey);
+    await sleep(1_000);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'answer' });
+    await waitFor(() => transport!.received.some(m => m.content.tag === 'text' && m.content.value === 'answer'));
+    const seen = transport.received.find(m => m.content.tag === 'seen');
+    expect(seen?.content.tag === 'seen' && seen.content.value.upTo).toBe('peer-1');
+
+    // Past the 5 s window: no standalone seen follows.
+    await sleep(SEEN_INTERVAL_MS + 300);
+    expect(requests.length - before.wire).toBe(1);
+    const after = manager.submissions.snapshot();
+    expect(after.submissions - before.counted.submissions).toBe(1);
+    expect(after.messages - before.counted.messages).toBe(1);
+    expect(transport.received.filter(m => m.content.tag === 'seen')).toHaveLength(1);
+  }, 15_000);
+
+  it('read and no reply: one standalone seen when the 5 s end, and nothing before', async () => {
+    const { manager, transport, peerKey, requests } = await setup();
+    await transport.send({ tag: 'text', value: 'news' });
+    await waitFor(() => db.messages.get('peer-1'));
+    const before = requests.length;
+
+    await manager.markRead(peerKey);
+    await sleep(SEEN_INTERVAL_MS - 1_000);
+    expect(requests.length - before).toBe(0);
+    await sleep(1_300);
+    expect(requests.length - before).toBe(1);
+    const seen = await waitFor(() => transport!.received.find(m => m.content.tag === 'seen'));
+    expect(seen.content.tag === 'seen' && seen.content.value.upTo).toBe('peer-1');
+    expect(manager.submissions.snapshot().messages).toBe(0);
+  }, 15_000);
+
+  it('shows a known bot working from our send until its reply, without sending anything for it', async () => {
+    const { manager, transport, peerKey, requests } = await setup();
+    await transport.channel.post({ tag: 'botInfo', value: { kind: 1, name: 'Guide', description: '', greeting: '', commands: [], version: 1 } });
+    await waitFor(async () => (await db.peerInfo.get(peerKey))?.botInfo ?? undefined);
+    const before = requests.length;
+
+    await manager.sendMessage(peerKey, { type: 'text', text: 'question' });
+    expect(manager.typing.snapshot().get(peerKey)).toMatchObject({ kind: 'working', local: true });
+    await transport.send({ tag: 'text', value: 'reply' });
+    await waitFor(() => !manager.typing.snapshot().has(peerKey));
+    await sleep(100);
+    // The question only: the working state has no wire signal.
+    expect(requests.length - before).toBe(1);
+  });
+
+  it('shows no working state for a person (no botInfo)', async () => {
+    const { manager, peerKey } = await setup();
+    await manager.sendMessage(peerKey, { type: 'text', text: 'hi' });
+    expect(manager.typing.snapshot().has(peerKey)).toBe(false);
   });
 });
 

@@ -5,7 +5,7 @@ import { AccountId } from 'polkadot-api';
 import { NEVER, of } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createBestBlockIdentityAdapter, fromRepository } from './lookup';
+import { LOOKUP_RETRY_MS, createBestBlockIdentityAdapter, fromRepository } from './lookup';
 
 const account = new Uint8Array(32).fill(0x33);
 const key = `0x${'ab'.repeat(32)}` as const;
@@ -55,6 +55,57 @@ describe('identity lookup', () => {
     expect(await fromRepository(repo(identity({ identifierKey: null }))).getPeerIdentity(account)).toBeNull();
     expect(await fromRepository(repo(identity({ identifierKey: '0x0102' }))).getPeerIdentity(account)).toBeNull();
     expect(await fromRepository(repo(null, true)).getPeerIdentity(account)).toBeNull();
+  });
+});
+
+// M12 review carry: a lookup that timed out dropped the chat request for
+// good (the request intake only has one chance). One more try after 5 s
+// saves it on a slow People RPC; any other failure is not retried.
+describe('identity lookup retry after a timeout', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const flaky = (failures: Error[]): { repository: IdentityRepository; calls: () => number } => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      repository: {
+        ...repo(identity({})),
+        getIdentity: () => {
+          const failure = failures[calls++];
+          return failure ? errAsync(failure) : okAsync(identity({}));
+        },
+      },
+    };
+  };
+
+  it('asks once more after 5 s and returns the peer when the second read works; the retry is logged', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { repository, calls } = flaky([new Error('identity lookup timed out after 15000ms')]);
+    const pending = fromRepository(repository).getPeerIdentity(account);
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_MS - 1);
+    expect(calls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending)?.username).toBe('alice');
+    expect(calls()).toBe(2);
+    expect(warn.mock.calls.some(call => String(call[0]).includes('asking once more'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('gives up after the one retry, and never retries a failure that is not a timeout', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const timedOut = new Error('identity lookup timed out after 15000ms');
+    const twice = flaky([timedOut, timedOut, timedOut]);
+    const pending = fromRepository(twice.repository).getPeerIdentity(account);
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_MS);
+    expect(await pending).toBeNull();
+    expect(twice.calls()).toBe(2);
+
+    const down = flaky([new Error('rpc down')]);
+    expect(await fromRepository(down.repository).getPeerIdentity(account)).toBeNull();
+    expect(down.calls()).toBe(1);
+    vi.mocked(console.warn).mockRestore();
   });
 });
 

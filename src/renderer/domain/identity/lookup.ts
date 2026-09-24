@@ -17,13 +17,13 @@
 import { Bytes, Enum } from '@novasamatech/scale';
 import { type Identity, type IdentityAdapter, type IdentityRepository, createIdentityRepository } from '@novasamatech/host-papp';
 import type { LazyClient } from '@novasamatech/statement-store';
-import { ResultAsync, errAsync, okAsync } from 'neverthrow';
+import { ResultAsync, okAsync } from 'neverthrow';
 import { AccountId } from 'polkadot-api';
 import { type Observable, defer, map, throwError } from 'rxjs';
 import { Struct } from 'scale-ts';
 
 import { bytesToHex, hexToBytes } from '../../app/bytes';
-import { READ_TIMEOUT_MS, awaitBestRuntime, retryOnNextEndpoint, withTimeout } from '../../../shared/chainRead';
+import { READ_TIMEOUT_MS, awaitBestRuntime, isTimeoutError, retryOnNextEndpoint, withTimeout } from '../../../shared/chainRead';
 
 export type PeerIdentity = {
   accountId: Uint8Array;
@@ -138,17 +138,32 @@ export const createBestBlockIdentityAdapter = ({ lazyClient, switchEndpoint }: L
 export const createIdentityLookup = (connection: LookupConnection): IdentityLookup =>
   fromRepository(createIdentityRepository({ adapter: createBestBlockIdentityAdapter(connection), storage: createMemoryStorage() }));
 
+/**
+ * A lookup that timed out (the read already moved to the next endpoint
+ * once) is asked again once after this pause before it counts as failed: a
+ * failed lookup drops a chat request for good (M12 review carry).
+ */
+export const LOOKUP_RETRY_MS = 5_000;
+
+const isTimeout = (error: Error): boolean => isTimeoutError(error) || /timed out/i.test(error.message);
+
 /** Exposed for tests, which pass a stub repository instead of a chain. */
 export const fromRepository = (repository: IdentityRepository): IdentityLookup => ({
   getPeerIdentity: async accountId => {
     // The SDK's account string is the 0x-hex public key: its RPC adapter runs it
     // through polkadot-api `AccountId().dec`, which reads hex and throws
     // "Invalid public key length" on an SS58 address (every lookup failed so).
-    const result = await repository.getIdentity(bytesToHex(accountId)).orElse(error => {
-      console.warn('[identity] lookup failed', error.message);
-      return errAsync(error);
-    });
-    if (result.isErr()) return null;
+    const account = bytesToHex(accountId);
+    let result = await repository.getIdentity(account);
+    if (result.isErr() && isTimeout(result.error)) {
+      console.warn('[identity] lookup timed out for %s; asking once more in %d s', account, LOOKUP_RETRY_MS / 1000);
+      await new Promise(resolve => setTimeout(resolve, LOOKUP_RETRY_MS));
+      result = await repository.getIdentity(account);
+    }
+    if (result.isErr()) {
+      console.warn('[identity] lookup failed', result.error.message);
+      return null;
+    }
     const identity = result.value;
     if (!identity?.identifierKey) return null;
     const chatPublicKey = hexToBytes(identity.identifierKey);

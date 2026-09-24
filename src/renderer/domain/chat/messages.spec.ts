@@ -19,6 +19,7 @@ import {
   removeMessage,
   searchMessages,
   setMessageStatus,
+  setReferenceState,
   setRoomMuted,
   tombstoneMessage,
 } from './messages';
@@ -350,5 +351,43 @@ describe('applyReference (spec 0007)', () => {
       ['p1', 'incoming'],
     ]);
     expect((await db.rooms.get(PEER))?.unreadCount).toBe(1);
+  });
+
+  // M12c: references arrive in any order (our runner, the chain tracker, the
+  // peer); a late "submitted" must not turn an "in block" bubble back.
+  it('moves forward only', async () => {
+    await applyReference(PEER, 'outgoing', { messageId: 'r1', timestamp: 10 }, { ...reference, status: 'inBlock', block: 5 });
+    await applyReference(PEER, 'outgoing', { messageId: 'r2', timestamp: 20 }, reference);
+    const [only] = await listMessages(PEER);
+    expect(only?.content.type === 'transactionReference' ? only.content.reference.status : null).toBe('inBlock');
+  });
+});
+
+// M12c step 4: the peer no longer sends "finalized" (and may send only
+// "submitted"); the bubble moves on what the chain says, with no message.
+describe('setReferenceState (spec 0007, chain-driven)', () => {
+  const HASH = `0x${'cd'.repeat(32)}`;
+  const reference = { chainId: '0x01', hash: HASH, status: 'submitted' as const, block: null, note: 'Flip settled', intentMessageId: null };
+  const statusOf = async (id: string) => {
+    const row = await db.messages.get(id);
+    return row?.content.type === 'transactionReference' ? [row.content.reference.status, row.content.reference.block] : null;
+  };
+
+  it("moves ours and the peer's row for that hash, forward only, and stops at finalized", async () => {
+    await applyReference(PEER, 'incoming', { messageId: 'p1', timestamp: 10 }, reference);
+    await applyReference('0xbb', 'outgoing', { messageId: 'o1', timestamp: 11 }, { ...reference, status: 'inBlock', block: 8 });
+    // The peer's status 0 stays pending until the chain says otherwise.
+    expect(await statusOf('p1')).toEqual(['submitted', null]);
+
+    expect(await setReferenceState(HASH.toUpperCase().replace('0X', '0x'), { status: 'inBlock', block: 8, error: null })).toBe(1);
+    expect(await statusOf('p1')).toEqual(['inBlock', 8]);
+    await setReferenceState(HASH, { status: 'finalized', block: 8, error: null });
+    expect(await statusOf('p1')).toEqual(['finalized', 8]);
+    expect(await statusOf('o1')).toEqual(['finalized', 8]);
+    expect((await db.rooms.get(PEER))?.lastPreview).toContain('finalized');
+
+    // A late event cannot undo it.
+    await setReferenceState(HASH, { status: 'submitted', block: null, error: null });
+    expect(await statusOf('p1')).toEqual(['finalized', 8]);
   });
 });

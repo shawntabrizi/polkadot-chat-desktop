@@ -31,6 +31,7 @@ export const IPC = {
   chainDryRun: 'chain:dryRun',
   chainSign: 'chain:sign',
   chainWatch: 'chain:watch',
+  chainTrack: 'chain:track',
   chainTxStatus: 'chain:txStatus',
   chainContractRead: 'chain:contractRead',
   chainBalance: 'chain:balance',
@@ -120,7 +121,13 @@ export type DesktopChainApi = {
   sign: (dryRunId: string) => Promise<{ hash: string }>;
   /** The latest state of a transaction this app submitted, or null. */
   watch: (hash: string) => Promise<TxStatusEvent | null>;
-  /** Every state change of the transactions this app submits. Returns the unsubscribe function. */
+  /**
+   * Spec 0007 (M12c): follow a transaction on Asset Hub by hash, own or a
+   * peer's reference, until it is finalized (`block`: where the reference
+   * says it is, or null). Its states arrive on `onTxStatus`.
+   */
+  track: (hash: string, block: number | null) => Promise<void>;
+  /** Every state change of the transactions this app submits or tracks. Returns the unsubscribe function. */
   onTxStatus: (listener: (event: TxStatusEvent) => void) => () => void;
   /**
    * A read-only contract call at the best block (`ReviveApi_call`) on the

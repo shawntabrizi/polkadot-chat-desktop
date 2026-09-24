@@ -1,20 +1,23 @@
 import { Copy, Eye, EyeOff } from 'lucide-react';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState, useSyncExternalStore } from 'react';
 
 import {
   DEFAULT_CHAT_PREFS,
   type SendKey,
   readChatPrefs,
+  writeExplorer,
   writeNotifications,
   writeReadReceipts,
   writeRevealReplies,
   writeSendKey,
+  writeSendTyping,
   writeSound,
-  writeTypingIndicator,
 } from '../app/chatPrefs';
 import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
+import type { ChatManager } from '../domain/chat/manager';
+import { submissionsLine } from '../domain/chat/submissions';
 import type { UserIdentity } from '../domain/identity/userIdentity';
 import { THEMES, THEME_LABELS, type ThemeChoice, getTheme, setTheme } from '../theme/theme';
 import { Button } from '@/components/ui/button';
@@ -22,6 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
+import { EXPLORERS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
 import { Checkbox, Switch } from './controls';
 import { ENGINE_LABELS, TOOL_CHOICES } from './engines';
@@ -36,6 +40,8 @@ type Props = {
   onReset: () => Promise<void>;
   /** The LLM proxy through the main process; null outside Electron. */
   assistantApi: DesktopAssistantApi | null;
+  /** The chat manager's submission counts (M12c); null while chat starts. */
+  submissions: ChatManager['submissions'] | null;
 };
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -141,11 +147,26 @@ const AppearanceSection = () => {
   );
 };
 
-/** A label and its switch on one row; the whole row is the hit area. */
-const SwitchRow = ({ id, label, checked, onChange, testId }: { id: string; label: string; checked: boolean; onChange: (on: boolean) => void; testId?: string }) => (
+/** A label (and an optional caption under it) and its switch on one row; the whole row is the hit area. */
+const SwitchRow = ({
+  id,
+  label,
+  caption,
+  checked,
+  onChange,
+  testId,
+}: {
+  id: string;
+  label: string;
+  caption?: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  testId?: string;
+}) => (
   <div className="flex items-center justify-between gap-4">
-    <label htmlFor={id} className="cursor-pointer text-body-m text-fg-primary">
-      {label}
+    <label htmlFor={id} className="flex cursor-pointer flex-col gap-0.5">
+      <span className="text-body-m text-fg-primary">{label}</span>
+      {caption ? <span className="text-body-s text-fg-tertiary">{caption}</span> : null}
     </label>
     <Switch id={id} checked={checked} onCheckedChange={onChange} data-testid={testId} />
   </div>
@@ -173,8 +194,55 @@ const ChatSection = () => {
       <SwitchRow id="notifications" label="Notifications" checked={prefs.notifications} onChange={on => void writeNotifications(on)} testId="notifications-switch" />
       <SwitchRow id="sound" label="Sound" checked={prefs.sound} onChange={on => void writeSound(on)} testId="sound-switch" />
       <SwitchRow id="reveal" label="Reveal bot replies" checked={prefs.revealReplies} onChange={on => void writeRevealReplies(on)} testId="reveal-switch" />
-      <SwitchRow id="typing-indicator" label="Show when I am typing" checked={prefs.typingIndicator} onChange={on => void writeTypingIndicator(on)} testId="typing-switch" />
+      <SwitchRow
+        id="send-typing"
+        label="Send typing indicators"
+        caption="Costs one network submission every 10 s while you type"
+        checked={prefs.sendTyping}
+        onChange={on => void writeSendTyping(on)}
+        testId="typing-switch"
+      />
       <SwitchRow id="read-receipts" label="Send read receipts" checked={prefs.readReceipts} onChange={on => void writeReadReceipts(on)} testId="receipts-switch" />
+      <Field label="Block explorer" htmlFor="explorer">
+        <Select value={prefs.explorer} onValueChange={value => void writeExplorer(value as ExplorerId)}>
+          <SelectTrigger id="explorer" className="w-64 rounded-nested text-body-m" data-testid="explorer-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EXPLORERS.map(explorer => (
+              <SelectItem key={explorer} value={explorer}>
+                {EXPLORER_LABELS[explorer]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-body-s text-fg-tertiary">Where “View on …” opens a transaction or your account.</p>
+      </Field>
+    </Section>
+  );
+};
+
+/**
+ * M12c: what this session cost the shared Statement Store
+ * (docs/spec/efficiency.md). The budget is one submission per message.
+ */
+const DiagnosticsSection = ({ submissions }: { submissions: NonNullable<Props['submissions']> }) => {
+  const counts = useSyncExternalStore(submissions.subscribe, submissions.snapshot);
+  return (
+    <Section title="Diagnostics">
+      <dl className="flex flex-col gap-1" data-testid="diagnostics">
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-body-m text-fg-primary">Submissions per message</dt>
+          <dd className="text-body-m text-fg-primary tabular-nums" data-testid="submissions-per-message">
+            {submissionsLine(counts)}
+          </dd>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <dt className="text-body-s text-fg-secondary">Delivery acknowledgements (not counted above)</dt>
+          <dd className="text-body-s text-fg-secondary tabular-nums">{counts.acknowledgements}</dd>
+        </div>
+      </dl>
+      <p className="text-body-s text-fg-tertiary">Since the app started. Every submission is checked and passed on by every network node.</p>
     </Section>
   );
 };
@@ -462,7 +530,7 @@ const DangerSection = ({ onReset }: Pick<Props, 'onReset'>) => {
 };
 
 /** Settings fill the right pane: sections as containers on the page surface. */
-export const Settings = ({ username, identity, profileId, onReset, assistantApi }: Props) => (
+export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
     <div className="mx-auto flex max-w-2xl flex-col gap-2 pb-2">
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
@@ -477,6 +545,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi 
         </Section>
       )}
       <KeyboardSection />
+      {submissions ? <DiagnosticsSection submissions={submissions} /> : null}
       <DangerSection onReset={onReset} />
     </div>
   </div>

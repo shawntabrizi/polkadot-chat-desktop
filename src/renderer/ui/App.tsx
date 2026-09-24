@@ -6,6 +6,7 @@ import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionSnapshot, createConnectionTracker } from '../app/connectionState';
 import { getPeopleConnection } from '../app/statementStore';
 import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
+import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
 import { ensureFaucet } from '../domain/faucet/faucet';
@@ -119,6 +120,7 @@ export const App = () => {
     let active = true;
     let manager: ChatManager | null = null;
     let transactions: TxRunner | null = null;
+    let follower: ReferenceFollower | null = null;
     const connection = getPeopleConnection(NETWORK_PROFILES[profileId]);
     const tracker = createConnectionTracker(connection);
     const stopStatus = tracker.subscribe(() => setConnection(tracker.snapshot()));
@@ -141,7 +143,10 @@ export const App = () => {
         manager = created;
         // Spec 0007: references of the transactions this app signs go out through the manager.
         const chain = window.desktop?.chain;
-        transactions = chain ? createTxRunner({ chain, sendReference: created.sendReference }) : null;
+        transactions = chain ? createTxRunner({ chain, sendReference: created.sendReference, recordReference: created.recordReference }) : null;
+        // M12c: every reference bubble follows its transaction on the chain.
+        const assetHub = NETWORK_PROFILES[profileId].assetHub;
+        follower = chain && assetHub ? createReferenceFollower({ chain, onReference: created.onReference, chainId: assetHub.genesis }) : null;
         setRuntime({ manager: created, lookup, transactions });
       })
       .catch((cause: unknown) => {
@@ -153,6 +158,7 @@ export const App = () => {
       stopStatus();
       tracker.dispose();
       transactions?.dispose();
+      follower?.dispose();
       manager?.dispose();
       setRuntime(null);
     };

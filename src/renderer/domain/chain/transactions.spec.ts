@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+/**
+ * Spec 0007 client rule 3 after the M12c revision. Why it matters: every
+ * reference on the wire is one Statement Store submission for the whole
+ * network (docs/spec/efficiency.md); three per transaction was the old cost,
+ * one is the budget. The own row must still show every state at once.
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TxStatusEvent } from '../../../shared/desktop-api';
 import type { TxReference } from '../chat/content';
 
-import { createTxRunner } from './transactions';
+import { REFERENCE_PENDING_MS, createTxRunner } from './transactions';
 
 const PEER = '0xaa';
 const HASH = `0x${'ab'.repeat(32)}`;
@@ -29,45 +36,76 @@ const fakeChain = () => {
 
 const request = { peer: PEER as `0x${string}`, dryRunId: 'd', chainId: '0x01', note: 'Top up', intentMessageId: 'm1' };
 
-describe('createTxRunner (spec 0007 references)', () => {
-  it('tells the peer each state once, in order, as main reports it, without waiting for finality', async () => {
-    const { chain, emit } = fakeChain();
-    const sent: TxReference[] = [];
-    const runner = createTxRunner({ chain, sendReference: async (_peer, reference) => void sent.push(reference) });
+const setup = () => {
+  const { chain, emit } = fakeChain();
+  const sent: TxReference[] = [];
+  const recorded: TxReference[] = [];
+  const runner = createTxRunner({
+    chain,
+    sendReference: async (_peer, reference) => void sent.push(reference),
+    recordReference: async (_peer, reference) => void recorded.push(reference),
+  });
+  return { runner, emit, sent, recorded };
+};
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
+describe('createTxRunner (spec 0007 references, one per transaction)', () => {
+  it('sends one reference, "in block", and keeps every other state on the own row only', async () => {
+    const { runner, emit, sent, recorded } = setup();
     expect(await runner.run(request)).toBe(HASH);
-    await Promise.resolve();
-    // "Submitted" goes out before any block: the UI does not wait for the chain.
-    expect(sent.map(r => r.status)).toEqual(['submitted']);
+    await vi.advanceTimersByTimeAsync(0);
+    // The row shows "submitted" at once; the peer is told nothing yet.
+    expect(recorded.map(r => r.status)).toContain('submitted');
+    expect(sent).toEqual([]);
+
     emit({ hash: HASH, status: 'inBlock', block: 7, error: null });
     emit({ hash: HASH, status: 'inBlock', block: 7, error: null });
     emit({ hash: HASH, status: 'finalized', block: 7, error: null });
-    await new Promise(done => setTimeout(done, 0));
-    expect(sent.map(r => [r.status, r.block])).toEqual([
-      ['submitted', null],
-      ['inBlock', 7],
-      ['finalized', 7],
-    ]);
-    expect(sent[1]).toMatchObject({ note: 'Top up', intentMessageId: 'm1', chainId: '0x01' });
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS * 2);
+    expect(sent.map(r => [r.status, r.block])).toEqual([['inBlock', 7]]);
+    expect(sent[0]).toMatchObject({ note: 'Top up', intentMessageId: 'm1', chainId: '0x01' });
+    // Finality reached the row without a message.
+    expect(recorded.at(-1)).toMatchObject({ status: 'finalized', block: 7 });
   });
 
-  it('sends nothing after a final state (a late event cannot undo "failed")', async () => {
-    const { chain, emit } = fakeChain();
-    const sent: TxReference[] = [];
-    const runner = createTxRunner({ chain, sendReference: async (_peer, reference) => void sent.push(reference) });
+  it('sends "failed" as the one reference, and nothing after it', async () => {
+    const { runner, emit, sent } = setup();
     await runner.run(request);
     emit({ hash: HASH, status: 'failed', block: 7, error: 'not enough funds' });
     emit({ hash: HASH, status: 'finalized', block: 7, error: null });
-    await new Promise(done => setTimeout(done, 0));
-    expect(sent.map(r => r.status)).toEqual(['submitted', 'failed']);
-    expect(sent[1]?.error).toBe('not enough funds');
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS * 2);
+    expect(sent.map(r => r.status)).toEqual(['failed']);
+    expect(sent[0]?.error).toBe('not enough funds');
+  });
+
+  it('sends "submitted" only when no block took it in 30 s, then the end state', async () => {
+    const { runner, emit, sent } = setup();
+    await runner.run(request);
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS - 1);
+    expect(sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sent.map(r => r.status)).toEqual(['submitted']);
+    emit({ hash: HASH, status: 'inBlock', block: 9, error: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent.map(r => r.status)).toEqual(['submitted', 'inBlock']);
+  });
+
+  it('never puts "finalized" on the wire, even when it is the first state it hears', async () => {
+    const { runner, emit, sent, recorded } = setup();
+    await runner.run(request);
+    emit({ hash: HASH, status: 'finalized', block: 5, error: null });
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS);
+    expect(sent.map(r => r.status)).toEqual(['inBlock']);
+    expect(recorded.at(-1)?.status).toBe('finalized');
   });
 
   it('ignores transactions it did not start', async () => {
-    const { chain, emit } = fakeChain();
-    const sent: TxReference[] = [];
-    createTxRunner({ chain, sendReference: async (_peer, reference) => void sent.push(reference) });
+    const { emit, sent, recorded } = setup();
     emit({ hash: `0x${'cd'.repeat(32)}`, status: 'inBlock', block: 1, error: null });
-    await new Promise(done => setTimeout(done, 0));
+    await vi.advanceTimersByTimeAsync(REFERENCE_PENDING_MS);
     expect(sent).toEqual([]);
+    expect(recorded).toEqual([]);
   });
 });

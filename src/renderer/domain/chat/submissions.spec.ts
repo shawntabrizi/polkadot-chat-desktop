@@ -1,0 +1,63 @@
+/**
+ * M12c step 5, the counter. Why: "submissions per message" is the number the
+ * owner uses to judge whether the protocol stays cheap on shared
+ * infrastructure (docs/spec/efficiency.md). It must count what reaches the
+ * store, keep acknowledgements apart (no content kind can remove them), and
+ * the merge of back-to-back session requests must really save a submission.
+ */
+
+import { createInMemoryStatementStore, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { describe, expect, it } from 'vitest';
+
+import { bytesToHex } from '../../app/bytes';
+
+import { createSubmissionMeter, submissionsLine } from './submissions';
+
+type Store = ReturnType<typeof createInMemoryStatementStore>;
+type Signed = Parameters<Store['submitStatement']>[0];
+
+const TOPIC = new Uint8Array(32).fill(7);
+const statement = (channel: Uint8Array | null, expiry: bigint): Signed =>
+  ({
+    expiry,
+    ...(channel ? { channel: bytesToHex(channel) } : {}),
+    topics: [bytesToHex(TOPIC)],
+    data: new Uint8Array([Number(expiry)]),
+    proof: { type: 'sr25519', value: { signature: `0x${'00'.repeat(64)}`, signer: `0x${'11'.repeat(32)}` } },
+  }) as unknown as Signed;
+
+/** A store that records what it received and accepts everything. */
+const recordingStore = () => {
+  const received: Signed[] = [];
+  const store = createInMemoryStatementStore();
+  return { received, store: { ...store, submitStatement: (s: Signed) => (received.push(s), store.submitStatement(s)) } as Store };
+};
+
+describe('submission meter', () => {
+  it('sends one statement for two session requests on one channel in the same task: the newer one, and both callers get its result', async () => {
+    const { received, store } = recordingStore();
+    const meter = createSubmissionMeter(store);
+    const request = createRequestChannel(TOPIC);
+    const [first, second] = await Promise.all([meter.store.submitStatement(statement(request, 1n)), meter.store.submitStatement(statement(request, 2n))]);
+    expect(received.map(s => s.expiry)).toEqual([2n]);
+    expect(first.isOk() && second.isOk()).toBe(true);
+    expect(meter.snapshot()).toEqual({ submissions: 1, acknowledgements: 0, messages: 0 });
+  });
+
+  it('counts acknowledgements apart, and requests in separate tasks separately', async () => {
+    const { received, store } = recordingStore();
+    const meter = createSubmissionMeter(store);
+    await meter.store.submitStatement(statement(createRequestChannel(TOPIC), 1n));
+    await meter.store.submitStatement(statement(createRequestChannel(TOPIC), 2n));
+    await meter.store.submitStatement(statement(createResponseChannel(TOPIC), 3n));
+    await meter.store.submitStatement(statement(null, 4n));
+    expect(received).toHaveLength(4);
+    expect(meter.snapshot()).toEqual({ submissions: 3, acknowledgements: 1, messages: 0 });
+  });
+
+  it('shows the ratio as Settings › Diagnostics reads it', () => {
+    expect(submissionsLine({ submissions: 12, acknowledgements: 9, messages: 12 })).toBe('1.00 (12 / 12)');
+    expect(submissionsLine({ submissions: 13, acknowledgements: 0, messages: 4 })).toBe('3.25 (13 / 4)');
+    expect(submissionsLine({ submissions: 2, acknowledgements: 0, messages: 0 })).toBe('— (2 / 0)');
+  });
+});

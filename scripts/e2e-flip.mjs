@@ -290,7 +290,7 @@ async function child(name) {
   if (!identity) finish(1, 'SEED_FAIL no identity row after seeding');
   const lookup = createIdentityLookup(connection);
   manager = await createChatManager({ identity, deviceKeys, statementStore: connection.adapter, lookup, onConnectionStatus: connection.onStatus });
-  runner = createTxRunner({ chain: { sign: service.sign, onTxStatus: service.onStatus }, sendReference: manager.sendReference });
+  runner = createTxRunner({ chain: { sign: service.sign, onTxStatus: service.onStatus }, sendReference: manager.sendReference, recordReference: manager.recordReference });
 
   const search = async (prefix) => (await searchUsernames(NETWORK_PROFILES[profile], prefix, selfKeys.accountId)).results;
   const findBot = async (botName) => {

@@ -76,6 +76,7 @@ import { applyBotInfo, getPeerInfo, markBotSignal, markStartSent, shouldSendStar
 import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
 import { type TypingStore, createPendingSeen, createSeenSender, createTypingSender, createTypingStore } from './signals';
+import { type SubmissionMeter, createSubmissionMeter } from './submissions';
 
 export type ChatManagerDeps = {
   identity: UserIdentity;
@@ -129,17 +130,23 @@ export type ChatManager = {
   retry: (peer: ChatTargetId, messageId: string) => Promise<void>;
   /**
    * The room is read (M6 rule: visible, focused, in view). Clears the unread
-   * count and, if read receipts are on, sends spec 0005 `seen` for the newest
-   * message from the peer (at most one per 2 s).
+   * count and, if read receipts are on, queues spec 0005 `seen` for the newest
+   * message from the peer: it rides the next message to that peer within 5 s
+   * (one submission), else goes out alone when the 5 s end.
    */
   markRead: (peer: ChatTargetId) => Promise<void>;
   /**
    * A person changed the composer text for `peer` (not the clear after a
-   * send). Sends spec 0005 `typing` (rate-limited) if the typing indicator is on.
+   * send). Sends spec 0005 `typing` (rate-limited) only if the user turned
+   * "Send typing indicators" on (M12c: off by default).
    */
   composing: (peer: ChatTargetId, text: string) => void;
-  /** Each peer's typing state (spec 0005), in memory. */
+  /** Each peer's typing state (spec 0005), in memory, with the local "working" state of known bots. */
   typing: TypingStore;
+  /** M12c: statements this manager submitted and messages the user sent, this session. */
+  submissions: Pick<SubmissionMeter, 'snapshot' | 'subscribe'>;
+  /** Every `transactionReference` a peer sends (spec 0007), so its finality can be followed on the chain. */
+  onReference: (listener: (reference: TxReference) => void) => VoidFunction;
   /**
    * Spec 0005: send one `typing` as is, outside the composer rules (an
    * agent's `working` hint). No screen calls it in M9; test scripts do.
@@ -159,11 +166,18 @@ export type ChatManager = {
   sendBotInfo: (peer: HexString, info: BotInfo) => Promise<void>;
   /**
    * Spec 0007: tell `peer` the state of a transaction this client submitted
-   * (a new `transactionReference` message each time) and keep one row for it
-   * that moves through the states. Never waits for finality: the caller
-   * sends each state as it happens.
+   * and keep one row for it that moves through the states. Since M12c the
+   * caller sends one state per transaction (in block or failed; submitted
+   * only when no block took it in 30 s); later states change the row only
+   * (`recordReference`). Never waits for finality.
    */
   sendReference: (peer: HexString, reference: TxReference) => Promise<void>;
+  /**
+   * Spec 0007, local only: the row of our own transaction for `peer` takes
+   * this state (a new row if there is none, not yet sent). Nothing goes on
+   * the wire.
+   */
+  recordReference: (peer: HexString, reference: TxReference) => Promise<void>;
   /**
    * Spec 0009: a new group with us as admin; `members` are the others. Sends
    * the roster (v1) to each member we have a chat with, and a chat request
@@ -195,7 +209,11 @@ const systemRow = (peer: ChatTargetId, messageId: string, timestamp: number, con
 });
 
 export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatManager> => {
-  const { identity, deviceKeys, statementStore, lookup } = deps;
+  const { identity, deviceKeys, lookup } = deps;
+  // Everything this device submits goes through the meter (M12c diagnostics),
+  // which also merges back-to-back session requests into one submission.
+  const meter = createSubmissionMeter(deps.statementStore);
+  const statementStore = meter.store;
   const self = bytesToHex(identity.identityAccountId);
   const prover = createSr25519Prover(deviceKeys.statementAccountSeed);
   const allocator = createExpiryAllocator();
@@ -218,20 +236,27 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
   const typing = createTypingStore();
   const pendingSeen = createPendingSeen();
+  const referenceListeners = new Set<(reference: TxReference) => void>();
+  const referenceArrived = (reference: TxReference) => {
+    for (const listener of referenceListeners) listener(reference);
+  };
 
   /** Sends one signal; a signal that cannot go out is dropped (it is only a hint). */
   const signal = (peer: ChatTargetId, content: OutgoingContent, what: string) => {
     if (!isGroupPeer(peer) && !sessions.has(peer)) return;
     guard(submit(peer, content, { messageId: randomId(), timestamp: Date.now() }), what);
   };
+  // The composer calls this only while the user edits; the switch is read at
+  // each send, so turning it off stops the next hint.
   const typingSender = createTypingSender((peer, kind, until) =>
     guard(
       readChatPrefs().then(prefs => {
-        if (prefs.typingIndicator) signal(peer as ChatTargetId, { type: 'typing', kind, until }, 'typing');
+        if (prefs.sendTyping) signal(peer as ChatTargetId, { type: 'typing', kind, until }, 'typing');
       }),
       'typing',
     ),
   );
+  // Reached only when no message to the peer took the `seen` along within 5 s.
   const seenSender = createSeenSender((peer, upTo, at) => signal(peer as HexString, { type: 'seen', upTo, at }, 'seen'));
 
   /** An own row now exists: apply a `seen` that named it before it did. */
@@ -267,6 +292,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         return;
       case 'deleted':
         // Never a bubble, never a notification: only the tombstone it makes.
+        // A bot that removes its placeholder is done working (spec 0005).
+        typing.endLocal(peer);
         await applyDeletion(peer, effect.targetMessageId);
         return;
       case 'buttonPress': {
@@ -292,6 +319,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         // Spec 0007: a bubble, merged with earlier states of the same transaction.
         typing.messageFrom(peer, message.timestamp);
         await applyReference(peer, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference);
+        referenceArrived(effect.reference);
         return;
       case 'callOffer':
         // No call support: answer with `dataChannelClosed` so the caller's UI
@@ -399,6 +427,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       case 'transactionReference':
         typing.messageFrom(room, message.timestamp);
         await applyReference(room, 'incoming', { messageId: message.messageId, timestamp: message.timestamp }, effect.reference);
+        referenceArrived(effect.reference);
         return;
       // No read receipts in groups (v1); calls, rosters and nested group kinds are not group content.
       case 'seen':
@@ -582,7 +611,14 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const submit = async (peer: ChatTargetId, content: OutgoingContent, ids: { messageId: string; timestamp: number }) => {
     if (isGroupPeer(peer)) return fanOut(peer, content, ids);
     if (!sessions.has(peer)) throw new Error('no chat session with this contact');
-    await sessions.send(peer, toWire(content), ids);
+    // Spec 0005 (revision 2026-09-23): a `seen` still waiting for this peer
+    // rides this message. Both enter the session batch in the same task, so
+    // the submission meter sends one statement for both.
+    const seen = content.type === 'seen' || content.type === 'typing' ? null : seenSender.take(peer);
+    const riding = seen
+      ? sessions.send(peer, toWire({ type: 'seen', ...seen }), { messageId: randomId(), timestamp: Date.now() }).catch((error: unknown) => console.warn('[chat] seen did not go out', error))
+      : null;
+    await Promise.all([sessions.send(peer, toWire(content), ids), riding]);
   };
 
   /**
@@ -678,14 +714,20 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       reactions: [],
       editedAt: null,
     });
+    // Spec 0005 (revision 2026-09-23): a known bot shows "working" from now
+    // until its reply, with no wire signal.
+    const bot = !isGroupPeer(peer) && ((await getPeerInfo(peer))?.botInfo ?? null) !== null;
     if (!isGroupPeer(peer)) await settlePendingSeen(peer, ids.messageId);
     // The real message ends our typing hint on the peer's side.
     typingSender.sent(peer);
+    if (bot) typing.localWorking(peer);
     // Too large, or no usable peer device: the row stays as evidence.
     await submit(peer, content, ids).catch(async error => {
+      if (bot) typing.endLocal(peer);
       await setMessageStatus(ids.messageId, 'failed');
       throw error;
     });
+    meter.messageSent();
   };
 
   const sendRequestTo = async (peer: PeerIdentity, welcomeMessage: string | null): Promise<void> => {
@@ -855,6 +897,13 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     typing,
 
+    submissions: { snapshot: meter.snapshot, subscribe: meter.subscribe },
+
+    onReference: listener => {
+      referenceListeners.add(listener);
+      return () => referenceListeners.delete(listener);
+    },
+
     sendTyping: (peer, kind, until) => submit(peer, { type: 'typing', kind, until }, { messageId: randomId(), timestamp: Date.now() }),
 
     roomOpened: async peer => {
@@ -877,14 +926,22 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     },
 
     sendReference: async (peer, reference) => {
-      const ids = { messageId: randomId(), timestamp: Date.now() };
-      const { messageId, added } = await applyReference(peer, 'outgoing', ids, reference);
-      // The session marks the first message sent and delivered (the row's id).
+      const { messageId } = await applyReference(peer, 'outgoing', { messageId: randomId(), timestamp: Date.now() }, reference);
+      const row = await getMessage(messageId);
+      // A row that never went out (`recordReference`) goes out under its own
+      // id, so the session moves it to sent and delivered. A row the peer
+      // already has needs a new id: the peer drops a repeated id.
+      const unsent = row?.status === 'sending' || row?.status === 'failed';
+      const ids = unsent && row ? { messageId: row.messageId, timestamp: row.timestamp } : { messageId: randomId(), timestamp: Date.now() };
       await submit(peer, { type: 'transactionReference', reference }, ids).catch(async error => {
         // The chain state is real even when the peer was not told: the row stays, marked.
-        if (added) await setMessageStatus(messageId, 'failed');
+        if (unsent) await setMessageStatus(messageId, 'failed');
         throw error;
       });
+    },
+
+    recordReference: async (peer, reference) => {
+      await applyReference(peer, 'outgoing', { messageId: randomId(), timestamp: Date.now() }, reference);
     },
 
     createGroup: async (name, members) => {
@@ -919,6 +976,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     dispose: () => {
       disposed = true;
+      referenceListeners.clear();
       typingSender.dispose();
       seenSender.dispose();
       typing.dispose();

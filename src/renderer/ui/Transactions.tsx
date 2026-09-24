@@ -1,11 +1,12 @@
 // Spec 0007 in the room: the signing strip under a `tx` button's bubble, and
 // the reference bubble. The strip is inline, never a modal (design system
-// §10); amounts and the fee are shown plainly and the hash only behind Copy
-// (§11: never a raw hash as a label). Sign is the strip's primary action at
+// §10); amounts and the fee are shown plainly. The hash is an identifier:
+// short, in mono, as secondary text beside the bubble's actions, never the
+// label of a button (§11). Sign is the strip's primary action at
 // `rounded-medium` (a component's action, not the view's pill).
 
 import { Check, CheckCheck, CircleAlert, Copy, LoaderCircle } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { TxReference, TxStatus } from '../domain/chat/content';
 import { referenceLine } from '../domain/chat/content';
@@ -14,7 +15,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/cn';
 
 import type { TxDryRun } from '../../shared/desktop-api';
+import { transactionLink } from '../../shared/explorers';
 import { type TxIntent, formatUnits } from '../../shared/txIntent';
+
+import { createCopyFlag, shortHash } from './copyFlag';
+import { ExplorerButton, useExplorer } from './ExplorerButton';
 
 /** Where the strip is: testing, ready to sign, refused, signing. */
 export type StripPhase =
@@ -112,35 +117,60 @@ export const TxStatusIcon = ({ status, className }: { status: TxStatus; classNam
   }
 };
 
+/** `copied` is true for 1.5 s after each `copy` (owner-reported bug: it never reset). */
+const useCopied = (): [boolean, (text: string) => void] => {
+  const [copied, setCopied] = useState(false);
+  const [flag] = useState(() => createCopyFlag(setCopied));
+  useEffect(() => () => flag.dispose(), [flag]);
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text).then(flag.copied, (cause: unknown) => console.warn('[tx] copy failed', cause));
+  };
+  return [copied, copy];
+};
+
 /**
- * The body of a reference bubble: "Top up of 1 PAS · in block #123", the
- * state icon (finality is a later tick, not a wait), and Copy for the hash.
+ * The body of a reference bubble: "Top up of 1 PAS · in block #123" with
+ * the state icon (finality is a later tick, not a wait), then a small row of
+ * local actions (client chrome, not spec 0006 buttons): the short hash in
+ * mono with the full one in its tooltip, "Copy hash", "View on <explorer>".
  */
 export const ReferenceBody = ({ reference, own }: { reference: TxReference; own: boolean }) => {
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopied();
+  const explorer = useExplorer();
   const muted = own ? 'text-fg-secondary-inverted' : 'text-fg-secondary';
   return (
-    <div className="flex items-center gap-2" data-testid="tx-reference" data-status={reference.status}>
-      <TxStatusIcon status={reference.status} className={reference.status === 'failed' ? undefined : muted} />
-      <p className={cn('min-w-0 text-body-m', reference.status === 'failed' && 'text-fg-error')}>{referenceLine(reference)}</p>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className={cn('size-7 shrink-0 cursor-pointer rounded-full font-normal', muted)}
-            aria-label={copied ? 'Hash copied' : 'Copy transaction hash'}
-            data-testid="tx-copy-hash"
-            onClick={() => {
-              void navigator.clipboard.writeText(reference.hash).then(() => setCopied(true));
-            }}
-          >
-            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{copied ? 'Copied' : 'Copy transaction hash'}</TooltipContent>
-      </Tooltip>
+    <div className="flex flex-col gap-1" data-testid="tx-reference" data-status={reference.status}>
+      <div className="flex items-center gap-2">
+        <TxStatusIcon status={reference.status} className={reference.status === 'failed' ? undefined : muted} />
+        <p className={cn('min-w-0 text-body-m', reference.status === 'failed' && 'text-fg-error')}>{referenceLine(reference)}</p>
+      </div>
+      <div className={cn('-mx-2 flex flex-wrap items-center gap-x-1', muted)} data-testid="tx-actions">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="px-2 font-mono text-caption" tabIndex={0} data-testid="tx-hash">
+              {shortHash(reference.hash)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="font-mono break-all">{reference.hash}</TooltipContent>
+        </Tooltip>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className={cn('h-7 cursor-pointer rounded-medium px-2 text-label-s font-normal', muted)}
+          data-testid="tx-copy-hash"
+          onClick={() => copy(reference.hash)}
+        >
+          {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+          {copied ? 'Copied' : 'Copy hash'}
+        </Button>
+        <ExplorerButton
+          explorer={explorer}
+          link={transactionLink(explorer, reference.chainId, reference.hash, reference.block)}
+          className={muted}
+          testId="tx-explorer"
+        />
+      </div>
     </div>
   );
 };

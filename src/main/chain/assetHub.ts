@@ -31,6 +31,8 @@ import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 import { CALL_KIND_REVIVE, type TxCall, type TxIntent, decodeTxIntent, formatUnits, intentProblem } from '../../shared/txIntent';
 import { metadataCache } from '../metadataCache';
 
+import { type TrackerChain, createTxTracker } from './txTracker';
+
 const typedApi = (client: PolkadotClient) => client.getTypedApi(assetHubPaseo);
 type Tx = ReturnType<ReturnType<typeof typedApi>['tx']['Revive']['map_account']>;
 
@@ -200,9 +202,25 @@ export type TxService = {
   balance: () => Promise<AccountBalance>;
   /** Every new best block of this chain (number), once each; returns the unsubscribe function. */
   onBestBlock: (listener: (block: BestBlock) => void) => () => void;
+  /**
+   * Spec 0007 (M12c): follow any transaction on this chain by hash (own or
+   * a peer's reference) to "in block" and "finalized"; the states arrive on
+   * `onStatus`. `block`: where a reference says it is, or null.
+   */
+  track: (hash: string, block: number | null) => void;
   address: string;
   dispose: () => void;
 };
+
+type LegacyBlock = { block: { extrinsics: string[] } } | null;
+
+/** The chain as the reference tracker reads it: best and finalized blocks, and legacy block reads. */
+const trackerChainOf = (chain: AssetHubChain): TrackerChain => ({
+  bestBlocks$: chain.client.bestBlocks$,
+  finalizedBlock$: chain.client.finalizedBlock$,
+  blockHashAt: async number => (await chain.client._request<string | null, [number]>('chain_getBlockHash', [number])) ?? null,
+  extrinsicsOf: async hash => (await chain.client._request<LegacyBlock, [string]>('chain_getBlock', [hash]))?.block.extrinsics ?? [],
+});
 
 type PendingDryRun = { intent: TxIntent; at: number };
 
@@ -222,6 +240,7 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     statuses.set(event.hash, event);
     for (const listener of listeners) listener(event);
   };
+  const tracker = createTxTracker(trackerChainOf(chain), emit);
 
   const needsMapping = async (): Promise<boolean> => {
     if (mapped) return false;
@@ -381,8 +400,18 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
       return () => listeners.delete(listener);
     },
     contractRead,
+    track: (hash, block) => {
+      const known = statuses.get(hash.toLowerCase());
+      // Our own transaction already ended here: say so again, nothing to follow.
+      if (known && (known.status === 'finalized' || known.status === 'failed')) {
+        for (const listener of listeners) listener(known);
+        return;
+      }
+      tracker.track(hash, block);
+    },
     address: origin,
     dispose: () => {
+      tracker.dispose();
       for (const subscription of watches) subscription.unsubscribe();
       watches.clear();
       listeners.clear();

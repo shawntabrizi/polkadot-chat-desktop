@@ -51,10 +51,15 @@ export type SettingKey =
   | 'chat.sound'
   /** `on` (default) or `off`: typing reveal of bot and Assistant replies (M7). */
   | 'chat.reveal'
-  /** `on` (default) or `off`: send spec 0005 `typing` while composing (M9). */
-  | 'chat.typingIndicator'
+  /**
+   * `on` or `off` (default): send spec 0005 `typing` while composing (M12c).
+   * A new key, so the M9 `chat.typingIndicator` (default on) no longer counts.
+   */
+  | 'chat.sendTyping'
   /** `on` (default) or `off`: send spec 0005 `seen` read receipts (M9). */
   | 'chat.readReceipts'
+  /** `subscan` (default) or `polkadotjs`: where "View on …" opens a transaction or an account (M12c). */
+  | 'chat.explorer'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session';
 

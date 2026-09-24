@@ -13,7 +13,7 @@ The shared cost of the Statement Store is **submissions**: every submitted state
 | typing (240) | 0 by default: not sent; bots never send it; the client infers "working" for a known bot locally. Opt-in: ≤ 1 per 10 s | revised 2026-09-23 in 0005 (owner: cut now, no legacy) |
 | seen (241) | 0 in a back-and-forth (rides the next message within 5 s); else 1 per read session | revised 2026-09-23 in 0005 |
 | groupMessage (247) | n−1 per message for n members | temporary (v1); cap 16; v2 = one submission on a group topic with a shared key (MLS, as t3ams) |
-| Meter charges (not wire; chain) | 1 Asset Hub extrinsic per 5 metered replies or 10 min, whichever first; the bot's balance hint shows the pending debit | revised 2026-09-23 (M12c) |
+| Meter charges (not wire; chain) | 1 Asset Hub extrinsic per 5 metered replies or 10 min, whichever first, plus one reference statement per charge; the header shows the on-chain balance, `/balance` shows balance minus the pending debit | implemented in pca c488a31 (M12c) |
 
 Reference points: a person's 1:1 chat sends roughly one statement per message; pca live placeholders now start only after 20 s; the base spec's request extension already batches every un-ACKed message into one statement.
 

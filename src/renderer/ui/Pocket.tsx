@@ -17,7 +17,9 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
 
 import { formatPas } from '../../shared/balanceHint';
+import { accountLink } from '../../shared/explorers';
 
+import { ExplorerButton, useExplorer } from './ExplorerButton';
 import { QrCode } from './QrCode';
 import { useAssetHubBalance, useBestBlock } from './useChain';
 
@@ -71,6 +73,9 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
   const block = useBestBlock();
   const [people, setPeople] = useState<{ free: bigint | null; error: boolean }>({ free: null, error: false });
   const [copied, setCopied] = useState(false);
+  const explorer = useExplorer();
+  // The account page on Asset Hub, where the PAS this app moves lives.
+  const assetHubGenesis = NETWORK_PROFILES[profileId].assetHub?.genesis ?? null;
 
   // The People chain: read when the Pocket opens, and again with each Asset Hub block while it stays open.
   useEffect(() => {
@@ -142,6 +147,12 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
                   <Droplets aria-hidden />
                   Get test funds
                 </Button>
+                <ExplorerButton
+                  explorer={explorer}
+                  link={assetHubGenesis ? accountLink(explorer, assetHubGenesis, address) : { unavailable: 'This network has no Asset Hub in this app.' }}
+                  className="h-9 text-label-m"
+                  testId="pocket-explorer"
+                />
               </div>
             </div>
           </div>

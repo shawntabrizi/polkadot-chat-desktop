@@ -450,7 +450,14 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
       </aside>
       {selection.kind === 'settings' ? (
         <main className="min-w-0 flex-1">
-          <Settings username={username} identity={identity} profileId={profileId} onReset={onReset} assistantApi={assistantApi} />
+          <Settings
+            username={username}
+            identity={identity}
+            profileId={profileId}
+            onReset={onReset}
+            assistantApi={assistantApi}
+            submissions={runtime?.manager.submissions ?? null}
+          />
         </main>
       ) : selection.kind === 'pocket' ? (
         <main className="min-w-0 flex-1">

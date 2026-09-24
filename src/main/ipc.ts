@@ -286,6 +286,11 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (typeof hash !== 'string' || !TX_HASH.test(hash)) return null;
     return (await txServiceFor(getWindow)).status(hash);
   });
+  ipcMain.handle(IPC.chainTrack, async (_event, hash: unknown, block: unknown): Promise<void> => {
+    if (typeof hash !== 'string' || !TX_HASH.test(hash)) return;
+    if (block !== null && !(typeof block === 'number' && Number.isInteger(block) && block >= 0)) return;
+    (await txServiceFor(getWindow)).track(hash, block);
+  });
   ipcMain.handle(IPC.chainContractRead, async (_event, chainId: unknown, address: unknown, calldata: unknown): Promise<Uint8Array> => {
     if (typeof chainId !== 'string' || !GENESIS.test(chainId)) throw new Error('Invalid chain id.');
     if (typeof address !== 'string' || !CONTRACT.test(address)) throw new Error('Invalid contract address.');

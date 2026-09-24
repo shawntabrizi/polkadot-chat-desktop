@@ -93,6 +93,8 @@ const noActivity = { subscribe: () => () => undefined, snapshot: () => null };
 // A stable snapshot: useSyncExternalStore re-renders on every new object.
 const NO_TYPING: ReadonlyMap<PeerId, PeerTyping> = new Map();
 const noTyping = { subscribe: () => () => undefined, snapshot: () => NO_TYPING };
+/** The header line of an embedded bot at work: the words and dots of a received `typing{working}`. */
+const LOCAL_WORKING: PeerTyping = { kind: 'working', until: 0, local: true };
 
 /** "Reconnecting to the People chain…" once the connection has been down 5 s. */
 const ReconnectBanner = ({ connection }: { connection: ConnectionSnapshot }) => {
@@ -515,6 +517,9 @@ export const Room = (props: Props) => {
 
   const noDevice = contact !== undefined && contact.devices.length === 0;
   const muted = room?.muted === true;
+  // Spec 0005 (M12c): an embedded bot shows the same "working…" as a chat bot
+  // while its reply is being written; it is local, so nothing is sent.
+  const assistantWorking = assistant !== null && (messages ?? []).some(row => row.direction === 'incoming' && row.status === 'streaming');
 
   return (
     <>
@@ -524,7 +529,9 @@ export const Room = (props: Props) => {
         badge={botInfo ? <BotBadge kind={botInfo.kind} /> : undefined}
         status={
           assistant ? (
-            assistantSettings ? (
+            assistantWorking ? (
+              <TypingLine typing={LOCAL_WORKING} />
+            ) : assistantSettings ? (
               <span data-testid="assistant-engine">
                 {engineLabel(assistantSettings.engine)}, in this app · {toolsLine(assistantSettings.tools)}
               </span>

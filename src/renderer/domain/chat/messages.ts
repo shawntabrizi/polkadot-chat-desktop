@@ -8,7 +8,7 @@
 import type { HexString } from '../../app/bytes';
 import { type MessageRow, type MessageStatus, type PeerId, type RoomRow, appDatabase, db } from '../../app/database';
 
-import { type MessageContent, type TxReference, isLiveFrame, previewOf } from './content';
+import { type MessageContent, type TxReference, isLiveFrame, previewOf, referenceRank } from './content';
 
 export const listRooms = async (): Promise<RoomRow[]> =>
   (await db.rooms.toArray()).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
@@ -156,7 +156,9 @@ export const applyReference = (
       return { messageId: ids.messageId, added: await addMessage(row, options) };
     }
     const current = existing.content.reference;
-    if (!isFinal(current)) {
+    // Forward only (M12c): the chain tracker, our runner and the peer all
+    // report states, in any order; a late "submitted" must not undo "in block".
+    if (!isFinal(current) && referenceRank(reference.status) >= referenceRank(current.status)) {
       const next: TxReference = { ...current, ...reference, hash, note: reference.note || current.note, intentMessageId: reference.intentMessageId ?? current.intentMessageId };
       await db.messages.update(existing.messageId, { content: { type: 'transactionReference', reference: next } });
       const room = await db.rooms.get(peer);
@@ -164,6 +166,37 @@ export const applyReference = (
     }
     return { messageId: existing.messageId, added: false };
   });
+
+/**
+ * Spec 0007 (M12c): what the chain says about a transaction reaches every
+ * reference row with that hash, ours and the peer's, in every room, with no
+ * message. Forward only, and never past finalized or failed.
+ */
+export const setReferenceState = (hash: string, state: { status: TxReference['status']; block: number | null; error: string | null }): Promise<number> =>
+  appDatabase.transaction('rw', db.messages, db.rooms, async () => {
+    const key = hash.toLowerCase();
+    const rows = await db.messages
+      .filter(row => row.content.type === 'transactionReference' && row.content.reference.hash.toLowerCase() === key)
+      .toArray();
+    let changed = 0;
+    for (const row of rows) {
+      if (row.content.type !== 'transactionReference') continue;
+      const current = row.content.reference;
+      if (isFinal(current) || referenceRank(state.status) <= referenceRank(current.status)) continue;
+      const next: TxReference = { ...current, status: state.status, block: state.block ?? current.block, ...(state.error ? { error: state.error } : {}) };
+      await db.messages.update(row.messageId, { content: { type: 'transactionReference', reference: next } });
+      const room = await db.rooms.get(row.peerAccountId);
+      if (room && room.lastMessageAt === row.timestamp) await db.rooms.update(row.peerAccountId, { lastPreview: previewOf({ type: 'transactionReference', reference: next }) });
+      changed += 1;
+    }
+    return changed;
+  });
+
+/** Reference rows whose transaction has not ended (neither finalized nor failed): what the chain tracker follows. */
+export const listOpenReferences = async (): Promise<TxReference[]> =>
+  (await db.messages.filter(row => row.content.type === 'transactionReference' && !isFinal(row.content.reference)).toArray()).flatMap(row =>
+    row.content.type === 'transactionReference' ? [row.content.reference] : [],
+  );
 
 export type SeenResult = 'applied' | 'unknown' | 'ignored';
 

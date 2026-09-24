@@ -1,18 +1,25 @@
 #!/usr/bin/env node
-// M9 e2e (spec 0005 typing and seen) against a live pca bot, through this repo's domain code:
-//   npm run e2e:typing -- [peerUsername=pcdpirate.81] [--profile devnet|paseo] [--identity <name>]
-// Same setup as e2e-buttons.mjs (the identity file, fake-indexeddb, the People
-// connection). Sends a chat request, waits for the accept, sends a question,
-// and watches three things for 90 s: a `typing{working}` from the bot
-// (TYPING_RECEIVED kind=working; the manager's typing store, as the room
-// header reads it), the reply (REPLY), and a `seen` that marks our question
-// (SEEN_RECEIVED; `seenAt` on our row, as the ticks read it). The script
-// reads the room like the app does (manager.markRead), so our own `seen`
-// goes to the bot too (SEEN_SENT).
-// Exit 0 TYPING_OK (typing and seen both arrived); 8 TYPING_MISSING and
-// SEEN_MISSING (neither arrived in 90 s); 9 one of the two missing (its
-// marker is printed); 3 PEER_KEY_UNSUPPORTED; 4 E2E_TIMEOUT <stage>; 1 any
-// other failure. Prints no secret.
+// M12c e2e (the submission budget, spec 0005 revision 2026-09-23) against a
+// live pca bot, through this repo's domain code:
+//   npm run e2e:typing -- [peerUsername=pcdpirate.81] [--profile devnet] [--identity <name>]
+// Same setup as before (the identity file, fake-indexeddb, the People
+// connection). Sends a chat request, waits for the accept and the bot's
+// botInfo, then asks one question and proves, with the manager's submission
+// counter (what reaches the Statement Store, acknowledgements apart):
+//  (a) our question costs 1 submission (QUESTION_SUBMISSIONS 1): no `typing`
+//      goes out (typing is off by default), and reading the reply costs
+//      exactly 1 more, only when its 5 s window ends (READ_SUBMISSIONS 1);
+//  (b) the room shows "working" at once after the send, with no wire signal
+//      (WORKING_LOCAL), and it clears on the reply (WORKING_CLEARED);
+//  (c) the bot's `seen` marks our question (SEEN_RECEIVED), alone or riding
+//      on its reply.
+// It holds for bots before and after the pca change: an older bot's own
+// `typing{working}` is logged (TYPING_RECEIVED) and shares the one line.
+// The pca agent may restart the bot mid-run: a missing accept or reply
+// waits and tries once more (BOT_DOWN_RETRY).
+// Exit 0 BUDGET_OK; 8 any check failed (its marker is printed); 3
+// PEER_KEY_UNSUPPORTED; 4 E2E_TIMEOUT <stage>; 1 any other failure. Prints
+// no secret.
 
 // Dexie needs an IndexedDB before app/database.ts is loaded.
 import 'fake-indexeddb/auto';
@@ -33,10 +40,12 @@ register();
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const load = (path) => import(pathToFileURL(join(root, path)).href);
 
-const STAGE_TIMEOUT_MS = 120_000;
-const POLL_MS = 1_000;
-/** How long a bot's own answer to the request may take to arrive. */
-const GREETING_WAIT_MS = 15_000;
+const POLL_MS = 250;
+const ACCEPT_WAIT_MS = 120_000;
+const BOTINFO_WAIT_MS = 30_000;
+const REPLY_WAIT_MS = 90_000;
+/** A restarting bot is back within this (the pca agent restarts it in seconds). */
+const BOT_DOWN_WAIT_MS = 45_000;
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -58,7 +67,7 @@ const hexOf = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
 const bytesOf = (hex) => Uint8Array.from(Buffer.from(hex.replace(/^0x/, ''), 'hex'));
 
 /** Polls `probe` until it returns a value; `null` after the timeout. */
-const waitFor = async (probe, timeoutMs = STAGE_TIMEOUT_MS) => {
+const waitFor = async (probe, timeoutMs) => {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {
     const value = await probe();
@@ -80,6 +89,8 @@ const { readUserIdentity } = await load('src/renderer/domain/identity/userIdenti
 const { getDeviceKeys } = await load('src/renderer/domain/device/repository.ts');
 const { createIdentityLookup } = await load('src/renderer/domain/identity/lookup.ts');
 const { createChatManager } = await load('src/renderer/domain/chat/manager.ts');
+const { SEEN_INTERVAL_MS } = await load('src/renderer/domain/chat/signals.ts');
+const { readChatPrefs } = await load('src/renderer/app/chatPrefs.ts');
 
 // The app keeps runtime metadata under <userData>/metadata; the script keeps it
 // here, so only the first run after a runtime upgrade downloads it.
@@ -133,15 +144,11 @@ console.log(`SELF ${saved.accountHex} ${saved.username}`);
 
 // ── Peer resolution (People chain, best block) ──────────────────────────
 
-// One People connection for the chain reads and the Statement Store, as in the app.
 const connection = getPeopleConnection(NETWORK_PROFILES[profile]);
 console.log(`[ws] ${connection.status()}`);
 connection.onStatus((status) => console.log(`[ws] ${status}`));
 
-// Reads go to the best block (PLAN.md "Best block first"): a peer that just
-// registered is readable before finality. The runtime is loaded first (from
-// the metadata cache when it has it), so a read's deadline never covers the
-// metadata download; a timed-out step moves to the next endpoint once.
+// Reads go to the best block (PLAN.md "Best block first").
 const client = connection.lazyClient.getClient();
 const people = client.getTypedApi(profile === 'paseo' ? paseoPeopleNext : productsDevnetPeople);
 const best = { at: 'best' };
@@ -193,118 +200,159 @@ manager = await createChatManager({
   lookup: createIdentityLookup(connection),
   onConnectionStatus: connection.onStatus,
 });
+const prefs = await readChatPrefs();
+console.log(`PREFS sendTyping=${prefs.sendTyping} readReceipts=${prefs.readReceipts} (a fresh profile: the defaults)`);
 
-if (await db.contacts.get(peerAccountHex)) {
-  console.log('CONTACT_EXISTS');
-} else {
-  try {
-    await manager.sendRequest(peer, null);
-  } catch (error) {
-    finish(1, `REQUEST_FAIL ${error instanceof Error ? error.message : String(error)}`);
+/** Request, then the accept; a bot that is down (restarting) gets one more request after a pause. */
+const connect = async () => {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await manager.sendRequest(peer, null);
+    } catch (error) {
+      finish(1, `REQUEST_FAIL ${error instanceof Error ? error.message : String(error)}`);
+    }
+    console.log(`REQUEST_SENT attempt=${attempt}`);
+    const contact = await waitFor(() => db.contacts.get(peerAccountHex), ACCEPT_WAIT_MS);
+    if (contact) return contact;
+    if (attempt === 1) {
+      console.log(`BOT_DOWN_RETRY no accept in ${ACCEPT_WAIT_MS / 1000} s; waiting ${BOT_DOWN_WAIT_MS / 1000} s`);
+      await delay(BOT_DOWN_WAIT_MS);
+    }
   }
-  console.log('REQUEST_SENT');
-  const contact = await waitFor(() => db.contacts.get(peerAccountHex));
-  if (!contact) finish(4, 'E2E_TIMEOUT accept');
-  console.log(`ACCEPTED devices=${contact.devices.length}`);
-}
-
-// The session starts right after the "chat accepted" row; wait for it.
-const sessionReady = await waitFor(async () => (await db.messages.where('peerAccountId').equals(peerAccountHex).count()) > 0, 10_000);
-if (!sessionReady) console.log('note: no chat row yet; sending anyway');
+  return null;
+};
+const contact = await connect();
+if (!contact) finish(4, 'E2E_TIMEOUT accept');
+console.log(`ACCEPTED devices=${contact.devices.length}`);
 
 const textOf = (row) =>
   row.content.type === 'text' || row.content.type === 'reply' || row.content.type === 'buttons' ? row.content.text : `[${row.content.type}]`;
 const oneLine = (text) => text.replace(/\s+/g, ' ').slice(0, 100);
-// toArray() is in id order; sort by time so `at(-1)` is the newest.
 const incoming = async () =>
-  (await db.messages.toArray())
-    .filter((row) => row.peerAccountId === peerAccountHex && row.direction === 'incoming')
-    .sort((a, b) => a.timestamp - b.timestamp);
-// pca status rows are not answers: its live frames (⏳ / 🤔, M7) and the
-// receipt it edits the placeholder into ("✓ Answered in …").
+  (await db.messages.toArray()).filter((row) => row.peerAccountId === peerAccountHex && row.direction === 'incoming').sort((a, b) => a.timestamp - b.timestamp);
+// pca status rows are not answers: live frames (⏳ / 🤔) and the receipt it edits the placeholder into.
 const isStatus = (row) => row.content.type === 'text' && /^(?:⏳|🤔|✓) /u.test(row.content.text);
 
-// A bot answers the request itself a moment after the accept. Let that land
-// first, so it is not taken for the answer to the question.
-const greeting = await waitFor(async () => (await incoming())[0], GREETING_WAIT_MS);
-if (greeting) console.log(`GREETING ${oneLine(textOf(greeting))}`);
-
-// ── Typing: every state the store takes for this peer ──────────────────
-
-const t0 = Date.now();
-const since = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
-let typingFirst = null;
-let typingUpdates = 0;
-let lastTyping = null;
-const onTyping = () => {
-  const state = manager.typing.snapshot().get(peerAccountHex) ?? null;
-  if (state === lastTyping) return;
-  lastTyping = state;
-  if (!state) {
-    console.log(`TYPING_CLEARED at=${since()}`);
-    return;
-  }
-  typingUpdates += 1;
-  if (typingFirst === null) {
-    typingFirst = { kind: state.kind, at: Date.now() };
-    console.log(`TYPING_RECEIVED kind=${state.kind} at=${since()} ahead=${state.until - Date.now()}ms`);
-  }
-};
-manager.typing.subscribe(onTyping);
-
-const before = new Set((await incoming()).map((row) => row.messageId));
-const question = 'Tell me a short pirate joke about blocks.';
-try {
-  await manager.sendMessage(peerAccountHex, { type: 'text', text: question });
-} catch (error) {
-  finish(1, `SEND_FAIL ${error instanceof Error ? error.message : String(error)}`);
+// The local "working" state is for a KNOWN bot: its botInfo (spec 0008).
+// pca sends it with the accept; `/start` asks again, as the app's room does.
+const botInfo = async () => (await db.peerInfo.get(peerAccountHex))?.botInfo ?? null;
+let info = await waitFor(botInfo, BOTINFO_WAIT_MS);
+if (!info) {
+  await manager.roomOpened(peerAccountHex);
+  console.log('BOTINFO_ASKED (/start)');
+  info = await waitFor(botInfo, BOTINFO_WAIT_MS);
 }
-const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === question && !before.has(row.messageId) && row.timestamp >= t0);
-if (!own) finish(1, 'SEND_FAIL no row for the question');
-console.log(`QUESTION_SENT ${own.messageId}`);
+if (!info) finish(8, 'BOTINFO_MISSING (no local working state without it)');
+console.log(`BOTINFO name="${info.name}" version=${info.version}`);
+// Let the greeting and any answer to /start land, so none is taken for the reply.
+await delay(3_000);
 
-const WATCH_MS = 90_000;
-let reply = null;
-let seen = null;
-const readUpTo = new Set();
-await waitFor(async () => {
+// ── One question, measured ───────────────────────────────────────────────
+
+const counts = () => manager.submissions.snapshot();
+const round = async (attempt) => {
+  const t0 = Date.now();
+  const since = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
+  const result = { working: false, cleared: false, reply: null, seen: false, question: null, read: null, receivedTyping: false };
+
+  let lastState = null;
+  const onTyping = () => {
+    const state = manager.typing.snapshot().get(peerAccountHex) ?? null;
+    if (state === lastState) return;
+    lastState = state;
+    if (state && !state.local && !result.receivedTyping) {
+      result.receivedTyping = true;
+      console.log(`TYPING_RECEIVED kind=${state.kind} at=${since()} (an older bot; one line with the local state)`);
+    }
+  };
+  const stop = manager.typing.subscribe(onTyping);
+
+  const before = new Set((await incoming()).map((row) => row.messageId));
+  const start = counts();
+  const question = attempt === 1 ? 'Tell me a short pirate joke about blocks.' : 'Tell me a short pirate joke about ships.';
+  await manager.sendMessage(peerAccountHex, { type: 'text', text: question });
+  const state = manager.typing.snapshot().get(peerAccountHex);
+  result.working = state?.kind === 'working' && state.local === true;
+  console.log(`${result.working ? 'WORKING_LOCAL' : 'WORKING_LOCAL_MISSING'} at=${since()} state=${JSON.stringify(state ?? null)}`);
+  const own = (await db.messages.toArray()).find((row) => row.peerAccountId === peerAccountHex && row.direction === 'outgoing' && textOf(row) === question && row.timestamp >= t0);
+  if (!own) finish(1, 'SEND_FAIL no row for the question');
+  // The meter sends at the end of the task; give it a moment, then count.
+  await delay(1_000);
+  result.question = counts().submissions - start.submissions;
+  console.log(`QUESTION_SENT ${own.messageId} QUESTION_SUBMISSIONS ${result.question}`);
+
   // Read the room as the app does when it is open and focused.
-  const fresh = (await incoming()).filter((row) => !before.has(row.messageId));
-  const newest = fresh.at(-1);
-  if (newest && !readUpTo.has(newest.messageId)) {
-    readUpTo.add(newest.messageId);
-    await manager.markRead(peerAccountHex);
-    console.log(`SEEN_SENT upTo=${newest.messageId}`);
-  }
-  if (!reply) {
-    // Only a row sent after the question: the bot also answers the request
-    // opener, and that answer can land after the greeting wait.
-    const answer = fresh.find((row) => !isStatus(row) && row.timestamp > own.timestamp);
-    if (answer) {
-      reply = answer;
-      console.log(`REPLY at=${since()} ${oneLine(textOf(answer))}`);
-      // The store records a typing the moment it is decoded, so one seen by now came first.
-      console.log(`TYPING_BEFORE_REPLY ${typingFirst !== null ? 'yes' : 'no'}`);
+  const readUpTo = new Set();
+  let readAt = null;
+  let atRead = null;
+  const readNew = async () => {
+    const fresh = (await incoming()).filter((row) => !before.has(row.messageId));
+    const newest = fresh.at(-1);
+    if (newest && !readUpTo.has(newest.messageId)) {
+      readUpTo.add(newest.messageId);
+      if (readAt === null) {
+        readAt = Date.now();
+        atRead = counts().submissions;
+      }
+      await manager.markRead(peerAccountHex);
     }
-  }
-  if (!seen) {
-    const row = await db.messages.get(own.messageId);
-    if (row?.seenAt !== undefined) {
-      seen = row.seenAt;
-      console.log(`SEEN_RECEIVED upTo=${own.messageId} at=${since()} seenAt=${new Date(row.seenAt).toISOString()}`);
+    return fresh;
+  };
+  await waitFor(async () => {
+    const fresh = await readNew();
+    if (!result.reply) {
+      const answer = fresh.find((row) => !isStatus(row) && row.timestamp > own.timestamp);
+      if (answer) {
+        result.reply = answer;
+        console.log(`REPLY at=${since()} ${oneLine(textOf(answer))}`);
+        const after = manager.typing.snapshot().get(peerAccountHex);
+        result.cleared = after === undefined;
+        console.log(`${result.cleared ? 'WORKING_CLEARED' : 'WORKING_NOT_CLEARED'} at=${since()} state=${JSON.stringify(after ?? null)}`);
+      }
     }
+    if (!result.seen && (await db.messages.get(own.messageId))?.seenAt !== undefined) {
+      result.seen = true;
+      console.log(`SEEN_RECEIVED upTo=${own.messageId} at=${since()}${result.reply ? '' : ' (before the reply)'}`);
+    }
+    return result.reply && result.seen;
+  }, REPLY_WAIT_MS);
+  if (!result.reply) {
+    stop();
+    return result;
   }
-  return reply && seen !== null && typingFirst !== null;
-}, WATCH_MS);
 
-// Let an outstanding typing clear after the reply, so the log shows it.
-if (reply && lastTyping) await waitFor(() => !manager.typing.snapshot().get(peerAccountHex), 10_000);
-console.log(`TYPING_UPDATES ${typingUpdates}`);
-if (!reply) console.log('REPLY_MISSING (no answer in 90 s)');
-const typingOk = typingFirst?.kind === 'working';
-if (typingFirst && !typingOk) console.log(`TYPING_KIND_UNEXPECTED ${typingFirst.kind}`);
-if (!typingOk) console.log('TYPING_MISSING');
-if (seen === null) console.log('SEEN_MISSING');
-if (!typingOk && seen === null) finish(8);
-if (!typingOk || seen === null) finish(9);
-finish(0, 'TYPING_OK');
+  // The read: nothing inside the 5 s window, one standalone `seen` after it.
+  const inside = Math.max(0, readAt + SEEN_INTERVAL_MS - 1_000 - Date.now());
+  await delay(inside);
+  await readNew();
+  const early = counts().submissions - atRead;
+  await delay(Math.max(0, readAt + SEEN_INTERVAL_MS + 2_500 - Date.now()));
+  await readNew();
+  result.read = counts().submissions - atRead;
+  console.log(`READ_SUBMISSIONS ${result.read} (inside the 5 s window: ${early})`);
+  const end = counts();
+  console.log(
+    `COUNTS submissions=${end.submissions - start.submissions} messages=${end.messages - start.messages} acknowledgements=${end.acknowledgements - start.acknowledgements} (this round)`,
+  );
+  stop();
+  return result;
+};
+
+let result = await round(1);
+if (!result.reply) {
+  console.log(`BOT_DOWN_RETRY no reply in ${REPLY_WAIT_MS / 1000} s; waiting ${BOT_DOWN_WAIT_MS / 1000} s`);
+  await delay(BOT_DOWN_WAIT_MS);
+  result = await round(2);
+}
+if (!result.reply) finish(4, 'E2E_TIMEOUT reply (after one retry)');
+
+const failures = [];
+if (result.question !== 1) failures.push(`QUESTION_SUBMISSIONS_${result.question}`);
+if (result.read !== 1) failures.push(`READ_SUBMISSIONS_${result.read}`);
+if (!result.working) failures.push('WORKING_LOCAL_MISSING');
+if (!result.cleared) failures.push('WORKING_NOT_CLEARED');
+if (!result.seen) failures.push('SEEN_MISSING');
+const total = counts();
+console.log(`DIAGNOSTICS submissions=${total.submissions} messages=${total.messages} acknowledgements=${total.acknowledgements} (whole run: request and accept included)`);
+if (failures.length > 0) finish(8, `BUDGET_FAILED ${failures.join(' ')}`);
+finish(0, 'BUDGET_OK');

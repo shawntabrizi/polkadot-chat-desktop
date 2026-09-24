@@ -13,8 +13,10 @@
 //     process's module (main/chain/assetHub.ts, the identity wallet key) and
 //     the references go out through the renderer's runner, as in the app
 //     (DRYRUN …, then TOPUP_OK once our reference is "in block").
-//  3. The Meter balance at the best block (BALANCE …), three questions, and
-//     the balance after each answer must drop (METERED_OK), then METER_OK.
+//  3. The Meter balance at the best block (BALANCE …), five questions (one
+//     batch of the M12c meter: one charge per 5 replies or 10 min; an older
+//     bot charges each reply), and the balance must drop at least once by
+//     the last answer (METERED_OK), then METER_OK.
 // M11b: nothing here knows the Meter. The contract, the view, the decimals
 // and the price per reply come from the `balance` hint of pcdmeter's spec
 // 0008 botInfo (HINT …), as the app's room header reads them.
@@ -47,6 +49,8 @@ const IN_BLOCK_WAIT_MS = 90_000;
 /** A Haiku turn, then the bot's charge in a best block. */
 const ANSWER_WAIT_MS = 150_000;
 const CHARGE_WAIT_MS = 90_000;
+/** After an answer that is not the last: how long to look for a per-reply charge (an older bot). */
+const PER_ANSWER_LOOK_MS = 25_000;
 /** The botInfo comes with the accept; a `/start` asks again. */
 const HINT_WAIT_MS = 30_000;
 
@@ -57,7 +61,8 @@ const flag = (name) => {
 };
 const profile = flag('profile') ?? 'devnet';
 const identityName = flag('identity') ?? 'pcde2e';
-const questionCount = Number(flag('questions') ?? 3);
+// Five: one full batch of the M12c meter (a charge per 5 replies or 10 min).
+const questionCount = Number(flag('questions') ?? 5);
 
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const hexOf = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
@@ -151,7 +156,7 @@ const [identity, deviceKeys] = await Promise.all([readUserIdentity(), getDeviceK
 if (!identity) finish(1, 'SEED_FAIL no identity row after seeding');
 const lookup = createIdentityLookup(connection);
 manager = await createChatManager({ identity, deviceKeys, statementStore: connection.adapter, lookup, onConnectionStatus: connection.onStatus });
-runner = createTxRunner({ chain: { sign: service.sign, onTxStatus: service.onStatus }, sendReference: manager.sendReference });
+runner = createTxRunner({ chain: { sign: service.sign, onTxStatus: service.onStatus }, sendReference: manager.sendReference, recordReference: manager.recordReference });
 
 const search = async (prefix) => (await searchUsernames(NETWORK_PROFILES[profile], prefix, selfKeys.accountId)).results;
 /** The bot's username by search: `<name>.NN`. */
@@ -281,8 +286,15 @@ console.log(`BALANCE ${hintLine(hint, afterTopUp)} (${afterTopUp} ${hint.unit} u
 if (afterTopUp < before + (planckInHintUnits(hint, intent.calls[0].value) ?? 0n)) console.log('BALANCE_NOTE the top-up is not fully visible yet (a charge may have run meanwhile)');
 
 const QUESTIONS = ['In one sentence: what is Polkadot?', 'In one sentence: what is a parachain?', 'In one sentence: what is Asset Hub?', 'In one sentence: what is a smart contract?'];
+// M12c: a bot on the batched meter (efficiency.md) charges once per 5
+// metered replies or 10 min, so the balance may not drop after each answer;
+// an older bot charges each reply. Both must pass: each answer shows the
+// balance as it is, and after the last one (5 by default, one batch) the
+// balance must have dropped at least once. Replies left pending by an
+// earlier run make the batch fill sooner, never later.
 let last = afterTopUp;
 let drops = 0;
+const asked0 = Date.now() - 1_000;
 for (let n = 0; n < questionCount; n++) {
   const question = QUESTIONS[n % QUESTIONS.length];
   const asked = Date.now() - 1_000;
@@ -293,22 +305,29 @@ for (let n = 0; n < questionCount; n++) {
   );
   if (!answer) timeout(`answer ${n + 1}`);
   console.log(`ANSWER ${n + 1} ${oneLine(answer.content.text)}`);
+  // The last answer waits for the charge; the others only look (an older bot's per-reply charge lands within seconds).
   const dropped = await waitFor(async () => {
     const balance = await readBalance();
     return balance < last ? { balance } : null;
-  }, CHARGE_WAIT_MS);
-  if (!dropped) timeout(`charge after answer ${n + 1}`);
+  }, n === questionCount - 1 && drops === 0 ? CHARGE_WAIT_MS : PER_ANSWER_LOOK_MS);
+  if (!dropped) {
+    console.log(`BALANCE ${hintLine(hint, last)} (no charge yet: pending in the bot's batch) at=${at()}`);
+    continue;
+  }
   // The bot's charge reference names the new balance in planck (`balance: <planck>`, meter.md); it may land a moment later.
   const notePlanck = dropped.balance / (planckInHintUnits(hint, 1n) ?? 1n);
   const charge = await waitFor(
-    async () => (await incomingAfter(meter.accountHex, asked)).find((row) => row.content.type === 'transactionReference' && row.content.reference.note === `balance: ${notePlanck}`),
+    async () => (await incomingAfter(meter.accountHex, asked0)).find((row) => row.content.type === 'transactionReference' && row.content.reference.note === `balance: ${notePlanck}`),
     10_000,
   );
   console.log(`BALANCE ${hintLine(hint, dropped.balance)} (-${formatUnits(last - dropped.balance, hint.decimals)} ${hint.unit})${charge ? ` reference="${charge.content.reference.note}" ${charge.content.reference.status}` : ''} at=${at()}`);
   last = dropped.balance;
   drops += 1;
 }
-console.log(`METERED_OK ${drops} answers charged: ${formatUnits(afterTopUp, hint.decimals)} → ${formatUnits(last, hint.decimals)} ${hint.unit}`);
+if (drops === 0) timeout(`a charge within ${questionCount} answers`);
+const references = (await incomingAfter(meter.accountHex, asked0)).filter((row) => row.content.type === 'transactionReference');
+console.log(`CHARGE_REFERENCES ${references.length} (${references.map((row) => row.content.reference.status).join(',')})`);
+console.log(`METERED_OK ${questionCount} answers, ${drops} charge(s): ${formatUnits(afterTopUp, hint.decimals)} → ${formatUnits(last, hint.decimals)} ${hint.unit}`);
 const finalized = await waitFor(async () => ((await ownReference())?.content.reference.status === 'finalized' ? true : null), 1);
 console.log(`TOPUP_REFERENCE ${(await ownReference())?.content.reference.status}${finalized ? '' : ' (finality is shown when it comes; nothing waited for it)'}`);
 finish(0, 'METER_OK');
