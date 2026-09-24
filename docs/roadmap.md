@@ -69,3 +69,7 @@ Today a room offers mute, block, report, decline (incoming request) and leave (g
 8. **Forward** a message to another chat (a copy, "Forwarded from" shown).
 9. **Blocked list** in Settings with unblock.
 Later: chat folders and an unread filter; export chat; per-chat notification sounds.
+
+## Meter pending debit in the header (owner report, 2026-09-24) → M12f (both repos)
+
+Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in the reply's batch. pca: meter sends it; vector `vectors-0008c.md`. Desktop: decode, header shows `balance − pending` and "0.3 owed", re-read after a charge reference. Also pca: the persisted pending debit (carry from M12c).

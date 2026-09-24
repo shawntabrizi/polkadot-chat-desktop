@@ -44,3 +44,7 @@ Command = { name: String /* without slash, <= 32 */, description: String /* <= 8
 ## Unresolved
 
 Discovery before a chat (a directory): publish the same document under the bot's DotNS name or the People-chain record; out of scope here.
+
+### v3: `pending` on the balance hint (revision 2026-09-24)
+
+Since meter charges are batched (`efficiency.md`), the on-chain balance the client reads lags the bot's view by the unpaid replies. Owner's report: the header said 1 PAS while `/balance` said 0.7. The balance hint gains an optional `pending: u128` (in the unit of the balance) that the bot has metered but not yet charged. The bot MAY resend `botInfo` with the new `pending` in the same request batch as a metered reply (no extra submission). The client shows `balance − pending` as the number and the pending amount beside it ("1 PAS · 0.3 owed"), and re-reads the chain after a `transactionReference` from the bot (a charge). A `botInfo` without `pending` means 0. Decoders that do not know the field ignore it (v2 behaviour).
