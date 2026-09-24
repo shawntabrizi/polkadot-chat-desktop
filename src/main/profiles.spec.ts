@@ -1,11 +1,11 @@
 /**
- * M18 profiles. The migration moves the only copy of a person's keys and
- * chats, so it must lose nothing, run safely on every start, and survive a
- * crash at any step. The launch rules decide which identity a window opens;
- * the running marks keep one identity from running in two processes.
+ * M18 profiles. The layout step runs on every start and must never read keys
+ * from outside a profile folder. The launch rules decide which identity a
+ * window opens; the running marks keep one identity from running in two
+ * processes.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,7 +27,6 @@ import {
   renameProfile,
   resolveLaunch,
   setDefaultProfile,
-  writeProfiles,
 } from './profiles';
 
 const temp = mkdtempSync(join(tmpdir(), 'pcd-profiles-spec-'));
@@ -42,109 +41,44 @@ beforeEach(() => {
 
 const IDENTITY = { version: 1, username: 'alice.42', accountHex: `0x${'aa'.repeat(32)}`, profile: 'devnet', mnemonicEncrypted: 'c2VhbGVk' };
 
-/** The old (pre-M18) layout: everything straight in userData, Chromium's folders included. */
-const writeOldLayout = (): Record<string, string> => {
-  const files: Record<string, string> = {
-    'identity.json': JSON.stringify(IDENTITY),
-    'storage-key.json': '{"version":1,"keyEncrypted":"eA=="}',
-    'window.json': '{"width":900,"height":700}',
-    'agent/settings.json': '{"version":1,"enabled":true}',
-    'agent/bot-core/journal.jsonl': 'line\n'.repeat(1000),
-    'IndexedDB/file__0.indexeddb.leveldb/000003.log': 'x'.repeat(70_000),
-  };
-  for (const [path, body] of Object.entries(files)) {
-    mkdirSync(join(root, path, '..'), { recursive: true });
-    writeFileSync(join(root, path), body);
-  }
-  // Chromium's lock link of the old process: never copied.
-  symlinkSync('host-12345', join(root, 'SingletonLock'));
-  return files;
-};
-
-const tree = (dir: string): Record<string, string> => {
-  const out: Record<string, string> = {};
-  const walk = (at: string, prefix: string) => {
-    for (const entry of readdirSync(at, { withFileTypes: true })) {
-      if (entry.isDirectory()) walk(join(at, entry.name), `${prefix}${entry.name}/`);
-      else if (entry.isFile()) out[`${prefix}${entry.name}`] = readFileSync(join(at, entry.name), 'utf8');
-    }
-  };
-  walk(dir, '');
-  return out;
-};
-
 const file = (profiles: string[], extra: Partial<ProfilesFile> = {}): ProfilesFile => ({
   version: 1,
   profiles: profiles.map((name, index) => ({ name, label: null, username: null, network: null, accountHex: null, createdAt: index })),
   defaultProfile: null,
-  migration: null,
   ...extra,
 });
 
-describe('migration of the old single profile', () => {
-  it('moves every file byte for byte to profiles/default and records it', () => {
-    const files = writeOldLayout();
-    const result = ensureLayout(root, 1000);
-    expect(result).toEqual({ kind: 'migrated', entries: expect.arrayContaining(['identity.json', 'IndexedDB', 'agent', 'SingletonLock']) });
-    expect(tree(profileDir(root, DEFAULT_PROFILE))).toEqual(files);
-    expect(existsSync(join(profileDir(root, DEFAULT_PROFILE), 'SingletonLock'))).toBe(false);
-    // Nothing of the old profile is left in the root, so no later start can read stale keys from there.
-    expect(readdirSync(root).sort()).toEqual(['profiles', 'profiles.json']);
-    const saved = readProfiles(root);
-    expect(saved?.migration).toMatchObject({ at: 1000, cleaned: true });
-    // The picker can show who the profile is without decrypting anything.
-    expect(saved?.profiles).toEqual([{ name: 'default', label: null, username: 'alice.42', network: 'devnet', accountHex: IDENTITY.accountHex, createdAt: 1000 }]);
+describe('the layout at start (M19: no migration)', () => {
+  it('treats a data folder without profiles.json as a fresh install and never takes keys from the root', () => {
+    // A pre-M18 identity file straight in the root: M19 removed the move, so it
+    // must not become the default profile's keys (nor be deleted: it is not ours to touch).
+    writeFileSync(join(root, 'identity.json'), JSON.stringify(IDENTITY));
+    expect(ensureLayout(root, 1000).kind).toBe('created');
+    expect(readProfiles(root)).toEqual({
+      version: 1,
+      defaultProfile: null,
+      profiles: [{ name: 'default', label: null, username: null, network: null, accountHex: null, createdAt: 1000 }],
+    });
+    expect(readdirSync(profileDir(root, DEFAULT_PROFILE))).toEqual([]);
+    expect(JSON.parse(readFileSync(join(root, 'identity.json'), 'utf8'))).toEqual(IDENTITY);
   });
 
-  it('is idempotent: a second run changes nothing', () => {
-    const files = writeOldLayout();
+  it('is idempotent: a second start changes nothing', () => {
     ensureLayout(root, 1000);
     const before = readFileSync(join(root, 'profiles.json'), 'utf8');
     expect(ensureLayout(root, 2000)).toEqual({ kind: 'ready' });
     expect(readFileSync(join(root, 'profiles.json'), 'utf8')).toBe(before);
-    expect(tree(profileDir(root, DEFAULT_PROFILE))).toEqual(files);
     expect(readdirSync(join(root, 'profiles'))).toEqual(['default']);
   });
 
-  it('does not move a file that shows up in the root after the migration', () => {
-    writeOldLayout();
-    ensureLayout(root);
-    // An old test helper writing identity.json into the root must not replace the profile's keys.
-    writeFileSync(join(root, 'identity.json'), '{"other":true}');
-    ensureLayout(root);
-    expect(JSON.parse(readFileSync(join(profileDir(root, DEFAULT_PROFILE), 'identity.json'), 'utf8'))).toEqual(IDENTITY);
-  });
-
-  it('starts over from the root after a crash before the commit', () => {
-    const files = writeOldLayout();
-    // A crash left a half copy and a renamed copy, but no profiles.json: the root is still the truth.
-    mkdirSync(join(root, 'profiles', '.migrating'), { recursive: true });
-    writeFileSync(join(root, 'profiles', '.migrating', 'identity.json'), 'half');
-    mkdirSync(profileDir(root, DEFAULT_PROFILE));
-    writeFileSync(join(profileDir(root, DEFAULT_PROFILE), 'identity.json'), 'stale');
-    expect(ensureLayout(root).kind).toBe('migrated');
-    expect(tree(profileDir(root, DEFAULT_PROFILE))).toEqual(files);
-    expect(existsSync(join(root, 'profiles', '.migrating'))).toBe(false);
-  });
-
-  it('finishes the removal of the old files after a crash past the commit', () => {
-    const files = writeOldLayout();
-    ensureLayout(root, 1000);
-    // As if the process died right after writing profiles.json: the old files are still there.
-    writeFileSync(join(root, 'identity.json'), files['identity.json'] ?? '');
-    const saved = readProfiles(root);
-    if (!saved?.migration) throw new Error('no migration record');
-    writeProfiles(root, { ...saved, migration: { ...saved.migration, cleaned: false } });
+  it('opens a profiles.json the M18 migration wrote (the owner\'s data) and keeps its profiles', () => {
+    mkdirSync(profileDir(root, DEFAULT_PROFILE), { recursive: true });
+    writeFileSync(join(profileDir(root, DEFAULT_PROFILE), 'identity.json'), JSON.stringify(IDENTITY));
+    const migrated = { version: 1, profiles: [{ name: 'default', label: null, username: 'alice.42', network: 'devnet', accountHex: IDENTITY.accountHex, createdAt: 5 }], defaultProfile: null, migration: { at: 5, entries: ['identity.json'], cleaned: true } };
+    writeFileSync(join(root, 'profiles.json'), JSON.stringify(migrated));
     expect(ensureLayout(root).kind).toBe('ready');
-    expect(existsSync(join(root, 'identity.json'))).toBe(false);
-    expect(readProfiles(root)?.migration?.cleaned).toBe(true);
-    expect(tree(profileDir(root, DEFAULT_PROFILE))).toEqual(files);
-  });
-
-  it('gives an empty root one empty default profile (sign-up follows)', () => {
-    expect(ensureLayout(root).kind).toBe('created');
-    expect(readProfiles(root)?.profiles.map(entry => entry.name)).toEqual(['default']);
-    expect(readdirSync(profileDir(root, DEFAULT_PROFILE))).toEqual([]);
+    expect(readProfiles(root)?.profiles).toEqual(migrated.profiles);
+    expect(JSON.parse(readFileSync(join(profileDir(root, DEFAULT_PROFILE), 'identity.json'), 'utf8'))).toEqual(IDENTITY);
   });
 
   it('lists the profile folders again when profiles.json was lost, instead of starting over', () => {

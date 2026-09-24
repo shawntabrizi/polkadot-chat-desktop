@@ -22,6 +22,7 @@ const api: DesktopApi = {
     secretsForRenderer: () => ipcRenderer.invoke(IPC.identitySecretsForRenderer),
     reset: () => ipcRenderer.invoke(IPC.identityReset),
     resetUndo: () => ipcRenderer.invoke(IPC.identityResetUndo),
+    recoveryPhrase: confirm => ipcRenderer.invoke(IPC.identityRecoveryPhrase, confirm),
     onProgress: listener => {
       const handler = (_event: IpcRendererEvent, line: string) => listener(line);
       ipcRenderer.on(IPC.identityProgress, handler);
@@ -114,6 +115,7 @@ const api: DesktopApi = {
     remove: name => ipcRenderer.invoke(IPC.profilesRemove, name),
     setDefault: name => ipcRenderer.invoke(IPC.profilesSetDefault, name),
     openPicker: () => ipcRenderer.invoke(IPC.profilesOpenPicker),
+    restore: (phrase, network) => ipcRenderer.invoke(IPC.profilesRestore, phrase, network),
   },
 };
 

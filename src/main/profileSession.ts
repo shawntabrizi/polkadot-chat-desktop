@@ -15,10 +15,16 @@ import { join } from 'node:path';
 import { type BrowserWindow, app, ipcMain } from 'electron';
 
 import { IPC, type ProfilesState } from '../shared/desktop-api';
+import { isNetworkProfileId } from '../shared/network';
+
+import { withPeopleDirectory } from './identity/directory';
+import { recoverIdentity } from './identity/recovery';
+import { saveIdentityAt } from './identity/store';
 
 import {
   type LaunchChoice,
   PICKER_DIR,
+  addRestoredProfile,
   clearRunning,
   ensureLayout,
   ensureProfile,
@@ -45,7 +51,7 @@ let session: Session | null = null;
 export type ProfileStart = { kind: 'profile'; name: string } | { kind: 'picker' } | { kind: 'exit'; code: number };
 
 /**
- * Runs before `ready`: the layout (with the one-time migration), the choice
+ * Runs before `ready`: the layout (a fresh root gets one empty profile), the choice
  * of profile, userData, the lock and the running mark. `exit` means this
  * process must end now (a bad name, or the profile or its identity is open
  * in another process, which was asked to come to the front).
@@ -54,8 +60,7 @@ export const startProfile = (): ProfileStart => {
   const root = app.getPath('userData');
   let choice: LaunchChoice;
   try {
-    const layout = ensureLayout(root);
-    if (layout.kind === 'migrated') console.log(`PROFILE_MIGRATED ${layout.entries.length} entries to profiles/default`);
+    ensureLayout(root);
     const file = readProfiles(root);
     if (!file) throw new Error('profiles.json is missing after the layout step.');
     choice = resolveLaunch(process.argv, process.env, file);
@@ -207,6 +212,18 @@ export const registerProfilesIpc = (getWindow: () => BrowserWindow | null): void
   ipcMain.handle(IPC.profilesSetDefault, (_event, value: unknown): ProfilesState => {
     setDefaultProfile(session?.root ?? '', value === null ? null : known(value));
     return state();
+  });
+  // M19: the phrase stays in this handler; errors name the problem, never the words.
+  ipcMain.handle(IPC.profilesRestore, async (_event, phrase: unknown, network: unknown): Promise<string> => {
+    if (!session) throw new Error('No profile session.');
+    if (typeof phrase !== 'string' || !isNetworkProfileId(network)) throw new Error('A recovery phrase and a network are needed.');
+    const { root } = session;
+    const identity = await recoverIdentity({
+      phrase,
+      network,
+      usernameOf: accountHex => withPeopleDirectory(network, directory => directory.consumerOf(accountHex)).then(consumer => consumer?.username ?? null),
+    });
+    return addRestoredProfile(root, identity.accountHex, dir => saveIdentityAt(join(dir, 'identity.json'), identity));
   });
   ipcMain.handle(IPC.profilesOpenPicker, (): void => {
     const env = { ...process.env };

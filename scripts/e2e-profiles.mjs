@@ -13,7 +13,13 @@
 //    at once with PROFILE_ALREADY_OPEN while a runs (LOCK_OK).
 // 3. b finds a by global search and sends a chat request with a message; a
 //    receives it (REQUEST_OK), accepts, b sends a second message, a receives
-//    it: PROFILES_OK.
+//    it (MESSAGES_OK).
+// 4. M19 recovery phrase: a shows its phrase in Settings › Security after
+//    typing "reveal" (12 words; another word is refused: REVEAL_OK). a quits,
+//    b removes profile a, and a picker process restores a's phrase into a
+//    new profile, which opens as a's account and username (RESTORE_OK):
+//    PROFILES_OK. The phrase stays in this process's memory; it is never
+//    printed.
 // Exit 0 PROFILES_OK; 1 PROFILES_FAIL <why>. Prints no secret.
 
 import { spawn } from 'node:child_process';
@@ -153,7 +159,42 @@ try {
   await click(b2, '[aria-label=Send]');
   log('b sent', q(second));
   if (!(await a2.waitFor(`[...document.querySelectorAll('[data-testid=messages]')].some(m => m.textContent.includes(${q(second)}))`, 180_000))) fail('a did not receive b’s message');
-  console.log(`PROFILES_OK a=${usernames.a} received 2 messages from b=${usernames.b} in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  console.log(`MESSAGES_OK a=${usernames.a} received 2 messages from b=${usernames.b}`);
+
+  // ── 4. M19: show the recovery phrase, then restore it into a new profile ──
+  const aIdentity = await a2.evaluate('window.desktop.identity.get()');
+  await click(a2, '[aria-label=Settings]');
+  if (!(await a2.waitFor(exists('[data-testid=recovery-show]'), 15_000))) fail('Settings has no "Show recovery phrase"');
+  await click(a2, '[data-testid=recovery-show]');
+  if (!(await a2.waitFor(exists('#recovery-confirm-word'), 5_000))) fail('no field for the word reveal');
+  if (!(await a2.evaluate(`document.querySelector('[data-testid=recovery-reveal]').disabled`))) fail('Reveal is enabled before the word is typed');
+  await type(a2, '#recovery-confirm-word', 'reveal');
+  await a2.waitFor(`!document.querySelector('[data-testid=recovery-reveal]').disabled`, 5_000);
+  await click(a2, '[data-testid=recovery-reveal]');
+  if (!(await a2.waitFor(`document.querySelectorAll('[data-testid=recovery-words] li').length === 12`, 10_000))) fail('the panel does not show 12 words');
+  if (!(await a2.evaluate(`window.desktop.identity.recoveryPhrase('show').then(() => false, () => true)`))) fail('main gave the phrase without the word reveal');
+  const phrase = await a2.evaluate(`window.desktop.identity.recoveryPhrase('reveal')`);
+  const shownMatches = await a2.evaluate(`[...document.querySelectorAll('[data-testid=recovery-words] li span:last-child')].map(e => e.textContent).join(' ') === ${q(phrase)}`);
+  if (!shownMatches || typeof phrase !== 'string' || phrase.split(' ').length !== 12) fail('the words on screen are not the stored phrase');
+  console.log('REVEAL_OK 12 words shown after typing reveal; another word was refused');
+
+  await apps.a.quit();
+  delete apps.a;
+  await b2.evaluate(`window.desktop.profiles.remove('a').then(() => true)`);
+  const picker = (apps.picker = await launch(userData, { args: ['--picker'] }));
+  if (!(await picker.waitFor(exists('[data-testid=profile-restore-open]'), 30_000))) fail('the picker has no "Add profile from a recovery phrase"');
+  const restored = await picker.evaluate(`window.desktop.profiles.restore(${q(phrase)}, ${q(NETWORK)})`);
+  const again = await picker.evaluate(`window.desktop.profiles.restore(${q(phrase)}, ${q(NETWORK)}).then(() => 'accepted', e => e.message.includes('already in the profile') ? 'refused' : e.message)`);
+  if (again !== 'refused') fail(`a second restore of the same phrase: ${again}`);
+  await apps.picker.quit();
+  delete apps.picker;
+  const back = await open(restored);
+  if (!(await back.waitFor(exists('[data-testid=username]'), 90_000))) fail(`the restored profile ${restored} did not open its chats`);
+  const backIdentity = await back.evaluate('window.desktop.identity.get()');
+  if (backIdentity?.accountHex !== aIdentity?.accountHex) fail(`the restored profile is account ${backIdentity?.accountHex}, not a's ${aIdentity?.accountHex}`);
+  if (backIdentity?.username !== usernames.a) fail(`the restored profile is named ${backIdentity?.username}, not ${usernames.a}`);
+  console.log(`RESTORE_OK profile ${restored} = ${backIdentity.username} ${backIdentity.accountHex} (same account as the removed profile a); a second restore was refused`);
+  console.log(`PROFILES_OK in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   code = 0;
 } catch (error) {
   console.log(`PROFILES_FAIL ${error instanceof Error ? error.message : String(error)}`);

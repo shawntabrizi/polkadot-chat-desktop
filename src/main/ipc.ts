@@ -48,6 +48,7 @@ import { type BulletinChain, type BulletinService, bulletinSigner, createBulleti
 import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
+import { revealRecoveryPhrase } from './identity/recovery';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
 import { createDemoManifestSource } from './demoManifest';
@@ -331,6 +332,9 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
       profileIdentityChanged();
     }, RESET_GRACE_MS);
   });
+
+  // M19: the one channel that hands the mnemonic to the page, behind the typed word.
+  ipcMain.handle(IPC.identityRecoveryPhrase, (_event, confirm: unknown): string => revealRecoveryPhrase(confirm, loadIdentity()));
 
   ipcMain.handle(IPC.identityResetUndo, (): boolean => {
     if (!resetTimer) return false;

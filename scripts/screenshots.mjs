@@ -38,6 +38,9 @@
 //   signup          the sign-up screen of a fresh profile, a username typed
 //   profile-picker  (profiles) M18 picker: three profiles, one running elsewhere
 //   settings-profiles Settings › Profiles with two fixture profiles added
+//   settings-security M19 Settings › Security, the word typed, before Reveal
+//                     (the 12 words themselves are never captured)
+//   profile-restore   (profiles) M19 picker with "Add profile from a recovery phrase" open, empty
 //   chats           the list at rest with a "Draft:" left in the Assistant
 //   room            the Staking Helper bot's room (fixture): an echo with a
 //                   👍, the room muted (the list shows the icon)
@@ -180,11 +183,11 @@ const WORKER_SHOTS = {
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
-    'settings-profiles',
+    'settings-profiles', 'settings-security',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
-  profiles: ['profile-picker'],
+  profiles: ['profile-picker', 'profile-restore'],
 };
 const ALL_SHOTS = Object.values(WORKER_SHOTS).flat();
 
@@ -430,10 +433,11 @@ app.whenReady().then(() => {
  */
 const seededProfile = async source => {
   const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-'));
-  await seedIdentityFile(profile, source, join(profile, 'identity.json'));
+  // M19: the files go in the default profile's folder (the app no longer moves them from the root).
+  await seedIdentityFile(profile, source, join(profileFolder(profile), 'identity.json'));
   // The Assistant's engine, as Settings would write it (tools off).
   writeFileSync(
-    join(profile, 'assistant.json'),
+    join(profileFolder(profile), 'assistant.json'),
     `${JSON.stringify({ version: 1, model: 'auto/deepseek-v4.1-flash', baseUrl: 'https://llm.substrate.dev', keyEncrypted: null, engine, tools: [] }, null, 2)}\n`,
     { mode: 0o600 },
   );
@@ -1095,6 +1099,16 @@ const mainWorker = async () => {
       await app.click('[aria-label=Settings]');
       if (!(await app.waitFor(`document.querySelectorAll('[data-testid=settings-profile-row]').length === 3`, 20_000))) throw new Error('Settings › Profiles does not list 3 profiles');
       await app.evaluate(`document.querySelector('[data-testid=settings-profiles]').closest('section').scrollIntoView({ block: 'start' }); true`);
+    });
+    // Stops before Reveal: a screenshot must never hold the recovery phrase.
+    await app.shot('settings-security', async () => {
+      if (!(await app.evaluate(app.exists('[data-testid=recovery-show]')))) await app.click('[aria-label=Settings]');
+      if (!(await app.waitFor(app.exists('[data-testid=recovery-show]'), 20_000))) throw new Error('no Show recovery phrase');
+      await app.click('[data-testid=recovery-show]');
+      if (!(await app.waitFor(app.exists('#recovery-confirm-word'), 5_000))) throw new Error('no field for the word reveal');
+      await app.type('#recovery-confirm-word', 'reveal');
+      await app.evaluate(`document.querySelector('[data-testid=recovery-confirm]').closest('section').scrollIntoView({ block: 'start' }); true`);
+      if (await app.evaluate(app.exists('[data-testid=recovery-words]'))) throw new Error('the phrase is on screen');
     });
   } catch (error) {
     missing.push(`main worker: ${error.message}`);
@@ -2303,13 +2317,16 @@ const profilesWorker = async () => {
     addFixtureProfiles(profile, {
       version: 1,
       defaultProfile: null,
-      migration: null,
       profiles: [{ name: 'default', label: null, username: 'alice.42', network: 'devnet', accountHex: `0x${'a1'.repeat(32)}`, createdAt: 1 }],
     });
     app = await launch(profile, await portFor(4), log);
     await app.shot('profile-picker', async () => {
       if (!(await app.waitFor(`document.querySelectorAll('[data-testid=profile-row]').length === 3`, 30_000))) throw new Error('the picker does not list 3 profiles');
       if (!(await app.waitFor(app.exists('[data-testid=profile-row][data-running]'), 10_000))) throw new Error('no running mark in the picker');
+    });
+    await app.shot('profile-restore', async () => {
+      await app.click('[data-testid=profile-restore-open]');
+      if (!(await app.waitFor(app.exists('[data-testid=profile-restore-form]'), 5_000))) throw new Error('no restore form');
     });
   } catch (error) {
     miss('profile-picker', error.message);

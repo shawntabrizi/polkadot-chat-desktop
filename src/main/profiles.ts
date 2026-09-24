@@ -9,25 +9,11 @@
  * per profile without further change (Element Desktop's `--profile` works the
  * same way: one userData folder per profile).
  *
- * Plain Node (no Electron import), so the migration and the launch rules run
+ * Plain Node (no Electron import), so the layout and the launch rules run
  * in a spec against temp folders.
  */
 
-import { createHash } from 'node:crypto';
-import {
-  type Dirent,
-  cpSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  readlinkSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { type Dirent, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { type NetworkProfileId, isNetworkProfileId } from '../shared/network';
@@ -50,8 +36,6 @@ export type ProfilesFile = {
   profiles: ProfileEntry[];
   /** The profile a launch without `--profile` opens when several exist; null shows the picker. */
   defaultProfile: string | null;
-  /** Set once the old single-profile layout moved to `profiles/default/`. */
-  migration: { at: number; entries: string[]; cleaned: boolean } | null;
 };
 
 export const PROFILES_FILE = 'profiles.json';
@@ -59,16 +43,10 @@ export const PROFILES_DIR = 'profiles';
 /** The picker's own Chromium folder: it holds no identity and no chats. */
 export const PICKER_DIR = '.picker';
 const LOCK_DIR = '.profiles.lock';
-const STAGING = '.migrating';
 const TRASH = '.trash-';
 export const DEFAULT_PROFILE = 'default';
 /** Written by a running profile's process; removed when it quits. */
 const RUNNING_FILE = 'running.json';
-
-/** Root entries that are the profiles layout itself, never old profile data. */
-const RESERVED = new Set([PROFILES_DIR, PROFILES_FILE, PICKER_DIR, LOCK_DIR, '.DS_Store']);
-/** Chromium's single-instance lock links: meaningful only to the process that made them, never copied. */
-const CHROMIUM_LOCKS = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie']);
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const isProfileName = (value: unknown): value is string => typeof value === 'string' && NAME.test(value);
@@ -97,16 +75,12 @@ export const readProfiles = (root: string): ProfilesFile | null => {
   const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<ProfilesFile> | null;
   if (raw?.version !== 1 || !Array.isArray(raw.profiles)) throw new Error('profiles.json is not a version 1 profiles file');
   const profiles = raw.profiles.map(parseEntry).filter((entry): entry is ProfileEntry => entry !== null);
-  const migration = raw.migration && Array.isArray(raw.migration.entries) ? { at: Number(raw.migration.at) || 0, entries: raw.migration.entries.filter(isRootEntry), cleaned: raw.migration.cleaned === true } : null;
   return {
     version: 1,
     profiles,
     defaultProfile: profiles.some(entry => entry.name === raw.defaultProfile) ? (raw.defaultProfile as string) : null,
-    migration,
   };
 };
-
-const isRootEntry = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !value.includes('/') && value !== '..' && value !== '.' && !RESERVED.has(value);
 
 /** Write then rename: a half-written list must never replace the only record of the profiles. */
 export const writeProfiles = (root: string, file: ProfilesFile): void => {
@@ -164,97 +138,31 @@ export const updateProfiles = (root: string, change: (file: ProfilesFile) => Pro
     return next;
   });
 
-// ── Migration ────────────────────────────────────────────────────────────
+// ── Layout ───────────────────────────────────────────────────────────────
 
-const sha256 = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
-
-/** Throws unless `copy` holds every file, link and folder of `source` with the same bytes. */
-export const verifyCopy = (source: string, copy: string): void => {
-  const walk = (a: string, b: string): void => {
-    const info = lstatSync(a);
-    const other = lstatSync(b);
-    if (info.isSymbolicLink()) {
-      if (!other.isSymbolicLink() || readlinkSync(a) !== readlinkSync(b)) throw new Error(`copy differs at ${b}`);
-      return;
-    }
-    if (info.isDirectory()) {
-      if (!other.isDirectory()) throw new Error(`copy differs at ${b}`);
-      for (const entry of readdirSync(a)) walk(join(a, entry), join(b, entry));
-      return;
-    }
-    if (!other.isFile() || other.size !== info.size || sha256(a) !== sha256(b)) throw new Error(`copy differs at ${b}`);
-  };
-  walk(source, copy);
-};
-
-export type LayoutResult =
-  | { kind: 'ready' }
-  | { kind: 'created' }
-  | { kind: 'migrated'; entries: string[] }
-  | { kind: 'recovered'; profiles: string[] };
+export type LayoutResult = { kind: 'ready' } | { kind: 'created' } | { kind: 'recovered'; profiles: string[] };
 
 const newEntry = (name: string, now: number): ProfileEntry => ({ name, label: null, username: null, network: null, accountHex: null, createdAt: now });
-
-const removeRootEntries = (root: string, entries: readonly string[]): void => {
-  for (const entry of entries) rmSync(join(root, entry), { recursive: true, force: true });
-};
 
 /**
  * Brings `<root>` to the profiles layout; safe to run on every start and
  * from two processes at once (it runs under the profiles lock).
  *
- * - profiles.json exists: the layout is in place. A migration whose old files
- *   were not all removed yet (a crash after the commit) finishes the removal.
- * - Old layout (anything in the root that is not the layout itself): copy it
- *   all to `profiles/.migrating`, verify every byte, rename the copy to
- *   `profiles/default` (atomic), then write profiles.json (the commit point,
- *   with the list of moved entries), then remove the originals. A crash before
- *   the commit leaves the root as it was, and the next start begins again.
- * - An empty root: one empty profile `default` (sign-up follows).
+ * - profiles.json exists: the layout is in place.
+ * - No profiles.json: a fresh install, one empty profile `default` (sign-up
+ *   follows). Files in the root are not read or moved: M19 removed the
+ *   one-time move of the pre-M18 layout (the owner's data is moved).
+ * - No profiles.json but profile folders exist (the list was lost): list
+ *   those folders again rather than start over, so no key is orphaned.
  */
 export const ensureLayout = (root: string, now: number = Date.now()): LayoutResult =>
   withProfilesLock(root, () => {
     const profilesDir = join(root, PROFILES_DIR);
-    const existing = readProfiles(root);
-    if (existing) {
-      if (existing.migration && !existing.migration.cleaned) {
-        removeRootEntries(root, existing.migration.entries);
-        writeProfiles(root, { ...existing, migration: { ...existing.migration, cleaned: true } });
-      }
+    if (readProfiles(root)) {
       sweepTrash(root);
       return { kind: 'ready' };
     }
-
     mkdirSync(profilesDir, { recursive: true, mode: 0o700 });
-    // No profiles.json: the root is the truth, so a copy left by an interrupted migration goes.
-    const staging = join(profilesDir, STAGING);
-    rmSync(staging, { recursive: true, force: true });
-    const legacy = readdirSync(root).filter(entry => !RESERVED.has(entry));
-
-    if (legacy.length > 0) {
-      rmSync(profileDir(root, DEFAULT_PROFILE), { recursive: true, force: true });
-      mkdirSync(staging, { mode: 0o700 });
-      const copied: string[] = [];
-      for (const entry of legacy) {
-        if (CHROMIUM_LOCKS.has(entry)) continue;
-        cpSync(join(root, entry), join(staging, entry), { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, errorOnExist: true, force: false });
-        copied.push(entry);
-      }
-      for (const entry of copied) verifyCopy(join(root, entry), join(staging, entry));
-      renameSync(staging, profileDir(root, DEFAULT_PROFILE));
-      writeProfiles(root, {
-        version: 1,
-        profiles: [{ ...newEntry(DEFAULT_PROFILE, now), ...identityDisplay(profileDir(root, DEFAULT_PROFILE)) }],
-        defaultProfile: null,
-        migration: { at: now, entries: legacy, cleaned: false },
-      });
-      removeRootEntries(root, legacy);
-      const written = readProfiles(root);
-      if (written?.migration) writeProfiles(root, { ...written, migration: { ...written.migration, cleaned: true } });
-      return { kind: 'migrated', entries: legacy };
-    }
-
-    // profiles.json was lost but profile folders exist: list them again rather than start over.
     const found = readdirSync(profilesDir, { withFileTypes: true })
       .filter((entry: Dirent) => entry.isDirectory() && isProfileName(entry.name))
       .map(entry => entry.name)
@@ -264,12 +172,11 @@ export const ensureLayout = (root: string, now: number = Date.now()): LayoutResu
         version: 1,
         profiles: found.map(name => ({ ...newEntry(name, now), ...identityDisplay(profileDir(root, name)) })),
         defaultProfile: null,
-        migration: null,
       });
       return { kind: 'recovered', profiles: found };
     }
     mkdirSync(profileDir(root, DEFAULT_PROFILE), { mode: 0o700 });
-    writeProfiles(root, { version: 1, profiles: [newEntry(DEFAULT_PROFILE, now)], defaultProfile: null, migration: null });
+    writeProfiles(root, { version: 1, profiles: [newEntry(DEFAULT_PROFILE, now)], defaultProfile: null });
     return { kind: 'created' };
   });
 
@@ -341,6 +248,37 @@ export const nextProfileName = (file: ProfilesFile): string => {
   const taken = new Set(file.profiles.map(entry => entry.name));
   for (let n = 2; ; n++) if (!taken.has(`profile-${n}`)) return `profile-${n}`;
 };
+
+/**
+ * M19 "Add profile from a recovery phrase": a new profile folder whose
+ * identity file `write` puts in place (sealed; see identity/store.ts). One
+ * identity lives in one profile, so a phrase some profile already holds is
+ * refused with that profile's name. A failed write leaves no folder behind.
+ */
+export const addRestoredProfile = (root: string, accountHex: string, write: (dir: string) => void, now: number = Date.now()): string =>
+  withProfilesLock(root, () => {
+    const file = readProfiles(root);
+    if (!file) throw new Error('There is no profiles.json.');
+    const holder = file.profiles.find(entry => (entry.accountHex ?? identityDisplay(profileDir(root, entry.name)).accountHex)?.toLowerCase() === accountHex.toLowerCase());
+    if (holder) throw new Error(`This identity is already in the profile ${holder.label ?? holder.username ?? holder.name}.`);
+    // A folder with no entry may hold keys of its own; never write into it.
+    const taken = [...file.profiles];
+    let name = nextProfileName(file);
+    while (existsSync(profileDir(root, name))) {
+      taken.push(newEntry(name, now));
+      name = nextProfileName({ ...file, profiles: taken });
+    }
+    const dir = profileDir(root, name);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      write(dir);
+    } catch (error) {
+      rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
+    writeProfiles(root, { ...file, profiles: [...file.profiles, { ...newEntry(name, now), ...identityDisplay(dir) }] });
+    return name;
+  });
 
 // ── Running marks ────────────────────────────────────────────────────────
 

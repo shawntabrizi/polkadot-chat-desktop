@@ -5,6 +5,40 @@ Electron shell around the `polkadot-chat-web` React client. It talks to Polkadot
 app users and bots over the People-chain Statement Store, with no chat server of
 its own. See `PLAN.md` for the scope and the milestones.
 
+## Try it (macOS, Apple Silicon)
+
+This is a test build (0.2.0-preview). It runs on a test network only.
+
+1. Download `Polkadot Chat-0.2.0-arm64.dmg` from the
+   [Releases page](https://github.com/shawntabrizi/polkadot-chat-desktop/releases).
+   Open it and drag Polkadot Chat to Applications.
+2. The app is not signed, so macOS refuses the first open. In Applications,
+   Control-click Polkadot Chat, choose Open, then choose Open again. Or run
+   this command once in Terminal:
+   `xattr -dr com.apple.quarantine "/Applications/Polkadot Chat.app"`
+3. Pick a username. The app makes a new identity on this Mac.
+
+Things to know:
+
+- **Devnet only.** Test funds have no value. "Get test funds" in the Pocket
+  panel opens the Faucet chat, which sends you some.
+- **Demo bots.** After sign-up, "Meet the demo bots" starts chats with six
+  bots: a pirate who jokes, a support guide with buttons, a paid assistant
+  (0.1 PAS per reply), a coin flip game, an echo bot and a colour bot.
+  Settings › Demo brings them back.
+- **Your recovery phrase is the only backup.** Open Settings › Security ›
+  Show recovery phrase and write the 12 words on paper. Without them, a lost
+  or deleted profile cannot come back. With them, "Add profile from a
+  recovery phrase" in the profile picker restores it. Anyone who has the
+  words has your identity.
+- **Where your data lives:** `~/Library/Application Support/Polkadot Chat`.
+  Each profile is a folder in `profiles/`. The keys are sealed with your
+  macOS keychain.
+- **Report a problem:** open an issue on the
+  [Issues page](https://github.com/shawntabrizi/polkadot-chat-desktop/issues).
+  Say what you did, what you expected and what happened. Add a screenshot
+  if you can, but never one of your recovery phrase.
+
 ## Install
 
 `npm install`. The `postinstall` script runs `node_modules/electron/install.js`

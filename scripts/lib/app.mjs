@@ -5,7 +5,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,11 +19,13 @@ export const build = () => {
 };
 
 /**
- * Writes `identity.json` into `profile` from a test identity file, the
+ * Writes `identity.json` into the default profile of the userData root
+ * `profile` (M19: `profiles/default`) from a test identity file, the
  * mnemonic encrypted with safeStorage by a tiny Electron script under the dev
  * app name (the keychain entry the app itself uses).
  */
-export const seedIdentity = (profile, identityFile) => {
+export const seedIdentity = (userDataRoot, identityFile) => {
+  const profile = profileFolder(userDataRoot);
   const seedScript = join(profile, 'seed.mjs');
   writeFileSync(
     seedScript,
@@ -49,8 +51,8 @@ app.whenReady().then(() => {
 };
 
 /** The Assistant's settings file as Settings writes it (no key stored; tools off). */
-export const writeAssistantSettings = (profile, { engine = 'proxy', baseUrl = 'https://llm.substrate.dev', model = 'auto/deepseek-v4.1-flash' } = {}) =>
-  writeFileSync(join(profile, 'assistant.json'), `${JSON.stringify({ version: 1, model, baseUrl, keyEncrypted: null, engine, tools: [] }, null, 2)}\n`, { mode: 0o600 });
+export const writeAssistantSettings = (userDataRoot, { engine = 'proxy', baseUrl = 'https://llm.substrate.dev', model = 'auto/deepseek-v4.1-flash' } = {}) =>
+  writeFileSync(join(profileFolder(userDataRoot), 'assistant.json'), `${JSON.stringify({ version: 1, model, baseUrl, keyEncrypted: null, engine, tools: [] }, null, 2)}\n`, { mode: 0o600 });
 
 /**
  * A debugging port no other process listens on. Other agents run their own
@@ -158,10 +160,14 @@ export const launch = async (profile, { env = {}, log = null, packaged = false, 
 };
 
 /**
- * M18: the folder of one profile under a userData root (`profiles/<name>`).
- * A root the app has not opened yet has no profiles.json: the app moves
- * files written straight into the root to `profiles/default` on its first
- * start, so seeding the root still works before the first launch.
+ * M18: the folder of one profile under a userData root (`profiles/<name>`),
+ * made if missing. M19 removed the move of files from the root: a test seeds
+ * the profile folder itself. Before the first launch (no profiles.json) the
+ * app lists the folders it finds under `profiles/`, so a seeded `default`
+ * opens with its files.
  */
-export const profileFolder = (userDataRoot, name = 'default') =>
-  existsSync(join(userDataRoot, 'profiles.json')) ? join(userDataRoot, 'profiles', name) : userDataRoot;
+export const profileFolder = (userDataRoot, name = 'default') => {
+  const dir = join(userDataRoot, 'profiles', name);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+};

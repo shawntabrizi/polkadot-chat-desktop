@@ -1,4 +1,4 @@
-import { Copy, Eye, EyeOff } from 'lucide-react';
+import { Copy, Eye, EyeOff, KeyRound } from 'lucide-react';
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from 'react';
 
 import {
@@ -122,6 +122,131 @@ const IdentitySection = ({ username, identity, profileId }: Pick<Props, 'usernam
           </Button>
         ) : null}
       </div>
+    </Section>
+  );
+};
+
+/** How long the 12 words stay on screen (M19). */
+const PHRASE_SHOWN_MS = 60_000;
+const REVEAL_WORD = 'reveal';
+
+type PhraseState = { kind: 'idle' } | { kind: 'confirm'; typed: string; error: string | null } | { kind: 'shown'; words: string[]; until: number };
+
+/**
+ * M19 Settings › Security: the recovery phrase, the only backup of this
+ * identity. An inline panel, no modal: the person types `reveal`, the words
+ * show for 60 s, then hide. They live in this component's state only; main
+ * hands them over only for the typed word.
+ */
+const SecuritySection = () => {
+  const [state, setState] = useState<PhraseState>({ kind: 'idle' });
+  const [now, setNow] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
+  const api = window.desktop?.identity;
+  const shownUntil = state.kind === 'shown' ? state.until : null;
+  useEffect(() => {
+    if (shownUntil === null) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    const hide = setTimeout(() => setState({ kind: 'idle' }), shownUntil - Date.now());
+    return () => {
+      clearInterval(tick);
+      clearTimeout(hide);
+    };
+  }, [shownUntil]);
+  if (!api) return null;
+
+  const reveal = (typed: string) => {
+    api.recoveryPhrase(typed).then(
+      phrase => {
+        setCopied(false);
+        setNow(Date.now());
+        setState({ kind: 'shown', words: phrase.split(' '), until: Date.now() + PHRASE_SHOWN_MS });
+      },
+      (cause: unknown) => setState({ kind: 'confirm', typed, error: plainError(cause, 'The phrase could not be read.') }),
+    );
+  };
+  const warning = (
+    <p className="text-body-m text-fg-warning" data-testid="recovery-warning">
+      Whoever holds these words holds this identity: the username, the chats and the funds. Never share them or type them into a website.
+    </p>
+  );
+  return (
+    <Section title="Security">
+      <p className="text-body-m text-fg-secondary">
+        The recovery phrase is 12 words. It is the only backup of this identity: write it down on paper to restore this profile on another computer.
+      </p>
+      {state.kind === 'idle' ? (
+        <Button variant="secondary" className="w-fit rounded-medium text-label-m" onClick={() => setState({ kind: 'confirm', typed: '', error: null })} data-testid="recovery-show">
+          <KeyRound aria-hidden />
+          Show recovery phrase
+        </Button>
+      ) : null}
+      {state.kind === 'confirm' ? (
+        <form
+          className="flex flex-col gap-3 rounded-nested bg-surface-nested p-3"
+          data-testid="recovery-confirm"
+          onSubmit={event => {
+            event.preventDefault();
+            if (state.typed.trim().toLowerCase() === REVEAL_WORD) reveal(state.typed);
+          }}
+        >
+          {warning}
+          <Field label={`Type ${REVEAL_WORD} to show the phrase`} htmlFor="recovery-confirm-word">
+            <Input
+              id="recovery-confirm-word"
+              value={state.typed}
+              onChange={event => setState({ kind: 'confirm', typed: event.target.value, error: null })}
+              autoComplete="off"
+              spellCheck={false}
+              autoFocus
+              className={`${inputClass} max-w-64`}
+            />
+          </Field>
+          {state.error ? (
+            <p role="alert" className="text-body-m text-fg-error">
+              {state.error}
+            </p>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <Button type="submit" className="w-fit rounded-medium text-label-m" disabled={state.typed.trim().toLowerCase() !== REVEAL_WORD} data-testid="recovery-reveal">
+              Reveal
+            </Button>
+            <Button type="button" variant="ghost" className="rounded-medium text-label-m font-normal" onClick={() => setState({ kind: 'idle' })}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : null}
+      {state.kind === 'shown' ? (
+        <div className="flex flex-col gap-3 rounded-nested bg-surface-nested p-3" data-testid="recovery-panel">
+          {warning}
+          <ol className="grid grid-cols-3 gap-x-4 gap-y-2" data-testid="recovery-words">
+            {state.words.map((word, index) => (
+              <li key={index} className="flex items-baseline gap-2">
+                <span className="w-5 text-right text-body-s text-fg-tertiary tabular-nums">{index + 1}</span>
+                <span className="text-body-m font-mono text-fg-primary">{word}</span>
+              </li>
+            ))}
+          </ol>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              className="w-fit rounded-medium text-label-m"
+              onClick={() => {
+                void navigator.clipboard.writeText(state.words.join(' ')).then(() => setCopied(true));
+              }}
+              data-testid="recovery-copy"
+            >
+              <Copy aria-hidden />
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+            <Button variant="ghost" className="rounded-medium text-label-m font-normal" onClick={() => setState({ kind: 'idle' })} data-testid="recovery-hide">
+              Hide
+            </Button>
+            <span className="text-body-s text-fg-tertiary tabular-nums">Hides in {Math.max(0, Math.ceil((state.until - now) / 1000))} s</span>
+          </div>
+        </div>
+      ) : null}
     </Section>
   );
 };
@@ -594,7 +719,7 @@ const DangerSection = ({ onReset }: Pick<Props, 'onReset'>) => {
   return (
     <Section title="Danger">
       <p className="text-body-m text-fg-secondary">
-        Delete this identity and its chats from this computer. There is no backup: the username cannot be used again.
+        Delete this identity and its chats from this computer. Without its recovery phrase (Security, above) the username cannot be used again.
       </p>
       <Button
         variant="destructive"
@@ -647,6 +772,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
           <ProfilesSettings api={window.desktop.profiles} />
         </Section>
       ) : null}
+      <SecuritySection />
       <AppearanceSection />
       <ChatSection />
       <PrivacySection />

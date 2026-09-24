@@ -5,15 +5,17 @@
  * start, rename or remove one.
  */
 
-import { AppWindow, Plus } from 'lucide-react';
+import { AppWindow, KeyRound, Plus } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
+import { DEFAULT_NETWORK_PROFILE, NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { UNDO_MS } from '../domain/chat/undo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Toaster } from '@/components/ui/sonner';
+import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 import type { DesktopProfilesApi, ProfileRow, ProfilesState } from '../../shared/desktop-api';
@@ -69,6 +71,90 @@ const NewWindowButton = ({ row, api }: { row: ProfileRow; api: DesktopProfilesAp
 );
 
 /**
+ * M19 "Add profile from a recovery phrase" (inline, under the picker's
+ * buttons): main derives the identity, reads its username on the chosen
+ * network, and creates the profile; then this window opens it. The phrase
+ * is held in this form only while it is open.
+ */
+const RestoreForm = ({ api, onDone }: { api: DesktopProfilesApi; onDone: () => void }) => {
+  const [phrase, setPhrase] = useState('');
+  const [network, setNetwork] = useState<NetworkProfileId>(DEFAULT_NETWORK_PROFILE);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const words = phrase.trim().split(/\s+/).filter(Boolean).length;
+  const restore = () => {
+    setBusy(true);
+    setError(null);
+    api
+      .restore(phrase, network)
+      .then(name => api.open(name))
+      .catch((cause: unknown) => {
+        setError(plainError(cause, 'The profile was not restored.'));
+        setBusy(false);
+      });
+  };
+  return (
+    <form
+      className="flex flex-col gap-3 rounded-nested bg-surface-nested p-4"
+      data-testid="profile-restore-form"
+      onSubmit={event => {
+        event.preventDefault();
+        restore();
+      }}
+    >
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="restore-phrase" className="text-label-m text-fg-secondary">
+          Recovery phrase
+        </label>
+        <Textarea
+          id="restore-phrase"
+          value={phrase}
+          onChange={event => setPhrase(event.target.value)}
+          placeholder="The 12 words, in order"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          autoFocus
+          disabled={busy}
+          className="min-h-24 rounded-nested font-mono text-body-m md:text-body-m"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="restore-network" className="text-label-m text-fg-secondary">
+          Network
+        </label>
+        <Select value={network} onValueChange={value => setNetwork(value as NetworkProfileId)} disabled={busy}>
+          <SelectTrigger id="restore-network" className="w-64 rounded-nested text-body-m">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Object.values(NETWORK_PROFILES).map(option => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {error ? (
+        <p role="alert" className="text-body-m text-fg-error">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Button type="submit" className="w-fit rounded-medium text-label-m" disabled={busy || words < 12} data-testid="profile-restore">
+          {busy ? 'Restoring…' : 'Restore profile'}
+        </Button>
+        <Button type="button" variant="ghost" className="rounded-medium text-label-m font-normal" disabled={busy} onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+};
+
+/**
  * The picker: one row per profile, "Open" here, "Open in new window", and
  * "Add profile" (a new empty profile opens here and shows sign-up). A profile
  * already open in another window shows "Show", which brings that window to
@@ -77,6 +163,7 @@ const NewWindowButton = ({ row, api }: { row: ProfileRow; api: DesktopProfilesAp
 export const ProfilePicker = ({ api }: { api: DesktopProfilesApi }) => {
   const { state, error } = useProfiles(api);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const act = (run: () => Promise<void>, what: string) => {
     setBusy(true);
     run().catch((cause: unknown) => {
@@ -129,6 +216,14 @@ export const ProfilePicker = ({ api }: { api: DesktopProfilesApi }) => {
             <Plus aria-hidden />
             Add profile
           </Button>
+          {restoring ? (
+            <RestoreForm api={api} onDone={() => setRestoring(false)} />
+          ) : (
+            <Button variant="ghost" className="h-auto w-full rounded-full px-9 py-3.5 text-body-m font-normal" disabled={busy} data-testid="profile-restore-open" onClick={() => setRestoring(true)}>
+              <KeyRound aria-hidden />
+              Add profile from a recovery phrase
+            </Button>
+          )}
         </section>
       </main>
       <Toaster position="bottom-right" />
@@ -195,8 +290,8 @@ const SettingsRow = ({ row, api, onState, onRemove }: { row: ProfileRow; api: De
       {mode.kind === 'remove' ? (
         <div className="ms-11 flex flex-col gap-3 rounded-nested bg-surface-nested px-4 py-3" data-testid="profile-remove-confirm">
           <p className="text-body-m text-fg-secondary">
-            Removing deletes this profile’s keys and chats from this computer. The keys are its only backup: this app has no recovery phrase to write down
-            yet, so {row.username ?? 'this identity'} cannot be used again once it is gone.
+            Removing deletes this profile’s keys and chats from this computer. Write down its recovery phrase first (Settings › Security in that
+            profile): without it, {row.username ?? 'this identity'} cannot be used again.
           </p>
           <div className="flex items-center gap-2">
             <Button

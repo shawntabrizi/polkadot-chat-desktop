@@ -14,6 +14,7 @@ export const IPC = {
   identityProgress: 'identity:progress',
   identityReset: 'identity:reset',
   identityResetUndo: 'identity:resetUndo',
+  identityRecoveryPhrase: 'identity:recoveryPhrase',
   chainMetadataGet: 'chain:metadataGet',
   chainMetadataSet: 'chain:metadataSet',
   assistantGetSettings: 'assistant:getSettings',
@@ -69,6 +70,7 @@ export const IPC = {
   profilesRemove: 'profiles:remove',
   profilesSetDefault: 'profiles:setDefault',
   profilesOpenPicker: 'profiles:openPicker',
+  profilesRestore: 'profiles:restore',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -131,6 +133,12 @@ export type DesktopIdentityApi = {
   reset: () => Promise<void>;
   /** Puts back the identity a `reset` removed. `false` when the grace period is over. */
   resetUndo: () => Promise<boolean>;
+  /**
+   * M19 "Show recovery phrase": the 12 words, only when `confirm` is the
+   * word `reveal` the person typed. The page shows them for 60 s and keeps
+   * them nowhere else.
+   */
+  recoveryPhrase: (confirm: string) => Promise<string>;
   /** Progress lines of a running `create`. Returns the unsubscribe function. */
   onProgress: (listener: (line: string) => void) => () => void;
 };
@@ -509,6 +517,12 @@ export type DesktopProfilesApi = {
   setDefault: (name: string | null) => Promise<ProfilesState>;
   /** The picker in a new window. */
   openPicker: () => Promise<void>;
+  /**
+   * M19: a new profile from a recovery phrase (the identity derived again,
+   * its username read from the People chain of `network`). Resolves with the
+   * new profile's name; refused when a profile already holds the identity.
+   */
+  restore: (phrase: string, network: NetworkProfileId) => Promise<string>;
 };
 
 export type DesktopApi = {

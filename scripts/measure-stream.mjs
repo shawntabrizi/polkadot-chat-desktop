@@ -20,7 +20,7 @@
 // owner's profiles are never touched. Prints no secret.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -126,7 +126,10 @@ if (!process.argv.includes('--no-build')) {
   log('built');
 }
 
-const profile = mkdtempSync(join(tmpdir(), 'pcd-measure-'));
+const userDataRoot = mkdtempSync(join(tmpdir(), 'pcd-measure-'));
+// M19: seed the default profile's folder; the app lists it at its first start.
+const profile = join(userDataRoot, 'profiles', 'default');
+mkdirSync(profile, { recursive: true, mode: 0o700 });
 const headlessEnv = { PCD_HEADLESS: '1' };
 // As scripts/screenshots.mjs seeds its identity: encrypted as the app's store does.
 const seedScript = join(profile, 'seed.mjs');
@@ -165,7 +168,7 @@ log('seeded', JSON.parse(readFileSync(identitySource, 'utf8')).username);
 
 // ── The app over CDP ─────────────────────────────────────────────────────
 
-const env = { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: profile, LLM_PROXY_KEY: 'local-fake-proxy' };
+const env = { ...process.env, ...headlessEnv, PCD_USER_DATA_DIR: userDataRoot, LLM_PROXY_KEY: 'local-fake-proxy' };
 // A free port: a fixed one (9337) once drove another agent's app.
 const PORT = await debugPort();
 const child = spawn(electronBin, ['.', `--remote-debugging-port=${PORT}`], { cwd: root, env, stdio: ['ignore', 'ignore', 'ignore'] });
@@ -308,6 +311,6 @@ try {
   child.kill('SIGTERM');
   await new Promise(done => child.once('exit', done));
   server.close();
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(userDataRoot, { recursive: true, force: true });
 }
 process.exit(exitCode);

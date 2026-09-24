@@ -232,3 +232,9 @@ Write the question, what you did meanwhile, and the date.
 - **"Default at launch"** is read as "Ask which profile" (the start value) or one profile to open without asking. Is that the intended meaning, or should the default only preselect a row in the picker?
 - **Invite links with several processes.** macOS hands a `polkadot-chat://` link (M16b) to one running process of the app, whichever LaunchServices picks; it is not routed to a chosen profile. Should the picker (or each window) ask which profile joins?
 - **Dock tiles.** Each profile's process is started from the binary, so each should have its own Dock tile and badge. Not checked by eye: every run here was headless (no dock icon). Please check with two windows open.
+
+## M19 (2026-09-24)
+
+- **The GitHub repo name in the README.** The install steps link to `github.com/shawntabrizi/polkadot-chat-desktop` Releases and Issues (the `origin` remote). If the public repo moves (for example to an organisation), the two links change.
+- **Restore on Paseo.** Only devnet was restored in e2e. A Paseo phrase goes the same path (the People chain of the chosen network); not run.
+- **Clipboard after Copy.** The copied phrase stays on the clipboard until something else is copied. Should Copy be removed, or should the app clear the clipboard at the 60 s hide when it still holds the phrase (Electron's main can read the clipboard)?

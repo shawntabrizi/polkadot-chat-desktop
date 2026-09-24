@@ -3999,3 +3999,106 @@ Checked by eye: the picker lists alice.42 (Devnet), Work (alicework.07 · Paseo 
 
 - The Undo-then-delete path of Settings › Profiles › Remove… was not pressed in the app; its rules (running and last profile refused, folder deleted, default cleared) are in `profiles.spec.ts`.
 - Dock tiles and badges per process: every run was headless (no dock icon). See docs/questions.md.
+
+## M19 — First shareable release, v0.2.0-preview (2026-09-24)
+
+Worktree `pcd-m19` on branch `m19`. Every app launch was headless with a throwaway `PCD_USER_DATA_DIR`.
+
+### npm run check
+
+```
+ Test Files  97 passed (97)
+      Tests  851 passed (851)
+
+> polkadot-chat-desktop@0.2.0 check:tokens
+> node scripts/check-tokens.mjs
+
+check:tokens: clean (197 files)
+```
+
+(tsc and eslint ran first in the same command with no output.)
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<temp> npm run smoke
+
+```
+✓ built in 204ms
+SMOKE_OK
+```
+
+The temp root then held `profiles`, `profiles.json`; `profiles/` held `default`.
+
+### npm run package && npm run smoke:packaged
+
+```
+  • skipped macOS code signing  reason=identity explicitly is set to null
+  • building        target=DMG arch=arm64 file=dist/Polkadot Chat-0.2.0-arm64.dmg
+  • building block map  blockMapFile=dist/Polkadot Chat-0.2.0-arm64.dmg.blockmap
+
+> polkadot-chat-desktop@0.2.0 smoke:packaged
+> bash scripts/smoke-packaged.sh
+
+profile /var/folders/_1/q03733qd0pv42n1dvkcvyx0c0000gn/T/pcd-smoke.F1KCrY4xi3
+SMOKE_OK
+FRESH_OK root holds profiles profiles.json window.json 
+AGENT_SELFTEST_OK bot-core started from /Users/shawntabrizi/Documents/GitHub/pcd-m19/dist/mac-arm64/Polkadot Chat.app/Contents/Resources/app.asar/node_modules/polkadot-chat-agents/index.mjs
+```
+
+### npm run e2e:profiles (devnet)
+
+```
+0.6s built
+1.6s both profiles show sign-up
+18.3s signed up b: pcdprofbhkqc.43 confirmed=true
+90.3s signed up a: pcdprofahkqc.44 confirmed=true
+PROFILES_CREATED a=pcdprofahkqc.44 b=pcdprofbhkqc.43 profiles=default,a,b
+IDENTITY_OK a=pcdprofahkqc.44 b=pcdprofbhkqc.43
+RUNNING_OK a sees a:running default:closed b:running
+LOCK_OK second start of a exited code=0 (PROFILE_ALREADY_OPEN)
+111.5s search attempt 1: "No results for “pcdprofahkqc”"
+112.8s b sent a request to pcdprofahkqc.44
+REQUEST_OK a received "Hello from profile b (aqqbyg)" from pcdprofbhkqc.43
+115.1s b sent "Second message from b (aqqbyg)"
+MESSAGES_OK a=pcdprofahkqc.44 received 2 messages from b=pcdprofbhkqc.43
+REVEAL_OK 12 words shown after typing reveal; another word was refused
+RESTORE_OK profile profile-2 = pcdprofahkqc.44 0xe8ab8b775e05036332194910713d758abc0ea9aea8bc42b77efb48f05ff57553 (same account as the removed profile a); a second restore was refused
+PROFILES_OK in 135 s
+```
+
+### Release script (scripts/lib/release.spec.mjs, part of npm run check)
+
+```
+ ✓ scripts/release.sh > refuses a dirty tree before building anything
+ ✓ scripts/release.sh > refuses a tag that does not name the package version
+ ✓ scripts/release.sh > checks, packages and smokes, then prints the gh command without running it
+```
+
+### bash scripts/release.sh v0.2.0-preview (on the clean tree after the commit)
+
+```
+      Tests  851 passed (851)
+SMOKE_OK
+FRESH_OK root holds profiles profiles.json window.json 
+AGENT_SELFTEST_OK bot-core started from /Users/shawntabrizi/Documents/GitHub/pcd-m19/dist/mac-arm64/Polkadot Chat.app/Contents/Resources/app.asar/node_modules/polkadot-chat-agents/index.mjs
+RELEASE_READY v0.2.0-preview 17c218bc65d237b59e4f9fc2150aaab457c4a1cf55c4e09c3fba5a598d9910bf notes=dist/release-notes-v0.2.0-preview.md
+Run this after the repo is public:
+gh release create v0.2.0-preview --prerelease --title Polkadot\ Chat\ v0.2.0-preview --notes-file dist/release-notes-v0.2.0-preview.md dist/Polkadot\ Chat-0.2.0-arm64.dmg
+```
+
+### Screenshots (npm run screenshots -- --only settings-security,profile-restore)
+
+```
+2.8s [profiles] saved profile-restore
+13.2s [main] saved settings-security
+SCREENSHOTS_OK in 13.3 s
+```
+
+Checked by eye: Security shows the warning line, the field with "reveal" typed and Reveal enabled, no words; the picker shows the restore form (phrase, Devnet, "Restore profile" disabled while empty) under "Add profile".
+
+### git status --short
+
+Empty before the commit except the M19 files listed in the commit.
+
+### Not run
+
+- `gh release create`: not run, by instruction.
+- The picker's restore form was not typed into in e2e (the IPC was called directly); a restore on Paseo was not run.
