@@ -72,6 +72,9 @@
 //   send-pas room-request room-request-paid   M12g payments (fixture; paid
 //                   is checked on the chain from .agent-runs/pay-last.json)
 //   demo-onboarding settings-demo   M12i demo bots (fixture requests)
+//   room-group2     M16 a private group (spec 0011, fixture): epoch 2 and
+//                   "one statement per message" in the header, the removal notice
+//   group2-members  M16 its members panel: owner/admin/member, Remove hovered
 //   settings-agent  M13 Settings › Agent, published for real on devnet with
 //                   PCD_SCREENSHOT_AGENT_IDENTITY (a path, default
 //                   .agent-runs/identity-pcdbenchcold/identity.json) as the
@@ -137,7 +140,8 @@ const WORKER_SHOTS = {
   main: [
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
-    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'settings-agent', 'demo-onboarding', 'settings-demo',
+    'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
+    'settings-agent', 'demo-onboarding', 'settings-demo',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
@@ -544,6 +548,59 @@ const PIRATE = 'pcdpirate.81';
 const SEEN_TEXT = 'Did you see this?';
 const TX_NOTE = 'Send to yourself (0.01 PAS)';
 
+/**
+ * M16: a private group (spec 0011) in epoch 2 after the owner removed a
+ * member. Fictional people; the key is a fixed fake, so nothing on its topic
+ * ever opens. Fixture only: the live two-person-and-bot run is e2e:group2.
+ */
+const GROUP2 = {
+  id: 'fixture-group2',
+  name: 'Hiking club',
+  at: Date.now() - 45 * 60_000,
+  lena: { account: account('f1'), username: 'lenahart.31', at: Date.now() - 2 * 3_600_000 },
+  tom: { account: account('f2'), username: 'tomfox.18' },
+};
+const group2Fixture = self => {
+  const g = GROUP2;
+  const t = step => g.at + step * 60_000;
+  const peer = `group:${g.id}`;
+  const entry = (who, role, permissions) => ({ account: who.account, role, permissions, posting: [], joinedAt: t(0) });
+  const state = {
+    groupId: g.id, epoch: 2, version: 3, name: g.name, defaultPermissions: 1, slowModeSecs: 0, joinPolicy: 0, historyShare: 0,
+    members: [entry(self, 2, 0xff), entry(g.lena, 1, 0x13), entry(HELPER, 0, 0x01)], invites: [], pinned: [], createdAt: t(0),
+  };
+  const say = (id, step, who, text, extra = {}) => ({
+    messageId: `fixture-group2-${id}`, peerAccountId: peer, groupId: g.id, timestamp: t(step), direction: who ? 'incoming' : 'outgoing',
+    status: who ? 'received' : 'sent', content: { type: 'text', text }, reactions: [], editedAt: null, ...(who ? { senderAccountId: who.account } : {}), ...extra,
+  });
+  const event = (id, step, text) => ({ messageId: `fixture-group2-${id}`, peerAccountId: peer, groupId: g.id, timestamp: t(step), direction: 'system', status: 'received', content: { type: 'groupEvent', text }, reactions: [], editedAt: null });
+  const messages = [
+    event('created', 0, `You created ${g.name}`),
+    say('plan', 1, g.lena, 'Saturday at 9 at the trailhead?'),
+    say('ok', 2, null, 'Works for me. Who brings the map?', { reactions: [{ emoji: '👍', by: 'peer' }] }),
+    say('bot', 3, HELPER, 'Sunrise is at 7:12 on Saturday and the forecast is dry.'),
+    event('removed', 5, `You removed ${g.tom.username}`),
+    say('map', 6, null, 'I have the map.'),
+    say('see', 7, g.lena, 'Great, see you there!'),
+  ];
+  return {
+    group: {
+      id: g.id, name: g.name, admin: self.account,
+      members: [
+        { account: self.account, username: self.username, joinedAt: t(0) },
+        { account: g.lena.account, username: g.lena.username, joinedAt: t(0) },
+        { account: HELPER.account, username: HELPER.username, joinedAt: t(0) },
+      ],
+      version: 3, createdAt: t(0), self: 'member', left: [], invites: [], nextSeq: 1, lastSeq: {}, gapNoted: false, updatedAt: t(7),
+      v: 2, epoch: 2, state, stateBytes: fill(8, 0), stateSigner: self.account,
+      keys: [{ epoch: 2, key: fill(32, 0x42), openedAt: t(5), erasesAt: null, signer: self.account }],
+      carry: [], pendingWelcome: null, locked: false, seenIds: [], senders: [], lastSentAt: 0, rotateAt: null,
+    },
+    room: { peerAccountId: peer, groupId: g.id, unreadCount: 0, lastMessageAt: t(7), lastPreview: 'Great, see you there!', createdAt: t(0), updatedAt: t(7) },
+    messages,
+  };
+};
+
 /** An incoming request from a fictional person (requests.png). Never answered. */
 const ASKER = { requestId: 'fixture-request-incoming', account: account('d7'), username: 'orbitfan.64', at: Date.now() - 12 * 60_000 };
 
@@ -552,7 +609,7 @@ const ASKER = { requestId: 'fixture-request-incoming', account: account('d7'), u
  * `txIntent`: a real transfer of 0.01 PAS from the seeded identity to
  * itself, so the dry-run of room-tx passes (never signed).
  */
-const mainFixture = ({ txIntent, pay }) => {
+const mainFixture = ({ txIntent, pay, self }) => {
   const h = HELPER;
   const t = step => h.at + step * 60_000;
   const tx = byte => `0x${byte.repeat(32)}`;
@@ -601,13 +658,16 @@ const mainFixture = ({ txIntent, pay }) => {
       content: { type: 'text', text: '- Polkadot connects many **chains** into one network.\n- Its relay chain gives them **shared** security.\n- DOT holders **govern** the network on chain.\n\n`polkadot.network`' }, reactions: [], editedAt: null },
   ];
   const m = MANAGE;
+  const g2 = group2Fixture(self);
   const stores = {
+    groups: [g2.group],
     contacts: [
       ...m.contacts.map(c => contactRow(c, [])),
       contactRow(METER),
       contactRow(h),
       contactRow(pay.ask),
       ...(pay.paid ? [contactRow(pay.paid)] : []),
+      contactRow(GROUP2.lena),
     ],
     rooms: [
       ...m.contacts.map(c => ({ ...roomRow(c, c.text, c.at, { ...(c.archived ? { archived: true } : {}), ...(c.pinnedAt ? { pinnedAt: c.pinnedAt } : {}) }), unreadCount: c.unread ?? 0 })),
@@ -615,6 +675,7 @@ const mainFixture = ({ txIntent, pay }) => {
       roomRow(h, TX_NOTE, t(11), { muted: true }),
       roomRow(pay.ask, pay.ask.text, pay.ask.at + 1),
       ...(pay.paid ? [roomRow(pay.paid, 'Paid', pay.paid.at + 60_000)] : []),
+      g2.room,
       { peerAccountId: 'local:assistant', unreadCount: 0, lastMessageAt: assistantAt + 6_000, lastPreview: 'Polkadot connects many chains into one network.', createdAt: assistantAt, updatedAt: assistantAt },
     ],
     messages: [
@@ -631,6 +692,7 @@ const mainFixture = ({ txIntent, pay }) => {
           ]
         : []),
       ...assistant,
+      ...g2.messages,
     ],
     requests: [
       { requestId: m.outgoing.requestId, peerAccountId: m.outgoing.account, peerUsername: m.outgoing.username, peerChatPublicKey: fill(32, 7), direction: 'outgoing',
@@ -743,7 +805,7 @@ const mainWorker = async () => {
     const pay = await paymentFixture(source.accountHex);
     // The real call data needs the Asset Hub connection: only when room-tx presses the button.
     const txIntent = wanted('room-tx') ? await selfTransferIntent(app, source.accountHex) : new Uint8Array([0]);
-    await writeRows(app, mainFixture({ txIntent, pay }));
+    await writeRows(app, mainFixture({ txIntent, pay, self: { account: source.accountHex, username: source.username } }));
     await app.reload(app.exists('[data-testid=chat-row-assistant]'));
     log('fixture written');
     await mainShots(app, log, pay);
@@ -1029,6 +1091,7 @@ const mainShots = async (app, log, pay) => {
 
   await manageShots(app, log);
   await paymentShots(app, log, pay);
+  await group2Shots(app);
   if (WORKER_SHOTS.main.slice(-2).some(wanted)) await demoShots(app, log);
 };
 
@@ -1473,6 +1536,37 @@ const openBotRoom = async (app, log) => {
   if (!(await app.waitFor(app.exists('header [data-testid=bot-badge]'), 30_000))) log(`no botInfo from ${GROUP_BOT} yet`);
   log('contact with', GROUP_BOT);
   await app.esc();
+};
+
+/** M16: the fixture private group's room and its members panel. */
+const group2Shots = async app => {
+  const row = `[...document.querySelectorAll('[data-testid=chat-row-group]')].find(r => r.textContent.includes(${JSON.stringify(GROUP2.name)}))`;
+  const openRoom = async () => {
+    if (await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent === ${JSON.stringify(GROUP2.name)}`)) return;
+    if (await app.evaluate(app.exists('[aria-label="Back to chats"]'))) await app.click('[aria-label="Back to chats"]');
+    if (await app.evaluate(app.exists('[data-testid=assistant-key-state]'))) await app.esc();
+    if (!(await app.waitFor(`!!${row}`, 10_000))) throw new Error('the fixture private group is not in the list');
+    await app.evaluate(`${row}.click(); true`);
+    if (!(await app.waitFor(`(document.querySelector('[data-testid=group-status]')?.textContent ?? '').includes('epoch 2')`, 10_000))) throw new Error('the group header does not show the epoch');
+  };
+  await app.shot('room-group2', async () => {
+    await openRoom();
+    if (await app.evaluate(app.exists('[data-testid=members-panel]'))) await app.click('[data-testid=members-toggle]');
+    await app.settle();
+  });
+  await app.shot(
+    'group2-members',
+    async () => {
+      await openRoom();
+      if (!(await app.evaluate(app.exists('[data-testid=members-panel]')))) await app.click('[data-testid=members-toggle]');
+      if (!(await app.waitFor(`document.querySelectorAll('[data-testid=member-row]').length === 3`, 10_000))) throw new Error('the members panel does not list three members');
+      await app.settle();
+      // The owner's Remove shows on the hovered row (design system §10: on hover, undoable).
+      await app.hoverAt(`[...document.querySelectorAll('[data-testid=member-row]')].find(e => e.textContent.includes(${JSON.stringify(GROUP2.lena.username)}))`);
+      await sleep(400);
+    },
+    { hover: true },
+  );
 };
 
 const groupShots = async (app, log, ask, memberName) => {

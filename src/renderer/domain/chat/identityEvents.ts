@@ -11,8 +11,10 @@
 import { ChatMessage as SdkChatMessage } from '@novasamatech/host-chat/codec/message';
 import { Bytes, type Codec, type CodecType, Enum, Option, Struct, Vector, bool, createCodec, str, u128, u16, u32, u64, u8 } from 'scale-ts';
 
-import { hexToBytes } from '../../app/bytes';
+import { type HexString, hexToBytes } from '../../app/bytes';
 import type { PeerDevice } from '../../app/database';
+
+import { AccountCodec, TimeCodec } from './groupCodec';
 
 type SdkChatMessageWire = CodecType<typeof SdkChatMessage>;
 
@@ -119,8 +121,24 @@ export type GroupInfoWire = {
  * body, the same bytes as in a 1:1 message after the header).
  */
 export type GroupMessageWire = { tag: 'groupMessage'; value: { groupId: string; infoVersion: number; seq: bigint; content: ChatContent } };
-/** Spec 0009 `groupLeave(GroupLeave)`, provisional kind 248: "I left". */
+/** Spec 0009 `groupLeave(GroupLeave)`, provisional kind 248: "I left". Reused inside a spec 0011 carrier. */
 export type GroupLeaveWire = { tag: 'groupLeave'; value: { groupId: string } };
+
+/** Spec 0011 `HistoryItem`: `message` is a remote message (it encodes as an opaque message). */
+export type HistoryItemWire = { from: HexString; message: Uint8Array };
+export type HistorySinceWire = { tag: 'messageId'; value: string } | { tag: 'timestamp'; value: number };
+/**
+ * Spec 0011 `GroupControl`, kind 249, over the pairwise session. `historyRequest`
+ * is variant 5 (reviewer ruling 1, 2026-09-24).
+ */
+export type GroupControl =
+  | { tag: 'welcome'; value: { groupId: string; epoch: number; epochKey: Uint8Array; stateVersion: number; stateHash: Uint8Array } }
+  | { tag: 'joinRequest'; value: { groupId: string; inviteId: Uint8Array; proof: Uint8Array; note: string } }
+  | { tag: 'joinDecision'; value: { groupId: string; inviteId: Uint8Array; status: number } }
+  | { tag: 'history'; value: { groupId: string; items: HistoryItemWire[]; last: boolean } }
+  | { tag: 'keyRequest'; value: { groupId: string; haveEpoch: number } }
+  | { tag: 'historyRequest'; value: { groupId: string; since: HistorySinceWire; limit: number } };
+export type GroupControlWire = { tag: 'groupControl'; value: GroupControl };
 
 export type ChatContent =
   | SdkChatMessageWire['versioned']['value']
@@ -134,6 +152,7 @@ export type ChatContent =
   | GroupInfoWire
   | GroupMessageWire
   | GroupLeaveWire
+  | GroupControlWire
   | UndecodableWire;
 export type ChatMessageWire = { messageId: string; timestamp: bigint; versioned: { tag: 'v1'; value: ChatContent } };
 
@@ -159,7 +178,9 @@ export const TRANSACTION_REFERENCE_KIND = 245;
 export const GROUP_INFO_KIND = 246;
 export const GROUP_MESSAGE_KIND = 247;
 export const GROUP_LEAVE_KIND = 248;
-const GROUP_KINDS: readonly number[] = [GROUP_INFO_KIND, GROUP_MESSAGE_KIND, GROUP_LEAVE_KIND];
+/** Spec 0011 provisional kind (docs/spec/kinds.md). */
+export const GROUP_CONTROL_KIND = 249;
+const GROUP_KINDS: readonly number[] = [GROUP_INFO_KIND, GROUP_MESSAGE_KIND, GROUP_LEAVE_KIND, GROUP_CONTROL_KIND];
 const V1 = 0;
 
 const Header = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8 });
@@ -242,6 +263,34 @@ const withinReferenceBounds = (reference: TransactionReferenceWire['value']): bo
 const GroupMemberCodec = Struct({ account: Bytes(32), username: str, joinedAt: u64 });
 const GroupInfoCodec = Struct({ groupId: str, name: str, admin: Bytes(32), members: Vector(GroupMemberCodec), version: u32, createdAt: u64 });
 const GroupLeaveCodec = Struct({ groupId: str });
+// Spec 0011 layout (docs/spec/vectors-0011.md). scale-ts numbers enum
+// variants in key order: welcome 0 … historyRequest 5.
+const HistoryItemCodec = Struct({ from: AccountCodec, message: Bytes() });
+const GroupControlCodec = Enum({
+  welcome: Struct({ groupId: str, epoch: u32, epochKey: Bytes(32), stateVersion: u32, stateHash: Bytes(32) }),
+  joinRequest: Struct({ groupId: str, inviteId: Bytes(16), proof: Bytes(32), note: str }),
+  joinDecision: Struct({ groupId: str, inviteId: Bytes(16), status: u8 }),
+  history: Struct({ groupId: str, items: Vector(HistoryItemCodec), last: bool }),
+  keyRequest: Struct({ groupId: str, haveEpoch: u32 }),
+  historyRequest: Struct({ groupId: str, since: Enum({ messageId: str, timestamp: TimeCodec }), limit: u8 }),
+});
+
+/** Spec 0011 decoder bounds (pca's `GROUP_CONTROL_LIMITS`): outside them the message is undecodable. */
+export const GROUP_CONTROL_BOUNDS = { noteBytes: 560, historyItems: 100, historyLimit: 100 } as const;
+const withinControlBounds = (control: GroupControl): boolean => {
+  switch (control.tag) {
+    case 'joinRequest':
+      return utf8Length(control.value.note) <= GROUP_CONTROL_BOUNDS.noteBytes;
+    case 'joinDecision':
+      return control.value.status <= 1;
+    case 'history':
+      return control.value.items.length <= GROUP_CONTROL_BOUNDS.historyItems;
+    case 'historyRequest':
+      return control.value.limit >= 1 && control.value.limit <= GROUP_CONTROL_BOUNDS.historyLimit;
+    default:
+      return true;
+  }
+};
 
 /**
  * Spec 0009 decoder bounds: at most 16 members, the name at most 240 bytes
@@ -265,7 +314,8 @@ type ExtensionWire =
   | BotInfoWire
   | TransactionReferenceWire
   | GroupInfoWire
-  | GroupLeaveWire;
+  | GroupLeaveWire
+  | GroupControlWire;
 type Envelope = { messageId: string; timestamp: bigint; version: number; kind: number };
 
 /** The header plus one extension body; the caller writes the kind byte. */
@@ -283,6 +333,7 @@ const BotInfoV3Message = envelope(BotInfoV3ContentCodec);
 const TransactionReferenceMessage = envelope(TransactionReferenceCodec);
 const GroupInfoMessage = envelope(GroupInfoCodec);
 const GroupLeaveMessage = envelope(GroupLeaveCodec);
+const GroupControlMessage = envelope(GroupControlCodec);
 // `groupMessage`: the header and the wrapper's own fields; the inner content
 // is the rest of the message (its kind byte and body).
 const GroupMessageHead = Struct({ messageId: str, timestamp: u64, version: u8, kind: u8, groupId: str, infoVersion: u32, seq: u64 });
@@ -361,6 +412,11 @@ const decodeExtension = (bytes: Uint8Array): ChatMessageWire | null => {
       return decodeGroupMessage(bytes) ?? undecodable(header);
     case GROUP_LEAVE_KIND:
       return decodeWith(GroupLeaveMessage, bytes, value => ({ tag: 'groupLeave', value })) ?? undecodable(header);
+    case GROUP_CONTROL_KIND: {
+      const decoded = decodeWith(GroupControlMessage, bytes, value => ({ tag: 'groupControl', value }));
+      const value = decoded?.versioned.value;
+      return decoded && value?.tag === 'groupControl' && withinControlBounds(value.value) ? decoded : undecodable(header);
+    }
     default:
       return null;
   }
@@ -399,14 +455,15 @@ const encodeInner = (content: ChatContent): Uint8Array => {
   const whole = ChatMessageCodec.enc({ messageId: '', timestamp: 0n, versioned: { tag: 'v1', value: content } });
   return whole.slice(INNER_PREFIX.length);
 };
-const GROUP_KINDS_TAGS: readonly string[] = ['groupInfo', 'groupMessage', 'groupLeave'];
+const GROUP_KINDS_TAGS: readonly string[] = ['groupInfo', 'groupMessage', 'groupLeave', 'groupControl'];
 
 /**
  * The app's `Message` codec: the SDK's `ChatMessage`, plus kind 21 `deleted`
  * (RFC-0003), kinds 240 `typing` / 241 `seen` (spec 0005), kinds 242
  * `buttons` / 243 `buttonPress` (spec 0006), kind 244 `botInfo` (spec 0008) and
  * kind 245 `transactionReference` (spec 0007), and kinds 246 `groupInfo` /
- * 247 `groupMessage` / 248 `groupLeave` (spec 0009).
+ * 247 `groupMessage` / 248 `groupLeave` (spec 0009), and kind 249
+ * `groupControl` (spec 0011).
  * Every session in this app encodes and decodes through it.
  */
 export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageWire>(
@@ -437,6 +494,9 @@ export const ChatMessageCodec: Codec<ChatMessageWire> = createCodec<ChatMessageW
         return GroupInfoMessage.enc({ ...head, kind: GROUP_INFO_KIND, content: content.value });
       case 'groupLeave':
         return GroupLeaveMessage.enc({ ...head, kind: GROUP_LEAVE_KIND, content: content.value });
+      case 'groupControl':
+        if (!withinControlBounds(content.value)) throw new Error('groupControl outside the spec 0011 bounds');
+        return GroupControlMessage.enc({ ...head, kind: GROUP_CONTROL_KIND, content: content.value });
       case 'groupMessage': {
         const { groupId, infoVersion, seq } = content.value;
         const wrapper = GroupMessageHead.enc({ ...head, kind: GROUP_MESSAGE_KIND, groupId, infoVersion, seq });

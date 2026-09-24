@@ -11,6 +11,7 @@ import Dexie, { type Table } from 'dexie';
 
 import type { HexString } from './bytes';
 import type { BotInfo, GroupMember, MessageContent } from '../domain/chat/content';
+import type { GroupState } from '../domain/chat/groupCodec';
 
 export const DEVICE_ROW_ID = 'self';
 
@@ -220,9 +221,24 @@ export type PeerInfoRow = {
 };
 
 /**
+ * Spec 0011: one epoch key this client holds. `erasesAt` is set when a newer
+ * epoch opens (14 days later the key is erased); a `fork` key is the losing
+ * side of two rekeys out of one epoch, kept 24 h to read what was sent under it.
+ */
+export type GroupEpochKey = { epoch: number; key: Uint8Array; openedAt: number; erasesAt: number | null; signer: HexString; fork?: boolean };
+/** Spec 0011: one of our own messages as sent in a carrier (the remote message bytes), for the 24 h carry. */
+export type GroupCarryItem = { messageId: string; timestamp: number; sentAt: number; epoch: number; bytes: Uint8Array };
+
+/**
  * A spec 0009 group as this client holds it: the highest roster version from
  * its admin, plus local state. `self` is `left` after our own leave and
  * `removed` when a roster without us arrives; either way nothing more is sent.
+ *
+ * Spec 0011 (M16) adds the optional v2 fields; a row without `v` is a v1
+ * fan-out group. For a v2 row `name`, `admin` (the owner), `members` (with
+ * usernames, which the state does not carry) and `version` mirror the
+ * applied `state`, so the list and the room read both kinds the same way.
+ * Not indexed, so no schema version.
  */
 export type GroupRow = {
   id: string;
@@ -243,6 +259,33 @@ export type GroupRow = {
   /** "Some messages may be missing" is shown once per group. */
   gapNoted: boolean;
   updatedAt: number;
+  /** Spec 0011: a private group (one statement per message on an epoch topic). */
+  v?: 2;
+  /** The epoch whose key we send with. */
+  epoch?: number;
+  /** The applied group state, its exact bytes (for `stateHash`) and who signed it. */
+  state?: GroupState | null;
+  stateBytes?: Uint8Array | null;
+  stateSigner?: HexString | null;
+  /**
+   * Epoch keys: secrets, kept on the group row as the milestone names them
+   * (docs/decisions.md "## M16"). Erased 14 days after the next epoch.
+   */
+  keys?: GroupEpochKey[];
+  /** Our own messages of the current epoch, last 24 h: each carrier repeats them. */
+  carry?: GroupCarryItem[];
+  /** A `welcome` whose state we have not read from the topic yet. */
+  pendingWelcome?: { from: HexString; epoch: number; stateVersion: number; stateHash: Uint8Array } | null;
+  /** A rekey came without our entry while we are still listed: no key to send with. */
+  locked?: boolean;
+  /** `<from>:<messageId>` of the last 1000 messages taken: carriers repeat messages. */
+  seenIds?: string[];
+  /** Members we already took a carrier from (the gap rule). */
+  senders?: HexString[];
+  lastSentAt?: number;
+  keyRequestedAt?: number;
+  /** Admin: when the 7-day rotation fires (set once the epoch is 7 days old, with jitter). */
+  rotateAt?: number | null;
 };
 
 export const DB_NAME = 'polkadot-chat-web';

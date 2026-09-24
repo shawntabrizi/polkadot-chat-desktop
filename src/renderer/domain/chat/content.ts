@@ -20,6 +20,7 @@ import {
   type BotInfoWire,
   type ButtonWire,
   type ChatContent,
+  type GroupControl,
   type GroupInfoWire,
   TRANSACTION_REFERENCE_KIND,
   type TransactionReferenceWire,
@@ -170,8 +171,10 @@ export type OutgoingContent =
   | { type: 'groupInfo'; info: GroupInfo }
   /** Spec 0009: any other content, for the group; the same envelope id on every copy. */
   | { type: 'groupMessage'; groupId: string; infoVersion: number; seq: number; content: OutgoingContent }
-  /** Spec 0009: "I left". */
-  | { type: 'groupLeave'; groupId: string };
+  /** Spec 0009: "I left" (spec 0011 reuses it inside a carrier). */
+  | { type: 'groupLeave'; groupId: string }
+  /** Spec 0011: pairwise group control (kind 249). */
+  | { type: 'groupControl'; control: GroupControl };
 
 export type IncomingEffect =
   | { kind: 'message'; content: MessageContent }
@@ -189,6 +192,8 @@ export type IncomingEffect =
   /** Spec 0009: the wrapped content's own effect, for the group. */
   | { kind: 'groupMessage'; groupId: string; infoVersion: number; seq: number; effect: IncomingEffect }
   | { kind: 'groupLeave'; groupId: string }
+  /** Spec 0011: a pairwise group control; the manager checks who sent it. */
+  | { kind: 'groupControl'; control: GroupControl }
   | { kind: 'callOffer' }
   | { kind: 'deviceAdded'; statementAccountId: Uint8Array; encryptionPublicKey: Uint8Array }
   | { kind: 'deviceRemoved'; statementAccountId: Uint8Array }
@@ -232,6 +237,8 @@ export const toWire = (content: OutgoingContent): ChatContent => {
       };
     case 'groupLeave':
       return { tag: 'groupLeave', value: { groupId: content.groupId } };
+    case 'groupControl':
+      return { tag: 'groupControl', value: content.control };
   }
 };
 
@@ -433,6 +440,8 @@ export const fromWire = (content: ChatContent): IncomingEffect => {
       };
     case 'groupLeave':
       return { kind: 'groupLeave', groupId: content.value.groupId };
+    case 'groupControl':
+      return { kind: 'groupControl', control: content.value };
     case 'undecodable':
       // A keyboard or a reference we cannot read is still a message the peer
       // sent: the unsupported bubble. A press, typing, seen or botInfo we

@@ -9,13 +9,15 @@ import { createExpiryAllocator, createInMemoryStatementStore, createSr25519Prove
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type HexString, bytesToHex } from '../../app/bytes';
-import { appDatabase, db, groupPeerOf } from '../../app/database';
+import { type GroupRow, appDatabase, db, groupPeerOf } from '../../app/database';
 import type { IdentityLookup } from '../identity/lookup';
 import { sendChatRequest } from '../requests/gateway';
+import { makeGroupStore } from '../testing/groupStore';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
 import { type GroupInfo, type OutgoingContent, toWire } from './content';
 import { compareGroupRows, getGroup } from './groups';
+import { type GroupsV2Storage, type IncomingGroupMessage, createGroupsV2 } from './groupsV2';
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, GroupInfoWire, GroupMessageWire, IdentityChannelEvent } from './identityEvents';
 import { listMessages } from './messages';
@@ -24,6 +26,20 @@ import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
 
 type Store = ReturnType<typeof createInMemoryStatementStore>;
+
+/** A member's own group rows, apart from the client's Dexie. */
+const memoryGroupStorage = (): GroupsV2Storage => {
+  const groups = new Map<string, GroupRow>();
+  return {
+    getGroup: async id => structuredClone(groups.get(id)),
+    putGroup: async row => groups.set(row.id, structuredClone(row)),
+    listGroups: async () => [...groups.values()].map(row => structuredClone(row)),
+    addSystemRow: async () => undefined,
+    ensureRoom: async () => undefined,
+    listRows: async () => [],
+    markSent: async () => undefined,
+  };
+};
 type Member = TestPeer & { name: string; hex: HexString };
 
 const member = (name: string): Member => {
@@ -162,7 +178,7 @@ describe('spec 0009 groups', () => {
     const groupId = await manager.createGroup('Crew', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     for (const transport of [toAlice, toBot]) {
       const info = infoOf(await waitFor(() => transport.of('groupInfo')[0]));
       expect(info?.groupId).toBe(groupId);
@@ -179,7 +195,7 @@ describe('spec 0009 groups', () => {
     const groupId = await manager.createGroup('Crew', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     await manager.sendToGroup(groupId, { type: 'text', text: 'hello all' });
     const [a, b] = await Promise.all([waitFor(() => toAlice.of('groupMessage')[0]), waitFor(() => toBot.of('groupMessage')[0])]);
     expect(a.messageId).toBe(b.messageId);
@@ -250,7 +266,7 @@ describe('spec 0009 groups', () => {
     const groupId = await manager.createGroup('Crew', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     await manager.updateRoster(groupId, [{ account: bot.hex, username: 'bot' }]);
     const toKept = infoOf(await waitFor(() => toBot.of('groupInfo').find(message => infoOf(message)?.version === 2)));
     const toRemoved = infoOf(await waitFor(() => toAlice.of('groupInfo').find(message => infoOf(message)?.version === 2)));
@@ -278,7 +294,7 @@ describe('spec 0009 groups', () => {
     const ours = await manager.createGroup('Ours', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     await toBot.send({ type: 'groupLeave', groupId: ours });
     const v2 = infoOf(await waitFor(() => toAlice.of('groupInfo').find(message => infoOf(message)?.groupId === ours && infoOf(message)?.version === 2)));
     expect(v2?.members.map(entry => entry.username)).toEqual(['web', 'alice']);
@@ -306,7 +322,7 @@ describe('spec 0009 groups', () => {
     const groupId = await manager.createGroup('Crew', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     await manager.sendToGroup(groupId, { type: 'text', text: 'hello all' });
     const asked = await waitFor(() => toBot.of('groupMessage')[0]);
     const info = { kind: 1, name: 'Guide', description: 'Answers questions', greeting: '', commands: [], version: 1 };
@@ -327,7 +343,7 @@ describe('spec 0009 groups', () => {
     const groupId = await manager.createGroup('Crew', [
       { account: alice.hex, username: 'alice' },
       { account: bot.hex, username: 'bot' },
-    ]);
+    ], { fanOut: true });
     await manager.sendToGroup(groupId, { type: 'text', text: 'one' });
     await manager.sendTyping(groupPeerOf(groupId), 'composing', Date.now() + 4000);
     await manager.sendToGroup(groupId, { type: 'text', text: 'two' });
@@ -351,5 +367,116 @@ describe('spec 0009 groups', () => {
     expect((await db.messages.get('alice-text'))?.content).toEqual({ type: 'text', text: 'mine' });
     await toAlice.send(wrap(groupId, 2, { type: 'deleted', targetMessageId: 'alice-text' }));
     await waitFor(async () => (await db.messages.get('alice-text'))?.content.type === 'deleted');
+  });
+});
+
+// ── Spec 0011 through the manager (M16) ────────────────────────────────────
+
+describe('spec 0011 private groups through the manager', () => {
+  /**
+   * The client (`web`, the manager) with chats to alice and a bot; alice and
+   * the bot run `createGroupsV2` on memory storage over the same store, with
+   * their DMs to the client on their real sessions.
+   */
+  const setUpV2 = async () => {
+    const { adapter, submittedBy } = makeGroupStore();
+    const store = adapter;
+    const web = member('web');
+    const alice = member('alice');
+    const bot = member('bot');
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf([alice, bot, web]), username: 'web' });
+    const toAlice = await connect(store, web, alice, manager);
+    const toBot = await connect(store, web, bot, manager);
+    transports = [toAlice, toBot];
+    const serviceOf = (self: Member, transport: Transport) => {
+      const got: IncomingGroupMessage[] = [];
+      const service = createGroupsV2({
+        self: self.hex,
+        signer: bytesToHex(self.device.statementAccountPublicKey),
+        ownChatPrivateKey: self.identity.identityChatPrivateKey,
+        ownChatPublicKey: self.identity.identityChatPublicKey,
+        store,
+        prover: createSr25519Prover(self.device.statementAccountSeed),
+        chatKeyOf: async account => [web, alice, bot].find(m => m.hex === account)?.identity.identityChatPublicKey ?? null,
+        postingOf: async account => {
+          const found = [web, alice, bot].find(m => m.hex === account);
+          return found ? [bytesToHex(found.device.statementAccountPublicKey)] : [];
+        },
+        nameOf: async account => [web, alice, bot].find(m => m.hex === account)?.name ?? '?',
+        isBot: async () => false,
+        reachable: account => account === web.hex,
+        sendControl: async (_to, control) => void (await transport.send({ type: 'groupControl', control })),
+        applyMessage: async (_groupId, _sender, message) => void got.push(message),
+        storage: memoryGroupStorage(),
+      });
+      return { service, got };
+    };
+    const a = serviceOf(alice, toAlice);
+    const b = serviceOf(bot, toBot);
+    await a.service.start();
+    await b.service.start();
+    /** Hands every kind-249 control the client sent this member to its service. */
+    const deliver = async (transport: Transport, service: typeof a.service) => {
+      const controls = await waitFor(() => (transport.of('groupControl').length > 0 ? transport.of('groupControl') : null));
+      for (const message of controls) if (message.content.tag === 'groupControl') await service.onControl(web.hex, message.content.value);
+    };
+    return { store, submittedBy, web, alice, bot, toAlice, toBot, a, b, deliver };
+  };
+
+  it('create sends a welcome (kind 249) over each DM; one group message costs one submission and one message on the meter', async () => {
+    const { web, a, b, toAlice, toBot, deliver, submittedBy } = await setUpV2();
+    const contacts = await db.contacts.toArray();
+    const groupId = await manager!.createGroup(
+      'Crew',
+      contacts.map(contact => ({ account: contact.accountId, username: contact.username })),
+    );
+    expect((await getGroup(groupId))?.v).toBe(2);
+    await deliver(toAlice, a.service);
+    await deliver(toBot, b.service);
+    const before = manager!.submissions.snapshot();
+    const statementsBefore = submittedBy(bytesToHex(web.device.statementAccountPublicKey));
+    await manager!.sendToGroup(groupId, { type: 'text', text: 'hello all' });
+    const after = manager!.submissions.snapshot();
+    // Settings › Diagnostics: one group message is one submission and one message, not n−1 of each.
+    expect(after.submissions - before.submissions).toBe(1);
+    expect(after.messages - before.messages).toBe(1);
+    expect(submittedBy(bytesToHex(web.device.statementAccountPublicKey)) - statementsBefore).toBe(1);
+    await waitFor(() => a.got.some(m => m.content.tag === 'text' && m.content.value === 'hello all'));
+    await waitFor(() => b.got.some(m => m.content.tag === 'text' && m.content.value === 'hello all'));
+    const own = (await listMessages(groupPeerOf(groupId))).find(row => row.direction === 'outgoing');
+    expect(own?.status).toBe('sent');
+  });
+
+  it('a reaction rides as one statement; typing is not sent in a v2 group', async () => {
+    const { a, toAlice, deliver } = await setUpV2();
+    const contacts = await db.contacts.toArray();
+    const groupId = await manager!.createGroup(
+      'Crew',
+      contacts.map(contact => ({ account: contact.accountId, username: contact.username })),
+    );
+    await deliver(toAlice, a.service);
+    await manager!.sendToGroup(groupId, { type: 'text', text: 'react to me' });
+    const target = (await listMessages(groupPeerOf(groupId))).find(row => row.direction === 'outgoing')!;
+    const before = manager!.submissions.snapshot().submissions;
+    await manager!.sendTyping(groupPeerOf(groupId), 'composing', Date.now() + 4000);
+    expect(manager!.submissions.snapshot().submissions).toBe(before);
+    await manager!.react(groupPeerOf(groupId), target.messageId, '👍', true);
+    expect(manager!.submissions.snapshot().submissions - before).toBe(1);
+    await waitFor(() => a.got.some(m => m.content.tag === 'reacted' && m.content.value.messageId === target.messageId));
+  }, 10_000);
+
+  it('a member’s carrier lands in the room with its sender; the room names the epoch', async () => {
+    const { bot, b, toBot, deliver } = await setUpV2();
+    const contacts = await db.contacts.toArray();
+    const groupId = await manager!.createGroup(
+      'Crew',
+      contacts.map(contact => ({ account: contact.accountId, username: contact.username })),
+    );
+    await deliver(toBot, b.service);
+    await b.service.send(groupId, { tag: 'text', value: 'hello, humans' }, { messageId: 'bot-v2-reply', timestamp: Date.now() });
+    const row = await waitFor(() => db.messages.get('bot-v2-reply'));
+    expect(row.peerAccountId).toBe(groupPeerOf(groupId));
+    expect(row.senderAccountId).toBe(bot.hex);
+    expect((await getGroup(groupId))?.epoch).toBe(1);
   });
 });

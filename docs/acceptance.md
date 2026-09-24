@@ -3376,3 +3376,68 @@ SMOKE_OK
 
 - The live timeout path (an agent not attested for 120 s) was not produced on devnet; the spec covers it with fake timers.
 - `npm run e2e:agent:packaged` was not run (no packaging change).
+
+## M16 (2026-09-24)
+
+### npm run check (last lines)
+
+```
+ Test Files  76 passed (76)
+      Tests  666 passed (666)
+   Start at  01:58:57
+   Duration  16.43s (transform 3.13s, setup 1.21s, import 12.95s, tests 37.29s, environment 4ms)
+check:tokens: clean (164 files)
+```
+
+Exit 0 (tsc and eslint print nothing when clean).
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<temp> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### npm run e2e:group2 (parent lines; a = pcdbenchfinb, b = pcdeceb, scratch bot pcdgrprcdzc.61, stopped and deleted after)
+
+```
+BOT_CREATE pcdgrprcdzc (scratch PCA_BOTS_DIR, brain echo, allow pcdbenchfinb.54) at=0.0s
+BOT_REGISTERED pcdgrprcdzc.61 0x9222ed81b43e2e1927e6956c7e63ff83e2933a6220f1ef151e16f812af3e7057 at=41.8s
+PEOPLE a=pcdbenchfinb.54 b=pcdeceb.89 bot=pcdgrprcdzc.61 at=44.8s
+CONTACTS_OK a↔b, a↔pcdgrprcdzc.61 at=59.2s
+V2_CREATED group=f86340c9-1cac-4286-98a2-27fde23ad3af create_statements=1 b epoch=1 bot joined at=61.9s
+ONE_SUBMISSION submissions=1 messages=1 at=62.3s
+BOT_REPLY_OK id=48D8496A-F7B7-4233-A494-C93F0BC9CEBF text="Echo: hello bot" bot statements on Topic_1: ChMsgs_1=1 at=63.6s
+CARRY_OK b got 3 messages from a's current statement after a restart at=70.2s
+REMOVED_LOCKED_OUT submissions=2 b: no entry, epoch=1, a's epoch-2 statements=2 opened=0 at=72.0s
+BOT_EPOCH2_OK text="Echo: after b left" on Topic_2 at=73.4s
+HISTORY_OK the bot's page brought back id=48D8496A-F7B7-4233-A494-C93F0BC9CEBF ("pcdgrprcdzc.61 shared 1 earlier message") at=75.4s
+MIGRATED_OK group=2441e23c-03f5-41c3-a103-6cff52a4cdd0 b kept its v1 row (true) and read a's v2 message at=79.4s
+GROUP2_OK at=79.4s
+```
+
+Exit 0. An earlier run with a = pcde2e stopped at create: `CREATE2_FAILED Submit failed, account full: submitted expiry 7694170908488693760 < min 18446744069441638400` (docs/decisions.md "## M16", AccountFull).
+
+### npm run e2e:group (v1 unchanged)
+
+```
+PEOPLE a=pcdecejakd.11 b=pcdeceb.89 at=8.0s
+BOT_DESCRIBE_SKIPPED no "M15a" commit on pca desktop/rfc-0003 yet
+ATTACH_OK at=38.9s (desktop steps; bot step skipped)
+```
+
+### PCD_HEADLESS=1 npm run screenshots
+
+```
+Not captured:
+  berlin-day/faucet.png (the Faucet room shows no outcome of "Get 1 PAS")
+  berlin-night/faucet.png (the Faucet room shows no outcome of "Get 1 PAS")
+SCREENSHOTS_PARTIAL in 147.5 s
+```
+
+room-group2.png and group2-members.png were saved in both themes (`.agent-runs/screens/berlin-{day,night}/`). The one miss is faucet.png (flip worker, the devnet faucet gave no outcome); not touched by M16. room-group.png now shows a v2 group made through the UI, and pcdguide.70 answered in it.
+
+### git status --short
+
+Clean after the commit (see the report).
+
+After the rebase onto main (c1b604b) `npm run check` is green again: `Test Files  77 passed (77)`, `Tests  670 passed (670)`, `check:tokens: clean (164 files)`.

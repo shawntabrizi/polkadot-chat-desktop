@@ -332,17 +332,24 @@ async function child() {
       }
       if (command === 'CREATE') {
         const [bHex, bName] = rest;
-        groupId = await manager.createGroup(`M12 e2e ${new Date().toISOString().slice(11, 19)}`, [
-          { account: bHex, username: bName },
-          { account: bot.accountHex, username: bot.username },
-        ]);
+        // This run proves v1 (spec 0009) still works: M16 made v2 the default, so ask for the fan-out.
+        groupId = await manager.createGroup(
+          `M12 e2e ${new Date().toISOString().slice(11, 19)}`,
+          [
+            { account: bHex, username: bName },
+            { account: bot.accountHex, username: bot.username },
+          ],
+          { fanOut: true },
+        );
         const group = await getGroup(groupId);
         console.log(`GROUP_CREATED id=${groupId} version=${group.version} members=${group.members.map((m) => m.username).join(',')} invites=${group.invites.length}`);
       }
       if (command === 'WAIT_GROUP') {
         // `any`: the newest group the other person runs (the screenshot run's helper does not know the id).
-        const newest = async () => (await db.groups.toArray()).filter((g) => g.admin === otherHex && g.self === 'member').sort((x, y) => y.createdAt - x.createdAt)[0] ?? null;
-        const group = await waitFor(() => (rest[0] === 'any' ? newest() : getGroup(rest[0])), WAIT_MS);
+        // A v2 group (M16) counts once its state is read from the topic, not at the bare welcome.
+        const ready = (g) => (g && (g.v !== 2 || g.state) ? g : null);
+        const newest = async () => (await db.groups.toArray()).filter((g) => ready(g) && g.admin === otherHex && g.self === 'member').sort((x, y) => y.createdAt - x.createdAt)[0] ?? null;
+        const group = await waitFor(async () => (rest[0] === 'any' ? newest() : ready(await getGroup(rest[0]))), WAIT_MS);
         if (group) groupId = group.id;
         if (group) console.log(`JOINED id=${groupId} version=${group.version} members=${group.members.map((m) => m.username).join(',')} admin=${group.admin}`);
       }

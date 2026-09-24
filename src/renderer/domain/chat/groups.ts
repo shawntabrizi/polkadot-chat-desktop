@@ -35,7 +35,7 @@ export const memberName = (group: GroupRow, account: HexString): string =>
 /** Members other than us: who a group message fans out to. */
 export const otherMembers = (group: GroupRow, self: HexString): GroupMember[] => group.members.filter(member => member.account !== self);
 
-const systemRow = (groupId: string, messageId: string, timestamp: number, text: string): MessageRow => ({
+export const groupSystemRow = (groupId: string, messageId: string, timestamp: number, text: string): MessageRow => ({
   messageId,
   peerAccountId: groupPeerOf(groupId),
   groupId,
@@ -48,7 +48,7 @@ const systemRow = (groupId: string, messageId: string, timestamp: number, text: 
 });
 
 /** Make sure the group's room exists (the chat list shows it before anything is said). */
-const ensureGroupRoom = async (groupId: string, at: number): Promise<void> => {
+export const ensureGroupRoom = async (groupId: string, at: number): Promise<void> => {
   const peer = groupPeerOf(groupId);
   if (await db.rooms.get(peer)) return;
   await db.rooms.put({ peerAccountId: peer, groupId, unreadCount: 0, lastMessageAt: 0, lastPreview: '', createdAt: at, updatedAt: at });
@@ -106,7 +106,7 @@ export const applyGroupInfo = (sender: HexString, info: GroupInfo, self: HexStri
       await db.groups.put(newRow(info, now, 'member'));
       await ensureGroupRoom(info.groupId, now);
       const adminName = info.members.find(member => member.account === info.admin)?.username ?? 'The admin';
-      await addMessage(systemRow(info.groupId, rowId, now, `${adminName} added you to ${info.name}`), { read: true });
+      await addMessage(groupSystemRow(info.groupId, rowId, now, `${adminName} added you to ${info.name}`), { read: true });
       return 'created';
     }
     if (existing.admin !== info.admin || info.version <= existing.version) return 'ignored';
@@ -122,7 +122,7 @@ export const applyGroupInfo = (sender: HexString, info: GroupInfo, self: HexStri
       updatedAt: now,
     });
     if (removed && existing.self === 'member') lines.push('You were removed from the group');
-    if (lines.length > 0) await addMessage(systemRow(info.groupId, rowId, now, lines.join(' · ')), { read: true });
+    if (lines.length > 0) await addMessage(groupSystemRow(info.groupId, rowId, now, lines.join(' · ')), { read: true });
     return removed ? 'removed' : 'updated';
   });
 
@@ -137,12 +137,12 @@ export const saveOwnGroupInfo = (info: GroupInfo, invites: HexString[], now: num
     if (!existing) {
       await db.groups.put({ ...newRow(info, now, 'member'), invites });
       await ensureGroupRoom(info.groupId, now);
-      await addMessage(systemRow(info.groupId, rowId, now, `You created ${info.name}`), { read: true });
+      await addMessage(groupSystemRow(info.groupId, rowId, now, `You created ${info.name}`), { read: true });
       return;
     }
     const lines = rosterChanges(existing, info, existing.left);
     await db.groups.put({ ...existing, name: info.name, members: info.members, version: info.version, left: [], invites, updatedAt: now });
-    if (lines.length > 0) await addMessage(systemRow(info.groupId, rowId, now, lines.join(' · ')), { read: true });
+    if (lines.length > 0) await addMessage(groupSystemRow(info.groupId, rowId, now, lines.join(' · ')), { read: true });
   });
 
 /** An invite whose roster went out: the member is reached now. */
@@ -163,7 +163,7 @@ export const recordLeave = (groupId: string, sender: HexString, messageId: strin
     const group = await db.groups.get(groupId);
     if (!group || !isMember(group, sender) || group.left.includes(sender)) return false;
     await db.groups.put({ ...group, left: [...group.left, sender], updatedAt: Date.now() });
-    await addMessage(systemRow(groupId, `group-leave:${messageId}`, at, `${memberName(group, sender)} left`), { read: true });
+    await addMessage(groupSystemRow(groupId, `group-leave:${messageId}`, at, `${memberName(group, sender)} left`), { read: true });
     return true;
   });
 
@@ -173,7 +173,7 @@ export const markSelfLeft = (groupId: string, at: number = Date.now()): Promise<
     const group = await db.groups.get(groupId);
     if (!group || group.self !== 'member') return;
     await db.groups.put({ ...group, self: 'left', updatedAt: at });
-    await addMessage(systemRow(groupId, `group-self-left:${groupId}`, at, 'You left the group'), { read: true });
+    await addMessage(groupSystemRow(groupId, `group-self-left:${groupId}`, at, 'You left the group'), { read: true });
   });
 
 export type Admission = { group: GroupRow; peer: GroupPeerId };
@@ -194,7 +194,7 @@ export const admitGroupMessage = (groupId: string, sender: HexString, seq: numbe
     const noteGap = gap && !group.gapNoted;
     const updated: GroupRow = { ...group, lastSeq, gapNoted: group.gapNoted || noteGap };
     await db.groups.put(updated);
-    if (noteGap) await addMessage(systemRow(groupId, `group-gap:${groupId}`, at - 1, 'Some messages may be missing'), { read: true });
+    if (noteGap) await addMessage(groupSystemRow(groupId, `group-gap:${groupId}`, at - 1, 'Some messages may be missing'), { read: true });
     return { group: updated, peer: groupPeerOf(groupId) };
   });
 

@@ -170,3 +170,12 @@ Write the question, what you did meanwhile, and the date.
 - **Packaging not checked.** bot-core runs from `node_modules` inside the app (utility process, ESM, its own wasm dependency). `npm run package` and the packaged app were not run for M13 (not in the acceptance list); an asar path problem is possible.
 - **/about names the engine** ("I answer with auto/deepseek-v4.1-flash while that app runs"). Fine to show the model name to strangers?
 - **Attachments (spec 0012):** phone interop for 1:1 images works only through HOP today. Reviewer recommends both paths (0012 + HOP fallback). Decide (docs/review/0012-attachments.md). Also: who authorizes Bulletin storage for non-persons beyond devnet.
+
+## M16 (2026-09-24)
+
+- **vectors-0011.md (b) prints its AAD one byte long.** It reads `677270` + `01` × 33 + `00000000` (41 bytes). `b"grp" : A : u32 1 : 00` is 40 bytes (`677270` + `01` × 32 + `0100000000`), and only the 40-byte AAD reproduces the sealed `GroupData` of (b), which pca pins; (c) and (j) print 40 bytes. Every other byte of (a)–(j) matches here. The spec pins the 40-byte value with a comment; please correct the vectors file (not edited here: docs/spec is read-only for this agent).
+- **Ruling 8 (bot announces `botInfo` in its first carrier) is not in pca 0fa12a2.** The desktop takes a `botInfo` inside a carrier (it describes the sender, as in v1) whenever one comes; nothing waits for it.
+- **Epoch keys sit on the `groups` row** as the milestone says, although `database.ts` keeps every other secret in `secrets`. Move them to their own table next to `secrets`?
+- **`deviceAdded` in a carrier** (0011 Multi-device, Testing list) is not built in M16: a member's posting accounts come from its contact devices when an admin writes a state. Build it with M16b, or earlier?
+- **Welcome from any contact.** A `welcome` for an unknown group is taken from any contact that is not blocked (as a v1 roster was). Should a person's client ask first ("X added you to Y")?
+- **Accounts full of DM statements cannot post in any v2 group** (live: pcde2e, pcdeceb). DM statements never expire, so an identity that has talked to many peers is permanently full and every group statement is refused with `AccountFull`. This needs the upstream quota answer (0011 Unresolved 3) or a DM expiry below u32.max. The e2e uses pcdbenchfinb as the admin for now.

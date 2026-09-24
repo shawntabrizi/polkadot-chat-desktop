@@ -14,7 +14,9 @@ import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { type ContactRow, type GroupRow, type MessageRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
 import type { BotCommand } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
+import { PERMISSIONS, ROLES } from '../domain/chat/groupCodec';
 import { getGroup, memberName } from '../domain/chat/groups';
+import { can, isV2, memberOf } from '../domain/chat/groupsV2';
 import type { ChatManager } from '../domain/chat/manager';
 import { forwardText } from '../domain/chat/chatActions';
 import { listMessages, setRoomMuted } from '../domain/chat/messages';
@@ -78,12 +80,30 @@ type PanelProps = {
   onClose: () => void;
 };
 
+/** Spec 0011 role words for the members panel. */
+export const roleWord = (role: number): string => (role === ROLES.owner ? 'owner' : role === ROLES.admin ? 'admin' : 'member');
+
+/**
+ * May `self` remove `account` from this group? v1: the admin removes anyone
+ * else. v2 (0011): the owner, or an admin with `remove members`; nobody
+ * removes the owner, and only the owner removes an admin.
+ */
+export const mayRemove = (group: GroupRow, self: HexString, account: HexString): boolean => {
+  if (account === self || group.self !== 'member') return false;
+  if (!isV2(group)) return group.admin === self;
+  const me = memberOf(group.state, self);
+  const target = memberOf(group.state, account);
+  if (!target || !can(me, PERMISSIONS.remove) || target.role === ROLES.owner) return false;
+  return target.role < ROLES.admin || me?.role === ROLES.owner;
+};
+
 /** The members side panel: who is in, their state; the admin adds and removes; anyone leaves. */
 const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: PanelProps) => {
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
-  const admin = group.admin === self;
+  const v2 = isV2(group);
+  const admin = v2 ? can(memberOf(group.state, self), PERMISSIONS.add) : group.admin === self;
   const active = group.self === 'member';
   const needle = query.trim().toLowerCase();
   const candidates =
@@ -99,7 +119,8 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
   const add = (contact: ContactRow) => {
     setError(null);
     setQuery('');
-    void run(manager.updateRoster(group.id, [...others(null), { account: contact.accountId, username: contact.username }]), 'The member was not added.');
+    const member = { account: contact.accountId, username: contact.username };
+    void run(v2 ? manager.addGroupMember(group.id, member) : manager.updateRoster(group.id, [...others(null), member]), 'The member was not added.');
   };
 
   const later = (key: string, label: string, commit: () => Promise<void>) => {
@@ -146,7 +167,10 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
           const status = memberStatus(group, member.account, self, contacts);
           const removing = pending.has(`remove:${member.account}`);
           const info = peerInfo.get(member.account)?.botInfo;
-          const words = [member.account === self ? 'you' : null, member.account === group.admin ? 'admin' : null, removing ? 'removing…' : status].filter(Boolean).join(' · ');
+          const role = v2 ? roleWord(memberOf(group.state, member.account)?.role ?? ROLES.member) : member.account === group.admin ? 'admin' : null;
+          // v2: the role is the state; "member" alone says nothing new next to a member's role.
+          const state = removing ? 'removing…' : v2 && status === 'member' ? null : status;
+          const words = [member.account === self ? 'you' : null, role, state].filter(Boolean).join(' · ');
           return (
             <div
               key={member.account}
@@ -160,15 +184,21 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
                   <span className="truncate text-label-m text-fg-primary">{member.username}</span>
                   {info ? <BotBadge kind={info.kind} /> : null}
                 </div>
-                <p className={cn('text-caption', status === 'member' ? 'text-fg-tertiary' : 'text-fg-warning')}>{words}</p>
+                <p className={cn('text-caption', status === 'member' ? 'text-fg-tertiary' : 'text-fg-warning')} data-testid="member-role">
+                  {words}
+                </p>
               </div>
-              {admin && active && member.account !== self && !removing ? (
+              {mayRemove(group, self, member.account) && !removing ? (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="cursor-pointer rounded-medium font-normal text-fg-error opacity-0 transition-opacity group-hover/member:opacity-100 focus-visible:opacity-100"
                   data-testid="member-remove"
-                  onClick={() => later(`remove:${member.account}`, `${member.username} removed`, () => manager.updateRoster(group.id, others(member.account)))}
+                  onClick={() =>
+                    later(`remove:${member.account}`, `${member.username} removed`, () =>
+                      v2 ? manager.removeGroupMember(group.id, member.account) : manager.updateRoster(group.id, others(member.account)),
+                    )
+                  }
                 >
                   Remove
                 </Button>
@@ -208,7 +238,29 @@ const MembersPanel = ({ group, self, contacts, peerInfo, manager, onClose }: Pan
           {error}
         </p>
       ) : null}
-      <div className="shrink-0 p-4">
+      <div className="flex shrink-0 flex-col items-start gap-2 p-4">
+        {!v2 && active && group.admin === self ? (
+          // 0011 Compatibility: the v1 admin opens epoch 1 from this roster; the room keeps its messages.
+          <Button
+            variant="secondary"
+            className="cursor-pointer rounded-medium"
+            data-testid="group-upgrade"
+            disabled={pending.has('upgrade')}
+            onClick={() => {
+              setError(null);
+              setPending(current => new Set(current).add('upgrade'));
+              void run(manager.upgradeGroup(group.id), 'The group was not upgraded.').finally(() =>
+                setPending(current => {
+                  const next = new Set(current);
+                  next.delete('upgrade');
+                  return next;
+                }),
+              );
+            }}
+          >
+            {pending.has('upgrade') ? 'Upgrading…' : 'Upgrade to private group'}
+          </Button>
+        ) : null}
         {active ? (
           <Button
             variant="destructive"
@@ -407,7 +459,7 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
           name={group.name}
           status={
             <span data-testid="group-status">
-              {memberCount(group)} · admin {memberName(group, group.admin)}
+              {isV2(group) ? `${memberCount(group)} · epoch ${group.epoch ?? 1} · one statement per message` : `${memberCount(group)} · admin ${memberName(group, group.admin)}`}
             </span>
           }
         >
@@ -447,7 +499,11 @@ export const GroupRoom = ({ groupId, manager, self, scrollToMessageId = null, sc
             {error}
           </p>
         ) : null}
-        {active ? (
+        {active && group.locked ? (
+          <p className="px-4 py-4 text-center text-body-m text-fg-secondary" data-testid="group-locked">
+            Waiting for the new group key from an admin.
+          </p>
+        ) : active ? (
           <Composer
             draft={draft}
             onDraft={text => {

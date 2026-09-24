@@ -16,7 +16,7 @@ import { type StatementStoreAdapter, createExpiryAllocator, createSr25519Prover 
 
 import { type HexString, bytesToHex, hexToBytes, randomId } from '../../app/bytes';
 import { readChatPrefs } from '../../app/chatPrefs';
-import { type ContactRow, type GroupPeerId, type MessageRow, type PeerDevice, type RequestRow, groupIdOf, groupPeerOf, isGroupPeer } from '../../app/database';
+import { type ContactRow, type GroupPeerId, type MessageRow, type PeerDevice, type RequestRow, db, groupIdOf, groupPeerOf, isGroupPeer } from '../../app/database';
 import type { ConnectionStatus } from '../../app/statementStore';
 import { getContact, listContacts, removeContactDevice, upsertContactDevice } from '../contacts/repository';
 import { type DeviceKeys, isUsablePeerDevice } from '../device/keys';
@@ -55,8 +55,9 @@ import {
   saveOwnGroupInfo,
   takeSeq,
 } from './groups';
+import { type GroupsV2, createGroupsV2, isV2 } from './groupsV2';
 import { type IdentityChannel, createIdentityChannel } from './identityChannel';
-import type { ButtonWire, IdentityChannelEvent } from './identityEvents';
+import type { ButtonWire, GroupControl, IdentityChannelEvent } from './identityEvents';
 import {
   addMessage,
   applyDeletion,
@@ -206,7 +207,7 @@ export type ChatManager = {
    * to each one we have not (the roster follows once they accept). Returns
    * the group id; its room is `group:<id>`.
    */
-  createGroup: (name: string, members: GroupMemberInput[]) => Promise<string>;
+  createGroup: (name: string, members: GroupMemberInput[], options?: { fanOut?: boolean }) => Promise<string>;
   /** Spec 0009: a text or reply to the group (the same as `sendMessage(group:<id>, …)`). */
   sendToGroup: (groupId: string, content: { type: 'text'; text: string } | { type: 'reply'; messageId: string; text: string }) => Promise<void>;
   /**
@@ -214,8 +215,18 @@ export type ChatManager = {
    * and to every member it removes. `members` lists everyone but us.
    */
   updateRoster: (groupId: string, members: GroupMemberInput[]) => Promise<void>;
-  /** Spec 0009: `groupLeave` to every other member; we send and take nothing more. */
+  /** Spec 0009: `groupLeave` to every other member; we send and take nothing more. Spec 0011: one carrier, then our keys go. */
   leaveGroup: (groupId: string) => Promise<void>;
+  /** Spec 0011, admin: remove a member (a rekey on the old topic and the state on the new one: two submissions). */
+  removeGroupMember: (groupId: string, account: HexString) => Promise<void>;
+  /** Spec 0011, admin: add a member (the state, then a `welcome` over the DM session, or a chat request first). */
+  addGroupMember: (groupId: string, member: GroupMemberInput) => Promise<void>;
+  /** Spec 0011: our own v1 room becomes a private group in place (its rows stay). */
+  upgradeGroup: (groupId: string) => Promise<void>;
+  /** Spec 0011: ask a member (a bot admin first) for group messages we missed. Resolves who was asked. */
+  requestGroupHistory: (groupId: string, to?: HexString, since?: number) => Promise<HexString | null>;
+  /** Spec 0011: the group topics this manager watches (the e2e reads them). */
+  groupTopics: () => string[];
   dispose: VoidFunction;
 };
 
@@ -371,9 +382,20 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       case 'groupMessage':
         await onGroupMessage(peer, message, effect.groupId, effect.seq, effect.effect);
         return;
+      case 'groupControl':
+        await onGroupControl(peer, effect.control);
+        return;
       case 'ignore':
         return;
     }
+  };
+
+  // ── Spec 0011 groups, pairwise control ────────────────────────────────
+
+  const onGroupControl = async (sender: HexString, control: GroupControl): Promise<void> => {
+    const outcome = await groupsV2.onControl(sender, control);
+    if (outcome === 'welcomed' || outcome === 'rekeyed') return;
+    if (outcome !== 'answered' && outcome !== 'done' && outcome !== 'page') console.warn('[chat] group control %s from %s: %s', control.tag, sender, outcome);
   };
 
   // ── Spec 0009 groups, inbound ──────────────────────────────────────────
@@ -398,12 +420,21 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
    * has the same envelope id, so a second copy is a no-op (`addMessage`).
    */
   const onGroupMessage = async (sender: HexString, message: IncomingChatMessage, groupId: string, seq: number, effect: IncomingEffect): Promise<void> => {
+    // A v1 wrapper for a group this client runs as v2 (or a stale copy after the upgrade): not taken.
+    if (isV2(await getGroup(groupId))) return;
     const admitted = await admitGroupMessage(groupId, sender, seq, message.timestamp);
     if (!admitted) {
       console.warn('[chat] dropped a group message for %s from a non-member %s', groupId, sender);
       return;
     }
-    const room = admitted.peer;
+    await applyGroupEffect(admitted.peer, groupId, sender, message, effect, seq);
+  };
+
+  /**
+   * One group content from `sender`, already admitted (v1 roster and seq, or
+   * a v2 carrier's signer and `post` checks), applied to the group's room.
+   */
+  const applyGroupEffect = async (room: GroupPeerId, groupId: string, sender: HexString, message: IncomingChatMessage, effect: IncomingEffect, seq?: number): Promise<void> => {
     switch (effect.kind) {
       case 'message':
         typing.messageFrom(room, message.timestamp);
@@ -412,7 +443,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
           peerAccountId: room,
           groupId,
           senderAccountId: sender,
-          groupSeq: seq,
+          ...(seq === undefined ? {} : { groupSeq: seq }),
           timestamp: message.timestamp,
           direction: 'incoming',
           status: 'received',
@@ -461,6 +492,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       case 'groupInfo':
       case 'groupMessage':
       case 'groupLeave':
+      case 'groupControl':
       case 'ignore':
         return;
     }
@@ -474,6 +506,29 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     statementStore,
     onMessage: (peer, message) => guard(handleIncoming(peer, message), 'incoming message'),
   });
+
+  // Spec 0011: v2 groups (one statement per message on the group topic).
+  const ownSigner = bytesToHex(deviceKeys.statementAccountPublicKey);
+  const peerIdentity = async (account: HexString) => lookup.getPeerIdentity(hexToBytes(account)).catch(() => null);
+  const groupsV2: GroupsV2 = createGroupsV2({
+    self,
+    signer: ownSigner,
+    ownChatPrivateKey: identity.identityChatPrivateKey,
+    ownChatPublicKey: identity.identityChatPublicKey,
+    store: statementStore,
+    prover,
+    chatKeyOf: async account => (await getContact(account))?.chatPublicKey ?? (await peerIdentity(account))?.chatPublicKey ?? null,
+    // Each device signs with its own statement account; those are the member's posting set (0011 Multi-device).
+    postingOf: async account =>
+      account === self ? [ownSigner] : ((await getContact(account))?.devices ?? []).map(device => bytesToHex(device.statementAccountId)),
+    nameOf: async account =>
+      (account === self ? deps.username : undefined) ?? (await getContact(account))?.username ?? (await peerIdentity(account))?.username ?? `${account.slice(0, 8)}…`,
+    isBot: async account => ((await getPeerInfo(account))?.botInfo ?? null) !== null || ((await getPeerInfo(account))?.botSignalAt ?? null) !== null,
+    reachable: account => sessions.has(account),
+    sendControl: (peer, control) => submit(peer, { type: 'groupControl', control }, { messageId: randomId(), timestamp: Date.now() }),
+    applyMessage: (groupId, sender, message) => applyGroupEffect(groupPeerOf(groupId), groupId, sender, message, fromWire(message.content)),
+  });
+  let groupTimer: ReturnType<typeof setInterval> | null = null;
 
   // ── Roster ─────────────────────────────────────────────────────────────
 
@@ -512,7 +567,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const sendPendingInvites = async (peer: HexString): Promise<void> => {
     for (const group of await listGroups()) {
       if (group.admin !== self || group.self !== 'member' || !group.invites.includes(peer)) continue;
-      await submit(peer, { type: 'groupInfo', info: groupInfoOf(group) }, { messageId: randomId(), timestamp: Date.now() });
+      if (isV2(group)) await groupsV2.welcomeTo(group.id, peer);
+      else await submit(peer, { type: 'groupInfo', info: groupInfoOf(group) }, { messageId: randomId(), timestamp: Date.now() });
       await clearInvite(group.id, peer);
     }
   };
@@ -608,9 +664,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     stopRequests = subscribeToIncomingRequests({ ownAccountId: identity.identityAccountId, statementStore }, data =>
       guard(intakeRequestStatement({ identity, lookup }, data), 'request intake'),
     );
+    guard(groupsV2.start().then(() => groupsV2.tick()), 'group topics');
+    // Spec 0011 timers: key erase after 14 days, admin rotation after 7 days.
+    groupTimer ??= setInterval(() => guard(groupsV2.tick(), 'group timers'), 3_600_000);
   };
 
   const stopTransport = (): void => {
+    groupsV2.stop();
+    if (groupTimer) clearInterval(groupTimer);
+    groupTimer = null;
     stopRequests();
     sessions.stopAll();
     for (const channel of channels.values()) channel.dispose();
@@ -633,7 +695,13 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   // ── Outgoing ───────────────────────────────────────────────────────────
 
   const submit = async (peer: ChatTargetId, content: OutgoingContent, ids: { messageId: string; timestamp: number }) => {
-    if (isGroupPeer(peer)) return fanOut(peer, content, ids);
+    if (isGroupPeer(peer)) {
+      const group = await getGroup(groupIdOf(peer));
+      if (!isV2(group)) return fanOut(peer, content, ids);
+      // 0011: typing and seen are not sent in groups; everything else is one carrier statement.
+      if (content.type === 'typing' || content.type === 'seen') return;
+      return groupsV2.send(group.id, toWire(content), ids);
+    }
     if (!sessions.has(peer)) throw new Error('no chat session with this contact');
     // Spec 0005 (revision 2026-09-23): a `seen` still waiting for this peer
     // rides this message. Both enter the session batch in the same task, so
@@ -683,6 +751,16 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     await sendRequestTo(peer, `${deps.username ?? 'Someone'} invited you to the group “${groupName}”`);
   };
 
+  /** Spec 0011: members no DM reached get a chat request; their `welcome` follows the accept (`sendPendingInvites`). */
+  const inviteUnreached = async (groupId: string, groupName: string, members: readonly GroupMemberInput[], unreached: readonly HexString[]): Promise<void> => {
+    if (unreached.length === 0) return;
+    for (const account of unreached) {
+      const member = members.find(entry => entry.account === account);
+      if (member) await inviteByRequest(member, groupName).catch(error => console.warn('[chat] group invite failed', error));
+    }
+    await db.groups.update(groupId, { invites: [...unreached] });
+  };
+
   const rosterOf = (members: readonly GroupMemberInput[], previous: readonly GroupMember[], now: number): GroupMember[] => {
     const seen = new Set<string>([self]);
     const out: GroupMember[] = [];
@@ -710,6 +788,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const updateRoster: ChatManager['updateRoster'] = async (groupId, members) => {
     const group = await getGroup(groupId);
     if (!group) throw new Error('This group is not known on this device.');
+    if (isV2(group)) throw new Error('A private group changes members one at a time.');
     if (group.admin !== self) throw new Error('Only the admin changes the members.');
     if (group.self !== 'member') throw new Error('You are no longer a member of this group.');
     const now = Date.now();
@@ -758,6 +837,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   const leaveGroup: ChatManager['leaveGroup'] = async groupId => {
     const group = await getGroup(groupId);
     if (!group || group.self !== 'member') return;
+    if (isV2(group)) return groupsV2.leave(groupId);
     const failures: unknown[] = [];
     for (const member of otherMembers(group, self)) {
       await sendTo(member.account, { type: 'groupLeave', groupId }).catch(error => failures.push(error));
@@ -999,13 +1079,19 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       await applyReference(peer, 'outgoing', { messageId: randomId(), timestamp: Date.now() }, reference);
     },
 
-    createGroup: async (name, members) => {
+    createGroup: async (name, members, options = {}) => {
       const title = name.trim();
       if (title === '' || [...title].length > MAX_GROUP_NAME) throw new Error(`A group name has 1 to ${MAX_GROUP_NAME} characters.`);
       if (!deps.username) throw new Error('Your username is not known yet.');
       const now = Date.now();
       const roster = [{ account: self, username: deps.username, joinedAt: now }, ...rosterOf(members, [], now)];
       if (roster.length < 2) throw new Error('Pick at least one member.');
+      if (!options.fanOut) {
+        // Spec 0011: the state on ChState_1, then a `welcome` to each member; a member without a chat gets a request first.
+        const { groupId, unreached } = await groupsV2.create(title, roster.slice(1));
+        await inviteUnreached(groupId, title, members, unreached);
+        return groupId;
+      }
       if (roster.length > MAX_GROUP_MEMBERS) throw new Error(`A group has at most ${MAX_GROUP_MEMBERS} members.`);
       const info: GroupInfo = { groupId: randomId(), name: title, admin: self, members: roster, version: 1, createdAt: now };
       await saveOwnGroupInfo(info, [], now);
@@ -1019,6 +1105,25 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     updateRoster,
 
     leaveGroup,
+
+    removeGroupMember: async (groupId, account) => {
+      await groupsV2.remove(groupId, account);
+    },
+
+    addGroupMember: async (groupId, member) => {
+      const reached = await groupsV2.add(groupId, member.account, member.username);
+      if (!reached) await inviteUnreached(groupId, (await getGroup(groupId))?.name ?? '', [member], [member.account]);
+    },
+
+    upgradeGroup: async groupId => {
+      const group = await getGroup(groupId);
+      const unreached = await groupsV2.upgrade(groupId);
+      await inviteUnreached(groupId, group?.name ?? '', group?.members ?? [], unreached);
+    },
+
+    requestGroupHistory: (groupId, to, since) => groupsV2.requestHistory(groupId, to, since === undefined ? undefined : { tag: 'timestamp', value: since }),
+
+    groupTopics: () => groupsV2.topics(),
 
     dispose: () => {
       disposed = true;
