@@ -19,10 +19,12 @@ import type { NetworkProfileId } from '../../shared/network';
 import { ENGINES } from '../assistant/engines';
 import { assistantConfig } from '../assistant/settings';
 import { createToolPolicy } from '../assistant/toolPolicy';
+import { type PeopleDirectory, openPeopleDirectory } from '../identity/directory';
 import { bytesToHex } from '../identity/keys';
 import { createIdentity } from '../identity/service';
 import { loadIdentity, loadIdentityAt, saveIdentityAt } from '../identity/store';
 
+import { createAttestationGate } from './attestation';
 import { AGENT_COMMANDS, createAgentBrain } from './brain';
 import { type AgentAudience, type AgentUsage, DEFAULT_COOLDOWN_MS, DEFAULT_DAILY_CAP, allowedPeersEnv, clampLimits, repliesLeft } from './guard';
 import { type BotProcess, createAgentRuntime } from './runtime';
@@ -223,7 +225,7 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
   /** The allowlist bot-core was started with, so a contact change restarts it only when the list changed. */
   let startedAllowlist: string | null | undefined;
 
-  const start = () => {
+  const launch = () => {
     const agent = identity();
     const file = readSettings();
     if (!agent || !file.enabled) return;
@@ -269,6 +271,45 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
     runtime.start(env);
   };
 
+  // One People connection per wait, opened at the first check and closed when the wait ends.
+  let directory: Promise<PeopleDirectory> | null = null;
+  const closeDirectory = () => {
+    const open = directory;
+    directory = null;
+    void open?.then(d => d.destroy()).catch(() => undefined);
+  };
+  /** An account seen attested in this app run: an attestation is not taken back, so a restart does not read again. */
+  let attestedAccount: string | null = null;
+  const gate = createAttestationGate({
+    isAttested: async () => {
+      const agent = identity();
+      if (!agent) return false;
+      directory ??= openPeopleDirectory(agent.profile);
+      try {
+        return (await (await directory).identifierKeyFor(agent.accountHex)) != null;
+      } catch (cause) {
+        closeDirectory();
+        throw cause;
+      }
+    },
+    onAttested: () => {
+      attestedAccount = identity()?.accountHex ?? null;
+      launch();
+    },
+    onIdle: closeDirectory,
+    onChange: () => onChange(status()),
+    note: (kind, text) => runtime.note(kind, text),
+  });
+
+  /** Starts bot-core once the agent's attestation is visible at the best block (docs/spec/efficiency.md "Allowance facts"). */
+  const start = () => {
+    const agent = identity();
+    if (!agent || !readSettings().enabled) return;
+    if (attestedAccount === agent.accountHex) return launch();
+    if (runtime.state() === 'starting' || runtime.state() === 'running') return;
+    gate.open();
+  };
+
   status = () => {
     const agent = identity();
     const file = readSettings();
@@ -279,6 +320,7 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
       dailyCap: file.dailyCap,
       cooldownSeconds: Math.round(file.cooldownMs / 1000),
       state: runtime.state(),
+      attestation: gate.state(),
       repliesLeft: repliesLeft(file.usage, file.dailyCap, Date.now()),
       stats: runtime.stats(),
       log: runtime.log(),
@@ -286,6 +328,7 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
   };
 
   const restart = () => {
+    gate.cancel();
     runtime.stop({ reason: 'Restarting with the new settings' });
     start();
   };
@@ -318,7 +361,10 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
       const before = readSettings();
       const limits = clampLimits({ dailyCap: change.dailyCap ?? before.dailyCap, cooldownMs: change.cooldownSeconds !== undefined ? change.cooldownSeconds * 1000 : before.cooldownMs });
       const next = updateSettingsFile({ ...(change.enabled !== undefined ? { enabled: change.enabled } : {}), ...(change.audience ? { audience: change.audience } : {}), ...limits });
-      if (!next.enabled) runtime.stop();
+      if (!next.enabled) {
+        gate.cancel();
+        runtime.stop();
+      }
       else if (!before.enabled || before.audience !== next.audience || runtime.state() === 'failed') restart();
       const current = status();
       onChange(current);
@@ -335,6 +381,7 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
     },
     kill: () => {
       updateSettingsFile({ enabled: false });
+      gate.cancel();
       runtime.stop({ kill: true });
       const current = status();
       onChange(current);
@@ -347,6 +394,9 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
         runtime.note('error', `The agent did not start: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
     },
-    shutdown: () => runtime.stop({ reason: 'The app is closing' }),
+    shutdown: () => {
+      gate.cancel();
+      runtime.stop({ reason: 'The app is closing' });
+    },
   };
 };

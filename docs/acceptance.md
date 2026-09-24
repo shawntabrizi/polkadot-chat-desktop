@@ -3323,3 +3323,56 @@ SCREENSHOTS_OK in 4.9 s
 
 - `npm run e2e:agent` (dev) was not rerun: the dev path is unchanged except the /about text and the operator context's model line, which the brain spec covers; the packaged run drives the same steps.
 - The full `npm run screenshots` was not rerun (only `--only signup` to prove the free-port path).
+
+## M13 (allowance wait) (2026-09-24)
+
+### npx vitest run src/main/agent/attestation.spec.ts
+
+```
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+```
+
+The four cases: no bot-core start while the entry is missing, one start when it shows (with the wait in the log); a failed read is "not yet"; the 120 s timeout (the late text, bot-core stopped, then one check per 60 s, then the start); turning off cancels the wait.
+
+### npm run e2e:agent (fake engine, sender pcdeceb, headless, throwaway profile)
+
+```
+1.5s built
+3.6s claim pcdagentgjyf on devnet (engine: fake OpenAI server)
+28.6s AGENT_PUBLISHED pcdagentgjyf.62 confirmed=true
+31.6s AGENT_ATTESTED 2504
+31.6s AGENT_RUNNING
+31.7s SENDER pcdeceb.89
+34.9s REQUEST_SENT (no text)
+48.9s ACCEPTED devices=1
+48.9s BOTINFO kind=1 name=pcdagentgjyf.62 commands=help,about,stop
+48.9s GREETED "Hello! I am a test agent. Ask me anything."
+57.5s ANSWER "Pick a colour." keyboard=[Red, Blue] submissions=1 replies=1
+57.5s ANSWER_KEYBOARD
+66.0s PRESS_ANSWERED "You picked red." submissions=1 replies=1
+66.0s TOTALS replies=3 submissions=4 (the accept and the greeting included) typing=0
+66.0s BUDGET_OK one submission per reply
+AGENT_OK
+```
+
+The claim's own wait (createIdentity) took the registration-to-attestation time (about 25 s); the gate then saw the entry at its first read, 2.5 s including the People connection. The script also fails if bot-core's "Starting as" log line comes before the attestation line.
+
+### npm run check
+
+```
+ Test Files  75 passed (75)
+      Tests  619 passed (619)
+check:tokens: clean (158 files)
+```
+
+### PCD_HEADLESS=1 PCD_USER_DATA_DIR=<throwaway> npm run smoke
+
+```
+SMOKE_OK
+```
+
+### Not run
+
+- The live timeout path (an agent not attested for 120 s) was not produced on devnet; the spec covers it with fake timers.
+- `npm run e2e:agent:packaged` was not run (no packaging change).

@@ -12,7 +12,8 @@
 // 2. The app is built and started headless (PCD_HEADLESS=1) on a throwaway
 //    profile (PCD_USER_DATA_DIR). Over CDP: Settings › Agent's calls, audience
 //    "anyone", then the claim of a fresh username (pcdagent + 4 letters) on
-//    devnet: AGENT_PUBLISHED <username>, then AGENT_RUNNING.
+//    devnet: AGENT_PUBLISHED <username>, AGENT_ATTESTED <ms> (the agent's
+//    Consumers entry at the best block, before bot-core starts), then AGENT_RUNNING.
 // 3. The sender is the test identity (default pcdeceb) through this repo's
 //    domain code (Dexie on fake-indexeddb, as e2e-chat.mjs): it resolves the
 //    agent at the best block, sends a chat request with no text, and waits for
@@ -161,9 +162,16 @@ try {
 }
 say(`AGENT_PUBLISHED ${claimed.username} confirmed=${claimed.confirmed}`);
 const agentAccount = claimed.accountHex.toLowerCase();
+// bot-core starts only after the agent's Consumers entry is visible at the best block (the statement allowance comes with it).
+const attestedLine = /The network attested the agent after (\d+) ms/;
+const attested = await waitFor(async () => (await status()).log.find(entry => attestedLine.test(entry.text)), 180_000);
+if (!attested) await finish(4, `AGENT_TIMEOUT attestation (state ${(await status()).attestation})`);
+say(`AGENT_ATTESTED ${attestedLine.exec(attested.text)[1]}`);
 const running = await waitFor(async () => (await status()).state === 'running', 120_000);
 if (!running) await finish(4, `AGENT_TIMEOUT running (state ${(await status()).state}; log: ${JSON.stringify((await status()).log.slice(-5))})`);
 say('AGENT_RUNNING');
+const order = (await status()).log.map(entry => entry.text);
+if (order.findIndex(text => text.startsWith('Starting as')) < order.findIndex(text => attestedLine.test(text))) await finish(1, 'AGENT_FAIL bot-core started before the attestation');
 
 // ── 2. The sender ───────────────────────────────────────────────────────────
 

@@ -357,6 +357,8 @@ export type AgentStatus = {
   dailyCap: number;
   cooldownSeconds: number;
   state: 'stopped' | 'starting' | 'running' | 'failed';
+  /** Before bot-core starts: `waiting` for the network's attestation of the agent (its statement allowance), `late` when 120 s passed without it (checked again each minute); else null. */
+  attestation: 'waiting' | 'late' | null;
   /** Replies left today under the daily cap. */
   repliesLeft: number;
   /** Replies and bot-core submissions since the app started, per peer too (0x-less hex keys). */

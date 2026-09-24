@@ -28,6 +28,11 @@ const STATE_LINE: Record<AgentStatus['state'], string> = {
   failed: 'Stopped: the agent process ended. Turn it off and on to try again.',
 };
 
+const ATTESTATION_LINE: Record<NonNullable<AgentStatus['attestation']>, string> = {
+  waiting: 'Waiting for the network to attest the agent…',
+  late: 'The network has not attested the agent yet. Try again in a minute.',
+};
+
 const AUDIENCE_LABELS: Record<AgentAudience, string> = { contacts: 'My contacts only', anyone: 'Anyone' };
 
 const LOG_TONE: Record<AgentLogEntry['kind'], string> = {
@@ -169,8 +174,8 @@ const AgentPanel = ({ api, status }: { api: DesktopAgentApi; status: AgentStatus
       <div className="flex items-center justify-between gap-4">
         <label htmlFor="agent-enabled" className="flex cursor-pointer flex-col gap-0.5">
           <span className="text-body-m text-fg-primary">Publish my agent</span>
-          <span className={status.state === 'failed' ? 'text-body-s text-fg-error' : 'text-body-s text-fg-tertiary'} data-testid="agent-state">
-            {status.enabled && status.state === 'stopped' ? 'Starting…' : STATE_LINE[status.state]}
+          <span className={status.state === 'failed' || (status.enabled && status.attestation === 'late') ? 'text-body-s text-fg-error' : 'text-body-s text-fg-tertiary'} data-testid="agent-state">
+            {status.enabled && status.attestation ? ATTESTATION_LINE[status.attestation] : status.enabled && status.state === 'stopped' ? 'Starting…' : STATE_LINE[status.state]}
           </span>
         </label>
         <Switch id="agent-enabled" checked={status.enabled} onCheckedChange={on => change({ enabled: on })} data-testid="agent-switch" />
