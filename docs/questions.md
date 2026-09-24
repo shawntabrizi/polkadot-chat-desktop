@@ -125,7 +125,7 @@ Write the question, what you did meanwhile, and the date.
 
 ## Morning review (coordinator, 2026-09-24 night)
 
-- **pcdmeter seed in a transcript.** The M12f pca agent printed `BOT_SEED_HEX` of the devnet pcdmeter bot into its session transcript (the vault's `daily/.transcripts/`, private repo). Devnet only, test funds only. Rotate pcdmeter's identity when convenient (the meter contract's operator is that account, so rotation means a new Meter deploy or an operator transfer). Decide.
+- **pcdmeter seed in a transcript.** Owner ruling 2026-09-24: testnet dev and bot account seeds are not a concern; no rotation needed.
 - **Failed turns are charged** by pcdmeter ("Sorry — I couldn't reach my agent" cost 0.1 PAS). Queued for the pca fix round: charge only when the brain produced an answer.
 - **Groups v2 defaults** (see `docs/review/0011-groups-v2.md`): level 1 now, cap 256, history on request. Overrule if you disagree.
 - **M12e defaults**: delete keeps the contact; withdraw stops listening; blocked peers still see "delivered" (store ACK).

@@ -93,4 +93,3 @@ Spec 0008 v3: `pending` on the balance hint, resent with each metered reply in t
 - Charge a metered turn only when the brain answered (failed turns are charged today).
 - `message-deletion.test.mjs` "no deletion goes out when the deleted extension is off" is timing-flaky in the full suite (5 ms wait).
 - pcdflip statement-ingress heartbeat recovery noise (76+ per hour) while still receiving.
-- Rotate pcdmeter's identity (seed exposed in a transcript; devnet only).
