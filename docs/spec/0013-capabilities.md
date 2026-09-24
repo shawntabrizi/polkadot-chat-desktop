@@ -378,3 +378,7 @@ handling (how clients read the account capability) is **unverified**.
 6. **HOP ack with several own devices** (the "claim, do not ack" rule
    above) needs the sibling device list, which mds gives; confirm with the
    phone team that the promotion fallback is reliable.
+
+### Owner ruling on baseline clients (2026-09-24)
+
+The phone apps show one "Unsupported message" bubble per unknown content. The owner accepts exactly one such bubble per chat: the `capabilities` message a device sends once when a chat starts (in the request opener's batch or the first message after accept). Every other extension kind (`seen`, `typing`, `buttons`, `botInfo`, `transactionReference`, attachments beyond variant 0, groups) is sent to a device only after that device's `capabilities` listed it. A device that never sends `capabilities` receives base-spec content only. Bots (0008 `botInfo`, 0010 cards) are not phones: a bot that advertises kinds in its card or botInfo counts as having sent capabilities for those kinds. This retires the "development mode: send freely" rule of `README.md` for peers, and keeps it only for the test fleet.
