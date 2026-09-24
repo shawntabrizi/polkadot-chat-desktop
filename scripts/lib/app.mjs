@@ -89,13 +89,14 @@ export const packagedBin = join(root, 'dist/mac-arm64/Polkadot Chat.app/Contents
 /**
  * Starts the app on `profile` and connects to its page. `env` adds to the
  * environment. `packaged` runs the packaged binary (dist/) instead of the
- * dev build (out/ through node_modules' Electron).
+ * dev build (out/ through node_modules' Electron). `args` adds flags
+ * (M18: `--profile <name>`, `--picker`); `profile` is the userData root.
  */
-export const launch = async (profile, { env = {}, log = null, packaged = false } = {}) => {
+export const launch = async (profile, { env = {}, log = null, packaged = false, args: extra = [] } = {}) => {
   const port = await debugPort();
   const [bin, args] = packaged ? [packagedBin, []] : [electronBin, ['.']];
   if (packaged && !existsSync(bin)) throw new Error(`no packaged app at ${bin} (run npm run package)`);
-  const child = spawn(bin, [...args, `--remote-debugging-port=${port}`], {
+  const child = spawn(bin, [...args, ...extra, `--remote-debugging-port=${port}`], {
     cwd: root,
     env: { ...process.env, ...env, PCD_HEADLESS: '1', PCD_USER_DATA_DIR: profile },
     stdio: ['ignore', log ?? 'ignore', log ?? 'ignore'],
@@ -153,5 +154,14 @@ export const launch = async (profile, { env = {}, log = null, packaged = false }
   };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
-  return { evaluate, waitFor, send, quit, child };
+  return { evaluate, waitFor, send, quit, child, port };
 };
+
+/**
+ * M18: the folder of one profile under a userData root (`profiles/<name>`).
+ * A root the app has not opened yet has no profiles.json: the app moves
+ * files written straight into the root to `profiles/default` on its first
+ * start, so seeding the root still works before the first launch.
+ */
+export const profileFolder = (userDataRoot, name = 'default') =>
+  existsSync(join(userDataRoot, 'profiles.json')) ? join(userDataRoot, 'profiles', name) : userDataRoot;

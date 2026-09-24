@@ -29,6 +29,7 @@ import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, Assis
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
 import { AgentSettings } from './AgentSettings';
+import { ProfilesSettings } from './Profiles';
 import { PeerAvatar } from './Avatar';
 import { StorageSettings } from './StorageSettings';
 import { type DemoRuntime, DemoSettings, useDemoBots } from './DemoBots';
@@ -641,6 +642,11 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
     <div className="mx-auto flex max-w-2xl flex-col gap-2 pb-2">
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
       <IdentitySection username={username} identity={identity} profileId={profileId} />
+      {window.desktop?.profiles ? (
+        <Section title="Profiles">
+          <ProfilesSettings api={window.desktop.profiles} />
+        </Section>
+      ) : null}
       <AppearanceSection />
       <ChatSection />
       <PrivacySection />

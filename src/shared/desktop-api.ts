@@ -61,6 +61,14 @@ export const IPC = {
   fileOpen: 'file:open',
   fileSave: 'file:save',
   storageAtRestKey: 'storage:atRestKey',
+  profilesState: 'profiles:state',
+  profilesOpen: 'profiles:open',
+  profilesOpenInNewWindow: 'profiles:openInNewWindow',
+  profilesAdd: 'profiles:add',
+  profilesRename: 'profiles:rename',
+  profilesRemove: 'profiles:remove',
+  profilesSetDefault: 'profiles:setDefault',
+  profilesOpenPicker: 'profiles:openPicker',
 } as const;
 
 /** Who answers the Assistant: the LLM proxy, or a coding-agent CLI on this computer. */
@@ -462,6 +470,47 @@ export type DesktopStorageApi = {
   atRestKey: () => Promise<Uint8Array>;
 };
 
+/** M18: one profile as the picker and Settings › Profiles list it. */
+export type ProfileRow = {
+  /** The directory name under `profiles/` (never changes). */
+  name: string;
+  /** The rename, else the username, else a placeholder before sign-up. */
+  label: string;
+  username: string | null;
+  network: NetworkProfileId | null;
+  /** Open in some window now (this one included). */
+  running: boolean;
+  /** The profile of this window. */
+  current: boolean;
+  /** Opened at launch without asking. */
+  isDefault: boolean;
+};
+
+export type ProfilesState = {
+  /** This window's profile; null in the picker. */
+  current: string | null;
+  profiles: ProfileRow[];
+  /** The profile opened at launch; null shows the picker when there are several. */
+  defaultProfile: string | null;
+};
+
+/** M18 profiles: several identities on one computer, one process per open profile. */
+export type DesktopProfilesApi = {
+  state: () => Promise<ProfilesState>;
+  /** Opens the profile in this window (the app restarts into it). */
+  open: (name: string) => Promise<void>;
+  /** Starts the profile in its own window; one that is open already comes to the front. */
+  openInNewWindow: (name: string) => Promise<void>;
+  /** A new empty profile, opened in this window: sign-up follows. */
+  add: () => Promise<void>;
+  rename: (name: string, label: string) => Promise<ProfilesState>;
+  /** Deletes the directory; refused for a running profile. The caller runs the Undo time first. */
+  remove: (name: string) => Promise<ProfilesState>;
+  setDefault: (name: string | null) => Promise<ProfilesState>;
+  /** The picker in a new window. */
+  openPicker: () => Promise<void>;
+};
+
 export type DesktopApi = {
   version: string;
   identity: DesktopIdentityApi;
@@ -474,6 +523,7 @@ export type DesktopApi = {
   bulletin: DesktopBulletinApi;
   files: DesktopFilesApi;
   storage: DesktopStorageApi;
+  profiles: DesktopProfilesApi;
 };
 
 declare global {

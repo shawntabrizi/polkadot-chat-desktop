@@ -225,3 +225,10 @@ Write the question, what you did meanwhile, and the date.
 - **The card reads the bot's English.** No wire kind carries a proposal (M14 "Do not"), so the card parses dao.md's lines (`Proposal #N:`, `Tally #N:`, `Voting on #N … closed:`, `Proposal #N executed`). A wording change in pca silently turns the card off. Pin the wording in dao.md as a contract for clients, or give botInfo/buttons a structured field later?
 - **Status 0 in groups.** A group reference goes out once (in block or failed), never the 30 s "submitted". Spec 0007 rule 3 allows both; is one statement per transaction the rule for groups (it is what the brief asked)?
 - **The quoted sender of a reply in a group** shows the group's name ("Garden DAO") instead of the member who wrote the quoted message (visible under the bot's tally replies in room-dao.png). Existing M16 behaviour, not changed here. Fix in a group follow-up?
+
+## M18 (2026-09-24)
+
+- **No recovery-phrase export exists.** Step 4 asks the remove warning to link to "the existing export"; the app never shows the mnemonic. The warning says the keys are the only backup instead. Should a "Show recovery phrase" (with its own safeguards) come before profiles ship?
+- **"Default at launch"** is read as "Ask which profile" (the start value) or one profile to open without asking. Is that the intended meaning, or should the default only preselect a row in the picker?
+- **Invite links with several processes.** macOS hands a `polkadot-chat://` link (M16b) to one running process of the app, whichever LaunchServices picks; it is not routed to a chosen profile. Should the picker (or each window) ask which profile joins?
+- **Dock tiles.** Each profile's process is started from the binary, so each should have its own Dock tile and badge. Not checked by eye: every run here was headless (no dock icon). Please check with two windows open.

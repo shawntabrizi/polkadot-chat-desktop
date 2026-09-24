@@ -54,9 +54,10 @@ import { createDemoManifestSource } from './demoManifest';
 import { createDiagnostics } from './diagnostics';
 import { readMetadata, writeMetadata } from './metadataCache';
 import { isHeadless } from './headless';
-import { showNotification } from './notify';
+import { showNotification, withProfileName } from './notify';
 import { openInviteLink, takePendingInviteLink } from './inviteLinks';
 import { storageKey } from './storageKey';
+import { notifyProfileName, profileIdentityChanged } from './profileSession';
 
 // The mobile app's rule: lowercase letters only, 6 to 29 of them.
 const USERNAME = /^[a-z]{6,29}$/;
@@ -284,6 +285,8 @@ export const shutdownAgent = (): void => agentService?.shutdown();
 export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   ipcMain.handle(IPC.identityGet, (): IdentitySummary | null => {
     const identity = loadIdentity();
+    // M18: the picker lists this profile by its identity; the page reads this at every start.
+    profileIdentityChanged();
     return identity ? { username: identity.username, accountHex: identity.accountHex, profile: identity.profile } : null;
   });
 
@@ -298,13 +301,15 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (creating) throw new Error('A sign-up is already running.');
     creating = true;
     try {
-      return await createIdentity({
+      const created = await createIdentity({
         ...request,
         store: { save: saveIdentity, load: loadIdentity },
         onProgress: line => {
           if (!event.sender.isDestroyed()) event.sender.send(IPC.identityProgress, line);
         },
       });
+      profileIdentityChanged();
+      return created;
     } finally {
       creating = false;
     }
@@ -323,6 +328,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     resetTimer = setTimeout(() => {
       resetTimer = null;
       dropIdentityBackup();
+      profileIdentityChanged();
     }, RESET_GRACE_MS);
   });
 
@@ -472,7 +478,9 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   // A click focuses the window and opens the room. The body is the message
   // text the renderer already shows; nothing else leaves the app.
   ipcMain.handle(IPC.notifyShow, (_event, value: unknown): void => {
-    showNotification(parseNotify(value), {
+    // M18: with several profiles, the title says which identity the message is for.
+    const request = parseNotify(value);
+    showNotification({ ...request, title: withProfileName(request.title, notifyProfileName()) }, {
       isSupported: () => Notification.isSupported(),
       create: options => new Notification(options),
       beep: () => shell.beep(),

@@ -36,6 +36,7 @@
     "e2e:agent": "node scripts/e2e-agent.mjs",
     "e2e:agent:packaged": "node scripts/e2e-agent.mjs --packaged",
     "e2e:tools": "node scripts/e2e-tools.mjs",
+    "e2e:profiles": "node scripts/e2e-profiles.mjs",
     "probe:statements": "node scripts/probe-statements.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },

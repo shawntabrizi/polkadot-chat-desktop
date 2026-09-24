@@ -105,6 +105,16 @@ const api: DesktopApi = {
   storage: {
     atRestKey: () => ipcRenderer.invoke(IPC.storageAtRestKey),
   },
+  profiles: {
+    state: () => ipcRenderer.invoke(IPC.profilesState),
+    open: name => ipcRenderer.invoke(IPC.profilesOpen, name),
+    openInNewWindow: name => ipcRenderer.invoke(IPC.profilesOpenInNewWindow, name),
+    add: () => ipcRenderer.invoke(IPC.profilesAdd),
+    rename: (name, label) => ipcRenderer.invoke(IPC.profilesRename, name, label),
+    remove: name => ipcRenderer.invoke(IPC.profilesRemove, name),
+    setDefault: name => ipcRenderer.invoke(IPC.profilesSetDefault, name),
+    openPicker: () => ipcRenderer.invoke(IPC.profilesOpenPicker),
+  },
 };
 
 contextBridge.exposeInMainWorld('desktop', api);

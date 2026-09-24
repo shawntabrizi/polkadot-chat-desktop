@@ -3899,3 +3899,103 @@ Both themes checked by eye: the pin bar reads "Proposal #3: Buy seeds for the sp
 ### Not run
 
 - DAO_OK: see DAO_E2E_PENDING above. The contract and bot half is proved live in pca (`DAO_LIVE_OK`, docs/spec/contracts/dao.md).
+
+## M18 — Profiles: several identities on one Mac (2026-09-24)
+
+Every app launch below ran with `PCD_HEADLESS=1` and a throwaway `PCD_USER_DATA_DIR`.
+
+### npm run check
+
+```
+ Test Files  94 passed (94)
+      Tests  832 passed (832)
+check:tokens: clean (196 files)
+```
+
+(tsc and eslint printed nothing.)
+
+### npm run smoke (PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d -t pcd-m18-smoke))
+
+```
+✓ built in 219ms
+SMOKE_OK
+```
+
+The root afterwards held `profiles` and `profiles.json` only.
+
+### npm run e2e:profiles
+
+```
+0.5s built
+1.6s both profiles show sign-up
+58.4s signed up b: pcdprofbkmzj.72 confirmed=true
+158.4s signed up a: pcdprofakmzj.90 confirmed=true
+PROFILES_CREATED a=pcdprofakmzj.90 b=pcdprofbkmzj.72 profiles=default,b,a
+IDENTITY_OK a=pcdprofakmzj.90 b=pcdprofbkmzj.72
+RUNNING_OK a sees a:running default:closed b:running
+LOCK_OK second start of a exited code=0 (PROFILE_ALREADY_OPEN)
+179.7s search attempt 1: "No results for “pcdprofakmzj”"
+180.7s b sent a request to pcdprofakmzj.90
+REQUEST_OK a received "Hello from profile b (jycrye)" from pcdprofbkmzj.72
+182.7s b sent "Second message from b (jycrye)"
+PROFILES_OK a=pcdprofakmzj.90 received 2 messages from b=pcdprofbkmzj.72 in 183 s
+```
+
+The first run (before the search retry) passed PROFILES_CREATED, IDENTITY_OK, RUNNING_OK and LOCK_OK and ended `PROFILES_FAIL b did not find pcdprofapubh.03 by search`: the search asks the backend once per pause in typing, and the new name was not listed yet. The script now types the name again every 20 s (the run above needed one retry).
+
+### npm run package, then npm run smoke:packaged
+
+```
+  • building block map  blockMapFile=dist/Polkadot Chat-0.1.0-arm64.dmg.blockmap
+(npm run package: exit 0)
+profile /var/folders/_1/q03733qd0pv42n1dvkcvyx0c0000gn/T/pcd-smoke.vOqfAb9ywh
+PROFILE_MIGRATED 1 entries to profiles/default
+SMOKE_OK
+MIGRATE_OK root holds profiles profiles.json 
+AGENT_SELFTEST_OK bot-core started from /Users/shawntabrizi/Documents/GitHub/pcd-m18/dist/mac-arm64/Polkadot Chat.app/Contents/Resources/app.asar/node_modules/polkadot-chat-agents/index.mjs
+```
+
+### Picker actions (a scratch CDP script, headless, not a repo script)
+
+```
+picker true
+default running after new window true
+relaunched target true
+after relaunch {"current":"work","rows":["work:true","default:true"],"signup":true}
+```
+
+"Open in new window" started a second process whose running mark appeared; "Open" restarted the picker's process into `work` (sign-up shown, both marks running). Both processes were stopped after.
+
+### npm run screenshots -- --only profile-picker,settings-profiles
+
+With `PCD_SCREENSHOT_IDENTITY` pointing at the main checkout's `.agent-runs/identity-pcde2e/identity.json` (this worktree has no test identities).
+
+```
+0.6s built
+1.9s [main] seeded pcdecejakd.11
+2.7s [profiles] saved profile-picker
+10.0s [main] fixture written
+11.6s [main] demo fixture requests: pcdpirate.81, pcdguide.70
+13.4s [main] saved settings-profiles
+
+PNGs:
+  .agent-runs/screens/berlin-day/profile-picker.png
+  .agent-runs/screens/berlin-night/profile-picker.png
+  .agent-runs/screens/berlin-day/settings-profiles.png
+  .agent-runs/screens/berlin-night/settings-profiles.png
+SCREENSHOTS_OK in 13.5 s
+```
+
+Checked by eye: the picker lists alice.42 (Devnet), Work (alicework.07 · Paseo · Open in another window, with "Show"), New profile (profile-2) (Not signed up yet), and "Add profile"; Settings › Profiles lists the seeded identity ("This window", Rename only), Work (no Remove: it runs) and profile-2 (Remove…), "At launch: Ask which profile" and "Open another profile".
+
+### git status --short (after the commit)
+
+```
+```
+
+(empty)
+
+### Not run
+
+- The Undo-then-delete path of Settings › Profiles › Remove… was not pressed in the app; its rules (running and last profile refused, folder deleted, default cleared) are in `profiles.spec.ts`.
+- Dock tiles and badges per process: every run was headless (no dock icon). See docs/questions.md.

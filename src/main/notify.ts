@@ -30,6 +30,13 @@ export type NotifyDeps = {
   headless?: boolean;
 };
 
+/**
+ * M18: with more than one profile the title names the profile's identity
+ * ("bob.07 · to alice.42"), so a message for one identity is never read as
+ * one for another. `profile` is null with a single profile: the title is unchanged.
+ */
+export const withProfileName = (title: string, profile: string | null): string => (profile ? `${title} · to ${profile}` : title);
+
 /** Notifications must stay referenced until clicked or closed, or the click is lost. */
 const live = new Set<NotificationLike>();
 

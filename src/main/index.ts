@@ -9,6 +9,7 @@ import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
 import { loadWindowBounds, rememberWindowBounds } from './windowState';
+import { registerProfilesIpc, startProfile } from './profileSession';
 
 const SMOKE_TIMEOUT_MS = 30_000;
 
@@ -26,6 +27,14 @@ if (!app.isPackaged) {
 // state) so they never touch the owner's. Must be set before `ready`.
 const userDataOverride = process.env.PCD_USER_DATA_DIR;
 if (userDataOverride) app.setPath('userData', userDataOverride);
+
+// M18: userData (or PCD_USER_DATA_DIR) is the root of the profiles; this
+// process takes one profile (--profile, PCD_PROFILE, the only one, the
+// default) or the picker, and points userData at it. Before `ready`, and
+// before anything reads userData. The first start after M18 moves the old
+// single profile to profiles/default.
+const profileStart = startProfile();
+if (profileStart.kind === 'exit') process.exit(profileStart.code);
 
 // Automation runs (screenshots, GUI checks) with PCD_HEADLESS=1: see headless.ts.
 const headless = isHeadless();
@@ -112,6 +121,7 @@ void app.whenReady().then(async () => {
   // Before the window exists, so macOS never gives the app a dock icon or the front.
   if (headless) app.dock?.hide();
   registerIpc(getWindow);
+  registerProfilesIpc(getWindow);
   setInviteLinkWindow(getWindow);
   installAppMenu(getWindow);
   mainWindow = createWindow(process.argv.includes('--smoke'));

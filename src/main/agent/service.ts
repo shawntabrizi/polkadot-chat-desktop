@@ -47,6 +47,8 @@ const agentDir = (): string => {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 };
+/** M18: bot-core's state (journal, lanes, sessions) lives in this profile's folder, so two profiles' agents never share it. */
+export const agentStateDir = (): string => join(agentDir(), 'bot-core');
 const identityPath = (): string => join(agentDir(), 'identity.json');
 const settingsPath = (): string => join(agentDir(), 'settings.json');
 
@@ -232,7 +234,7 @@ export const createAgentService = (onChange: (status: AgentStatus) => void): Age
     const own = loadIdentity()?.accountHex;
     const allowlist = allowedPeersEnv({ audience: file.audience, contacts: own ? [...file.contacts, own] : file.contacts });
     const dir = agentDir();
-    const stateDir = join(dir, 'bot-core');
+    const stateDir = agentStateDir();
     const workspace = join(stateDir, 'workspace');
     mkdirSync(workspace, { recursive: true, mode: 0o700 });
     // Spec 0008: bot-core reads its botInfo from this file for every send.

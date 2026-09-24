@@ -32,9 +32,12 @@
 //             (name, default pcdbenchqmwk) +    group-members, room-typing
 //             the member PCD_SCREENSHOT_GROUP_WITH (default pcdbenchfina,
 //             e2e-group.mjs --role b) and the bot pcdguide.70
+//     profiles  fixture profiles (no identity)  profile-picker
 //
 // The shots (main worker unless named above):
 //   signup          the sign-up screen of a fresh profile, a username typed
+//   profile-picker  (profiles) M18 picker: three profiles, one running elsewhere
+//   settings-profiles Settings › Profiles with two fixture profiles added
 //   chats           the list at rest with a "Draft:" left in the Assistant
 //   room            the Staking Helper bot's room (fixture): an echo with a
 //                   👍, the room muted (the list shows the icon)
@@ -137,7 +140,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { debugPort, portAnswers } from './lib/app.mjs';
+import { debugPort, portAnswers, profileFolder } from './lib/app.mjs';
 import { drawScene, shrink } from './lib/testImage.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -174,9 +177,11 @@ const WORKER_SHOTS = {
     'group-invite', 'group-roles', 'room-pinned', 'room-dao',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'settings-storage',
+    'settings-profiles',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
   group: ['group-create', 'room-group', 'group-members', 'room-typing'],
+  profiles: ['profile-picker'],
 };
 const ALL_SHOTS = Object.values(WORKER_SHOTS).flat();
 
@@ -1060,6 +1065,12 @@ const mainWorker = async () => {
     await mainShots(app, log, pay);
     await attachmentShots(app, join(profile, 'pick.png'));
     if (wanted('settings-agent')) await agentShots(app, log, profile);
+    await app.shot('settings-profiles', async () => {
+      addFixtureProfiles(profile);
+      await app.click('[aria-label=Settings]');
+      if (!(await app.waitFor(`document.querySelectorAll('[data-testid=settings-profile-row]').length === 3`, 20_000))) throw new Error('Settings › Profiles does not list 3 profiles');
+      await app.evaluate(`document.querySelector('[data-testid=settings-profiles]').closest('section').scrollIntoView({ block: 'start' }); true`);
+    });
   } catch (error) {
     missing.push(`main worker: ${error.message}`);
     log('stopped:', error.message);
@@ -1737,8 +1748,10 @@ const paymentShots = async (app, log, pay) => {
 const agentShots = async (app, log, profile) => {
   await app.shot('settings-agent', async () => {
     if (!existsSync(agentIdentitySource)) throw new Error(`no agent test identity at ${agentIdentitySource}`);
-    mkdirSync(join(profile, 'agent'), { recursive: true, mode: 0o700 });
-    if (!(await app.evaluate('window.desktop.agent.status().then(s => !!s.identity)'))) await seedIdentityFile(profile, agentIdentitySource, join(profile, 'agent', 'identity.json'));
+    // M18: the running app's files are in its profile folder, not the userData root.
+    const agentDir = join(profileFolder(profile), 'agent');
+    mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+    if (!(await app.evaluate('window.desktop.agent.status().then(s => !!s.identity)'))) await seedIdentityFile(profile, agentIdentitySource, join(agentDir, 'identity.json'));
     await app.evaluate(`window.desktop.agent.update({ enabled: true, audience: 'contacts' }).then(() => true)`);
     await app.click('[aria-label=Settings]');
     if (!(await app.waitFor(`${app.exists('[data-testid=agent-settings]')} && ${app.exists('[data-testid=agent-username]')}`, 20_000))) throw new Error('no published agent in Settings');
@@ -2208,7 +2221,55 @@ const groupShots = async (app, log, ask, memberName) => {
 
 // ── Run the workers at the same time ─────────────────────────────────────
 
-const workers = { signup: signupWorker, main: mainWorker, flip: flipWorker, group: groupWorker };
+// ── Profiles (M18) ───────────────────────────────────────────────────────
+
+/**
+ * Fixture profiles next to the running one: display data only (fictional
+ * usernames, no identity file, never on the network). "work" is marked
+ * running by this script's own pid, so its row shows "Open in another window".
+ */
+const FIXTURE_PROFILES = [
+  { name: 'work', label: 'Work', username: 'alicework.07', network: 'paseo', accountHex: `0x${'b1'.repeat(32)}`, createdAt: 2 },
+  { name: 'profile-2', label: null, username: null, network: null, accountHex: null, createdAt: 3 },
+];
+const addFixtureProfiles = (userDataRoot, base = null) => {
+  const listPath = join(userDataRoot, 'profiles.json');
+  const list = base ?? JSON.parse(readFileSync(listPath, 'utf8'));
+  for (const entry of FIXTURE_PROFILES) {
+    mkdirSync(join(userDataRoot, 'profiles', entry.name), { recursive: true });
+    if (!list.profiles.some(item => item.name === entry.name)) list.profiles.push(entry);
+  }
+  writeFileSync(join(userDataRoot, 'profiles', 'work', 'running.json'), JSON.stringify({ pid: process.pid, accountHex: null, startedAt: Date.now() }));
+  writeFileSync(listPath, `${JSON.stringify(list, null, 2)}\n`);
+};
+
+const profilesWorker = async () => {
+  const log = logger('profiles');
+  const profile = mkdtempSync(join(tmpdir(), 'pcd-shots-profiles-'));
+  let app = null;
+  try {
+    // Three profiles and no default: a launch without --profile shows the picker.
+    mkdirSync(join(profile, 'profiles', 'default'), { recursive: true });
+    addFixtureProfiles(profile, {
+      version: 1,
+      defaultProfile: null,
+      migration: null,
+      profiles: [{ name: 'default', label: null, username: 'alice.42', network: 'devnet', accountHex: `0x${'a1'.repeat(32)}`, createdAt: 1 }],
+    });
+    app = await launch(profile, await portFor(4), log);
+    await app.shot('profile-picker', async () => {
+      if (!(await app.waitFor(`document.querySelectorAll('[data-testid=profile-row]').length === 3`, 30_000))) throw new Error('the picker does not list 3 profiles');
+      if (!(await app.waitFor(app.exists('[data-testid=profile-row][data-running]'), 10_000))) throw new Error('no running mark in the picker');
+    });
+  } catch (error) {
+    miss('profile-picker', error.message);
+  } finally {
+    await app?.quit();
+    rmSync(profile, { recursive: true, force: true });
+  }
+};
+
+const workers = { signup: signupWorker, main: mainWorker, flip: flipWorker, group: groupWorker, profiles: profilesWorker };
 await Promise.all(
   Object.entries(workers)
     .filter(([name]) => needs(name))

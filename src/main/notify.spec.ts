@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { IPC } from '../shared/desktop-api';
 
-import { type NotifyDeps, showNotification } from './notify';
+import { type NotifyDeps, showNotification, withProfileName } from './notify';
 
 const setup = (options: { supported?: boolean; minimized?: boolean; window?: boolean } = {}) => {
   const calls: string[] = [];
@@ -80,5 +80,13 @@ describe('showNotification', () => {
     showNotification({ title: 'a', body: 'b', peerId: '0xaa', sound: false }, gone.deps);
     gone.click();
     expect(gone.sent).toHaveLength(0);
+  });
+});
+
+describe('M18: the profile in the title', () => {
+  it('names the identity the message is for only when several profiles exist', () => {
+    // Two identities in two windows: "bob.07" alone would not say which of them bob wrote to.
+    expect(withProfileName('bob.07', 'alice.42')).toBe('bob.07 · to alice.42');
+    expect(withProfileName('bob.07', null)).toBe('bob.07');
   });
 });
