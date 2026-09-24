@@ -183,7 +183,7 @@ three members, one proposal).
   account that was never mapped (`Revive.map_account`) has no H160 owner:
   the transfer creates the fallback account `h160 ++ 0xEE×12` (seen: the
   0.01 PAS deposit on execute), which the person cannot reach. The bot does
-  not check this yet; the recipient should map (any contract call does it)
+  checks this since pca 2ef2aa7 and refuses `/propose` to an unmapped recipient; the recipient should map (any contract call does it)
   before Execute.
 - **Membership snapshot.** A member who joins after the last proposal is
   registered only at the next `/propose`, so it cannot vote on proposals
