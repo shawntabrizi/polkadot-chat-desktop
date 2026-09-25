@@ -479,13 +479,15 @@ export type HopLayout = 'versioned' | 'plain';
 export type HopProgress = { requestId: string; done: number; total: number };
 /**
  * A HOP download's outcome. `entries` (0x-hex) are what to ack once the file
- * is persisted. `notFound`: the node no longer holds it (acked by another
- * device, or expired); `untrusted`: the message names a node this app does
- * not open.
+ * is persisted: only those the pool gave; `fromChain` entries came from
+ * chain storage (RFC-0001) and are never acked. `notFound`: the node no
+ * longer holds it and no chain source was asked; `chainPending`: not in the
+ * pool and not (yet) in chain storage, retry later; `untrusted`: the message
+ * names a node this app does not open.
  */
 export type HopFetchResult =
-  | { ok: true; bytes: Uint8Array; entries: string[]; cipher: HopCipher; layout: HopLayout }
-  | { ok: false; reason: 'notFound' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
+  | { ok: true; bytes: Uint8Array; entries: string[]; fromChain: number; cipher: HopCipher; layout: HopLayout }
+  | { ok: false; reason: 'notFound' | 'chainPending' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
 export type HopAckResult = { acked: number; notFound: number; failed: number };
 /**
  * M20b: a file this app put on a HOP node. `identifier` (0x-hex) is the root
@@ -494,7 +496,7 @@ export type HopAckResult = { acked: number; notFound: number; failed: number };
  */
 export type HopSendResult =
   | { ok: true; identifier: string; ticket: Uint8Array; node: string; entries: number }
-  | { ok: false; reason: 'notFound' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
+  | { ok: false; reason: 'notFound' | 'chainPending' | 'tooLarge' | 'damaged' | 'refused' | 'untrusted' | 'network'; message: string };
 
 /**
  * Base spec HOP receive: a phone app's `RichText` attachment. The main

@@ -19,6 +19,11 @@
  *   `UploadedFile { totalSize, chunks }`. The two parse to different lengths,
  *   so only one reads the whole root (`decodeRoot`).
  *
+ * Chat-spec RFC-0001 "On-chain fallback": a pool entry the node no longer
+ * holds (`NotFound`) may have been promoted to Bulletin chain storage under
+ * the same blake2b-256 hash. The client then reads it with `bitswap_v1_get`,
+ * checks the hash, decrypts as before, and never acks it.
+ *
  * The ticket is key material: never log it or anything derived from it.
  */
 
@@ -30,6 +35,8 @@ import { getPublicKey, secretFromSeed, sign } from '@scure/sr25519';
 
 import { HOP_MAX_FILE_BYTES, type HopAckResult, type HopCipher, type HopFetchResult, type HopLayout, type HopSendResult } from '../../shared/desktop-api';
 import { NETWORK_PROFILES } from '../../shared/network';
+
+import { cidOf } from './bulletin';
 
 /** The apps' 2,000,000-byte chunks plus the AEAD's 28 bytes and some slack. */
 export const HOP_MAX_ENTRY_BYTES = 2_000_000 + 64;
@@ -285,7 +292,17 @@ export const openHopRpc = (url: string, { connectTimeoutMs = HOP_CONNECT_TIMEOUT
 
 // ── Fetch and ack (base spec "Download Flow") ───────────────────────────────
 
-export type HopFetched = { bytes: Uint8Array; entries: Uint8Array[]; cipher: HopCipher; layout: HopLayout };
+/** `entries`: what came from the pool (to ack); `fromChain`: entries read from chain storage (never acked). */
+export type HopFetched = { bytes: Uint8Array; entries: Uint8Array[]; fromChain: number; cipher: HopCipher; layout: HopLayout };
+
+/**
+ * RFC-0001 fallback: one entry by its hash from chain storage. `large`: a
+ * full chunk (spec 0012 "Source order" puts the gateway first for it).
+ * Rejects when this source does not have it (yet).
+ */
+export type ChainSource = (hash: Uint8Array, large: boolean) => Promise<Uint8Array>;
+/** Spec 0012 "Source order": over this, the gateway is faster than `bitswap_v1_get`. */
+const GATEWAY_FIRST_ABOVE = 512 * 1024;
 
 const failureOf = (error: unknown): HopFailure => {
   if (error instanceof HopFailure) return error;
@@ -299,17 +316,22 @@ const failureOf = (error: unknown): HopFailure => {
  * Claims the root entry `identifier` and every chunk it lists, checks each
  * entry's blake2b-256 against its hash before decrypting, and returns the
  * file with the entries to ack. Claims are read-only: nothing is acked here.
+ * RFC-0001: an entry the pool answers `NotFound` for is read from `chain`
+ * (each source in order; bytes that do not hash to the entry count as not
+ * found). None has it: `chainPending`, and the caller retries later.
  */
 export async function fetchHopFile({
   rpc,
   identifier,
   ticket,
+  chain = [],
   maxBytes = HOP_MAX_FILE_BYTES,
   onProgress = () => undefined,
 }: {
   rpc: HopRpc;
   identifier: Uint8Array;
   ticket: Uint8Array;
+  chain?: readonly ChainSource[];
   maxBytes?: number;
   onProgress?: (done: number, total: number) => void;
 }): Promise<HopFetched> {
@@ -328,21 +350,43 @@ export async function fetchHopFile({
     if (!equal(blake2b256(entry), hash)) throw new HopFailure('damaged', 'A part of the file does not match its hash.');
     return entry;
   };
+  const pooled: Uint8Array[] = [];
+  let fromChain = 0;
+  // RFC-0001: the claim always first; only its NotFound turns to chain storage.
+  const read = async (hash: Uint8Array, large: boolean): Promise<Uint8Array> => {
+    try {
+      const entry = await claim(hash);
+      pooled.push(hash);
+      return entry;
+    } catch (error) {
+      if (!(error instanceof HopFailure) || error.reason !== 'notFound' || chain.length === 0) throw error;
+    }
+    for (const source of chain) {
+      // The RPC path has no integrity check of its own: the hash is the only boundary.
+      const entry = await source(hash, large).catch(() => null);
+      if (entry && entry.length <= HOP_MAX_ENTRY_BYTES && equal(blake2b256(entry), hash)) {
+        fromChain += 1;
+        return entry;
+      }
+    }
+    throw new HopFailure('chainPending', "Not on the sender's node any more, and not found in chain storage yet.");
+  };
 
-  const opened = openEntry(keys.encryptionKey, await claim(identifier));
+  const opened = openEntry(keys.encryptionKey, await read(identifier, false));
   const root = decodeRoot(opened.plain);
   if ('inline' in root) {
     if (root.inline.length > maxBytes) throw new HopFailure('tooLarge', `The file is larger than ${maxBytes / (1024 * 1024)} MB.`);
     onProgress(1, 1);
-    return { bytes: root.inline, entries: [identifier], cipher: opened.cipher, layout: root.layout };
+    return { bytes: root.inline, entries: pooled, fromChain, cipher: opened.cipher, layout: root.layout };
   }
   if (root.totalSize > BigInt(maxBytes)) throw new HopFailure('tooLarge', `The file is larger than ${maxBytes / (1024 * 1024)} MB.`);
   const total = Number(root.totalSize);
   const out = new Uint8Array(total);
   let offset = 0;
+  const large = root.chunks.length > 0 && total / root.chunks.length > GATEWAY_FIRST_ABOVE;
   onProgress(0, root.chunks.length);
   for (const [index, hash] of root.chunks.entries()) {
-    const plain = openWith(opened.cipher, keys.encryptionKey, await claim(hash));
+    const plain = openWith(opened.cipher, keys.encryptionKey, await read(hash, large));
     if (!plain) throw new HopFailure('damaged', 'A part of the file does not open with its key.');
     if (offset + plain.length > total) throw new HopFailure('damaged', 'The file is longer than the sender said.');
     out.set(plain, offset);
@@ -350,7 +394,7 @@ export async function fetchHopFile({
     onProgress(index + 1, root.chunks.length);
   }
   if (offset !== total) throw new HopFailure('damaged', 'The file is shorter than the sender said.');
-  return { bytes: out, entries: [identifier, ...root.chunks], cipher: opened.cipher, layout: root.layout };
+  return { bytes: out, entries: pooled, fromChain, cipher: opened.cipher, layout: root.layout };
 }
 
 /**
@@ -373,20 +417,32 @@ export async function ackHopEntries({ rpc, ticket, entries }: { rpc: HopRpc; tic
   return result;
 }
 
-/** The IPC form of a fetch: one connection to the message's node, a result instead of a throw. */
+/** RFC-0001 step 2: `bitswap_v1_get` on the message's node first (it serves promoted data on the HOP endpoint). */
+const nodeBitswap = (rpc: HopRpc): ChainSource => async hash => {
+  const result = await rpc.call('bitswap_v1_get', [cidOf(hash)]);
+  if (typeof result !== 'string') throw new Error('no bytes');
+  return fromHex(result);
+};
+
+/**
+ * The IPC form of a fetch: one connection to the message's node, a result
+ * instead of a throw. On `NotFound` an entry comes from chain storage: the
+ * node's `bitswap_v1_get`, then `chain` (the app's Bulletin fetch).
+ */
 export async function hopFetch(
   node: string,
   identifier: Uint8Array,
   ticket: Uint8Array,
   onProgress: (done: number, total: number) => void,
   open: (url: string) => Promise<HopRpc> = url => openHopRpc(url),
+  chain: readonly ChainSource[] = [],
 ): Promise<HopFetchResult> {
   let rpc: HopRpc | null = null;
   try {
     const url = resolveHopNode(node);
     rpc = await open(url);
-    const fetched = await fetchHopFile({ rpc, identifier, ticket, onProgress });
-    return { ok: true, bytes: fetched.bytes, entries: fetched.entries.map(toHex), cipher: fetched.cipher, layout: fetched.layout };
+    const fetched = await fetchHopFile({ rpc, identifier, ticket, onProgress, chain: [nodeBitswap(rpc), ...chain] });
+    return { ok: true, bytes: fetched.bytes, entries: fetched.entries.map(toHex), fromChain: fetched.fromChain, cipher: fetched.cipher, layout: fetched.layout };
   } catch (error) {
     const failure = failureOf(error);
     return { ok: false, reason: failure.reason, message: failure.message };

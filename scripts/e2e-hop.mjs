@@ -22,6 +22,16 @@
 //     root layout the sender used).
 //  5. A second claim of the root now answers NotFound: the ack removed the
 //     entries from the node (HOP_ACK_OK).
+//  6. RFC-0001 chain fallback: the bot sends a second, small file; before the
+//     desktop claims it, a second recipient device (the same ticket on its
+//     own connection, as a phone of the same identity would) claims and acks
+//     it. The desktop's claim then answers NotFound, so it asks the node's
+//     `bitswap_v1_get` and the Bulletin fetch (bitswap, then gateway), acks
+//     nothing, and keeps the row `fetchingChain` (HOP_CHAIN_FALLBACK_OK).
+//     The file cannot arrive here: the pool deletes an acked entry without
+//     promotion (RFC-0001 "Known issues"), and promotion of an unacked one
+//     runs only near its 24 h expiry. So arrival from chain storage is
+//     HOP_CHAIN_FALLBACK_PENDING live and covered by src/main/chain/hop.spec.ts.
 // Exit 0 HOP_OK; 13 E2E_TIMEOUT <stage>; 3 PEER_KEY_UNSUPPORTED; 1 any
 // other failure. Prints no secret (the ticket stays in this process).
 
@@ -46,6 +56,7 @@ const identityName = flag('identity') ?? 'pcdbenchzzlx';
 const TIMEOUT_EXIT = 13;
 const BOT_WAIT_MS = 3 * 60_000;
 const FILE_NAME = 'hop-e2e.png';
+const SECOND_FILE_NAME = 'hop-e2e-second.png';
 
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 const t0 = Date.now();
@@ -187,13 +198,20 @@ if (!/^storage:\s+active/.test(allowance)) {
   allowance = granted.startsWith('granted') ? `storage: active (${granted})` : (pcaSays(storage('status')).find((line) => line.startsWith('storage:')) ?? 'storage: unknown');
 }
 console.log(`BOT_STORAGE ${allowance} at=${at()}`);
-if (!/^storage:\s+active/.test(allowance)) await finish(1, 'HOP_FAILED the bot has no Bulletin authorization for hop_submit');
+if (!/^storage:\s+active/.test(allowance)) {
+  console.log('HOP_CHAIN_FALLBACK_PENDING step 6 not run: the scratch bot has no Bulletin authorization, so it cannot hop_submit; covered by src/main/chain/hop.spec.ts');
+  await finish(1, 'HOP_FAILED the bot has no Bulletin authorization for hop_submit');
+}
 
 // ── The file, into the bot's vault for the desktop identity (bot-core's own store) ──
 const png = drawTestImage(1100, 900).png;
 const { createFileStore } = await import(pathToFileURL(join(pcaRoot, 'bot-core', 'lib', 'file-store.mjs')).href);
 createFileStore({ dir: join(botsDir, botName, 'files') }).putBytes(saved.accountHex, FILE_NAME, png, { mime: 'image/png' });
 console.log(`FILE_SEEDED ${FILE_NAME} bytes=${png.length} sha256=${sha256(png)}`);
+// Step 6: small, so it sits inline in one entry.
+const secondPng = drawTestImage(160, 120).png;
+createFileStore({ dir: join(botsDir, botName, 'files') }).putBytes(saved.accountHex, SECOND_FILE_NAME, secondPng, { mime: 'image/png' });
+console.log(`FILE_SEEDED ${SECOND_FILE_NAME} bytes=${secondPng.length}`);
 
 botProc = spawn(process.execPath, [pcaCli, 'run', botName], { cwd: pcaRoot, env: pcaEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 const botLines = [];
@@ -264,30 +282,59 @@ const contact = await waitFor(() => db.contacts.get(bot.accountHex), BOT_WAIT_MS
 if (!contact) await finish(TIMEOUT_EXIT, 'E2E_TIMEOUT the bot accepts the chat');
 console.log(`BOT_CONTACT ${contact.username} at=${at()}`);
 
-const askedAt = Date.now();
-const botFrom = botLines.length;
-await manager.sendMessage(bot.accountHex, { type: 'text', text: `/file get ${FILE_NAME}` });
-console.log(`ASKED /file get ${FILE_NAME} at=${at()}`);
-const message = await waitFor(
-  async () => {
-    const refused = botLines.slice(botFrom).find((line) => /BOT_FILE_DELIVERY_FAILED/.test(line));
-    if (refused) await finish(1, `HOP_FAILED the bot could not send: ${refused.slice(0, 200)}`);
-    return (await listMessages(bot.accountHex)).find(
-      (row) => row.direction === 'incoming' && row.content.type === 'richText' && row.content.attachments.length > 0 && row.timestamp >= askedAt - 60_000,
-    ) ?? null;
-  },
-  BOT_WAIT_MS,
-);
+/** Asks the bot for `name` and waits for a new `richText` with an attachment (not one of `seen`). */
+const askForFile = async (name, seen = new Set()) => {
+  const askedAt = Date.now();
+  const botFrom = botLines.length;
+  await manager.sendMessage(bot.accountHex, { type: 'text', text: `/file get ${name}` });
+  console.log(`ASKED /file get ${name} at=${at()}`);
+  return waitFor(
+    async () => {
+      const refused = botLines.slice(botFrom).find((line) => /BOT_FILE_DELIVERY_FAILED/.test(line));
+      if (refused) await finish(1, `HOP_FAILED the bot could not send: ${refused.slice(0, 200)}`);
+      return (await listMessages(bot.accountHex)).find(
+        (row) => row.direction === 'incoming' && row.content.type === 'richText' && row.content.attachments.length > 0 && row.timestamp >= askedAt - 60_000 && !seen.has(row.messageId),
+      ) ?? null;
+    },
+    BOT_WAIT_MS,
+  );
+};
+const message = await askForFile(FILE_NAME);
 if (!message) await finish(TIMEOUT_EXIT, 'E2E_TIMEOUT the bot sends the file over HOP');
 const [attachment] = message.content.attachments;
 if (!attachment?.hop) await finish(1, `HOP_FAILED the attachment names no node or ticket: ${JSON.stringify({ kind: attachment?.kind, mime: attachment?.mimeType })}`);
 console.log(`HOP_MESSAGE id=${message.messageId} kind=${attachment.kind} mime=${attachment.mimeType} size=${attachment.fileSize} node=${new URL(attachment.hop.node).hostname} ticket_on_row=${attachment.hop.ticket.length}B text=${JSON.stringify(message.content.text ?? '')} at=${at()}`);
 
-// The attachment service with main's HOP client as the IPC seam (what preload hands the renderer).
+// The attachment service with main's HOP client as the IPC seam (what preload hands the renderer),
+// and main's chain sources: the node's bitswap (inside hopFetch), then the Bulletin fetch as ipc.ts wires it.
 const progress = new Set();
+const rpcCalls = [];
+const counted = async (url) => {
+  const rpc = await openHopRpc(url);
+  return { ...rpc, call: (method, params) => (rpcCalls.push(method), rpc.call(method, params)) };
+};
+let bulletinService = null;
+let bulletinChain = null;
+const bulletinTries = [];
+const bulletinSource = async (hash, large) => {
+  if (!bulletinService) {
+    const { openBulletin, createBulletinService, bulletinSigner } = await load('src/main/chain/bulletin.ts');
+    bulletinChain = await openBulletin(profile);
+    bulletinService = createBulletinService(bulletinChain, bulletinSigner(saved.mnemonic));
+  }
+  try {
+    return (await bulletinService.fetchChunk(hash, null, undefined, large)).bytes;
+  } catch (error) {
+    bulletinTries.push(error instanceof Error ? error.message.slice(0, 160) : String(error));
+    throw error;
+  }
+};
+let desktopAcks = 0;
 const hopApi = {
-  fetch: (requestId, node, identifier, ticket) => hopFetch(node, bytesOf(identifier), ticket, (done, total) => progress.forEach((listener) => listener({ requestId, done, total }))),
+  fetch: (requestId, node, identifier, ticket) =>
+    hopFetch(node, bytesOf(identifier), ticket, (done, total) => progress.forEach((listener) => listener({ requestId, done, total })), counted, [bulletinSource]),
   ack: async (node, ticket, entries) => {
+    desktopAcks += 1;
     const result = await hopAck(node, ticket, entries);
     console.log(`ACKED acked=${result.acked} notFound=${result.notFound} failed=${result.failed} entries=${entries.length}`);
     return result;
@@ -319,5 +366,34 @@ try {
 }
 if (again !== 'notFound') await finish(1, `HOP_FAILED after the ack the root is ${again}, not NotFound`);
 console.log(`HOP_ACK_OK a second claim of the root answers NotFound at=${at()}`);
+
+// ── Step 6: RFC-0001 chain fallback after another device acked first ─────────
+const second = await askForFile(SECOND_FILE_NAME, new Set([message.messageId]));
+if (!second) await finish(TIMEOUT_EXIT, 'E2E_TIMEOUT the bot sends the second file over HOP');
+const [secondAttachment] = second.content.attachments;
+if (!secondAttachment?.hop) await finish(1, 'HOP_FAILED the second attachment names no node or ticket');
+const secondTicket = await hopTicket(second.messageId, 0, secondAttachment);
+// The other device: the same ticket, its own connection; claims everything, then acks it.
+const other = await hopFetch(secondAttachment.hop.node, bytesOf(secondAttachment.hop.identifier), secondTicket, () => undefined);
+if (!other.ok) await finish(1, `HOP_FAILED the second device could not claim the second file: ${other.reason}`);
+const otherAck = await hopAck(secondAttachment.hop.node, secondTicket, other.entries);
+if (otherAck.acked !== other.entries.length) await finish(1, `HOP_FAILED the second device acked ${otherAck.acked} of ${other.entries.length}`);
+console.log(`HOP_OTHER_DEVICE_ACKED entries=${other.entries.length} sha256_ok=${sha256(other.bytes) === sha256(secondPng)} at=${at()}`);
+const acksBefore = desktopAcks;
+const callsFrom = rpcCalls.length;
+const secondStatus = await service.fetch(second.messageId, 0, hopItemOf(secondAttachment));
+const secondRow = await getAttachmentRow(second.messageId, 0);
+const methods = rpcCalls.slice(callsFrom);
+const claims = methods.filter((method) => method === 'hop_claim').length;
+const bitswaps = methods.filter((method) => method === 'bitswap_v1_get').length;
+console.log(`HOP_CHAIN_FALLBACK status=${secondStatus} claims=${claims} node_bitswap=${bitswaps} bulletin_tries=${bulletinTries.length} desktop_acks=${desktopAcks - acksBefore} error=${JSON.stringify(secondRow?.error ?? null)} at=${at()}`);
+for (const reason of bulletinTries) console.log(`  bulletin: ${reason}`);
+if (secondStatus === 'ready') await finish(1, 'HOP_FAILED the acked entry came back from chain storage, which RFC-0001 says cannot happen; check the node');
+if (secondStatus !== 'fetchingChain' || claims < 1 || bitswaps < 1 || bulletinTries.length < 1 || desktopAcks !== acksBefore) {
+  await finish(1, `HOP_FAILED the chain fallback did not run as RFC-0001 says (status=${secondStatus})`);
+}
+console.log(`HOP_CHAIN_FALLBACK_OK NotFound → node bitswap → Bulletin fetch, nothing acked, row fetchingChain at=${at()}`);
+console.log('HOP_CHAIN_FALLBACK_PENDING arrival from chain storage not provable live: an acked entry is deleted without promotion (RFC-0001 Known issues) and promotion runs only near the 24 h expiry; covered by src/main/chain/hop.spec.ts');
 service.dispose();
+bulletinChain?.destroy();
 await finish(0, `HOP_OK bot=${bot.username} desktop=${saved.username} sha256=${got.slice(0, 16)}…`);

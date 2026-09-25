@@ -296,6 +296,15 @@ const stateLine = (local: AttachmentRow | undefined, item: AttachmentItem, own: 
           {own ? null : <AskResend local={local} onAsk={onAsk} />}
         </span>
       );
+    case 'fetchingChain':
+      return (
+        <StateChip>
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <span data-testid="attachment-fetching-chain" title={local.error ?? undefined}>
+            Fetching from chain storage
+          </span>
+        </StateChip>
+      );
     case 'tooLarge':
       return <StateChip tone="error">{TOO_LARGE}</StateChip>;
     case 'ready':

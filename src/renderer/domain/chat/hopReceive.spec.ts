@@ -7,7 +7,10 @@
  * - NotFound (another device acked first, or the entry expired) is a final
  *   state the person can act on (ask to resend), not a retry loop;
  * - the claim ticket is key material: it is sealed at rest, never kept on
- *   the message row.
+ *   the message row;
+ * - RFC-0001: an entry gone from the pool may be in chain storage, so that
+ *   case retries for a bounded window (24 h) before it is final, survives a
+ *   restart, and never acks what came from the chain.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,7 +77,7 @@ const fakeMain = (result: HopFetchResult): FakeMain => {
   };
 };
 
-const OK: HopFetchResult = { ok: true, bytes: FILE, entries: [IDENTIFIER, `0x${'01'.repeat(32)}`], cipher: 'chacha20-poly1305', layout: 'versioned' };
+const OK: HopFetchResult = { ok: true, bytes: FILE, entries: [IDENTIFIER, `0x${'01'.repeat(32)}`], fromChain: 0, cipher: 'chacha20-poly1305', layout: 'versioned' };
 
 let service: AttachmentService | null = null;
 
@@ -169,6 +172,63 @@ describe('a phone app photo over HOP', () => {
     await service.fetch('p8', 0, item);
     expect(await freeLocalCopies(0, Date.now() + 1)).toEqual({ files: 0, bytes: 0 });
     expect((await getAttachmentRow('p8', 0))?.status).toBe('ready');
+  });
+
+  it('a file read from chain storage (RFC-0001) is ready and nothing is acked', async () => {
+    const main = fakeMain({ ...OK, entries: [], fromChain: 2 });
+    const item = await receive('c1');
+    service = createAttachmentService({ bulletin: null, store: null, hop: main.api });
+    expect(await service.fetch('c1', 0, item)).toBe('ready');
+    expect(main.log).toEqual([`fetch ${NODE} ${IDENTIFIER}`]);
+    expect(await getAttachmentRow('c1', 0)).toMatchObject({ status: 'ready', bytes: FILE, done: 2, total: 2 });
+  });
+
+  it('not yet in chain storage: `fetchingChain` with backoff retries, then `unavailable` with Ask to resend 24 h after the first failure', async () => {
+    const main = fakeMain({ ok: false, reason: 'chainPending', message: 'not found in chain storage yet' });
+    const sent: string[] = [];
+    const chat = { sendMessage: async (_peer: string, content: { text: string }) => void sent.push(content.text) };
+    const delays: number[] = [];
+    const real = globalThis.setTimeout;
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms !== undefined && ms >= 10_000) delays.push(ms);
+      return real(fn, ms);
+    }) as typeof setTimeout);
+    const start = 1_800_000_000_000;
+    let clock = start;
+    const item = await receive('c2');
+    service = createAttachmentService({ bulletin: null, store: null, hop: main.api, chat: chat as never, now: () => clock });
+    expect(await service.fetch('c2', 0, item)).toBe('fetchingChain');
+    clock = start + 23 * 60 * 60 * 1000;
+    expect(await service.fetch('c2', 0, item)).toBe('fetchingChain');
+    expect(delays).toEqual([10_000, 20_000]);
+    expect(await getAttachmentRow('c2', 0)).toMatchObject({ status: 'fetchingChain', firstFailedAt: start, attempts: 2 });
+
+    clock = start + 24 * 60 * 60 * 1000;
+    expect(await service.fetch('c2', 0, item)).toBe('unavailable');
+    expect(delays).toHaveLength(2);
+    expect(main.log.filter(line => line.startsWith('ack'))).toEqual([]);
+    await service.askResend('c2', 0);
+    expect(sent).toEqual(['Please resend the photo']);
+  });
+
+  it('a restart picks the chain retries up again', async () => {
+    const item = await receive('c3');
+    service = createAttachmentService({ bulletin: null, store: null, hop: fakeMain({ ok: false, reason: 'chainPending', message: 'x' }).api });
+    expect(await service.fetch('c3', 0, item)).toBe('fetchingChain');
+    service.dispose();
+    const main = fakeMain({ ...OK, entries: [], fromChain: 1 });
+    const scheduled: number[] = [];
+    const real = globalThis.setTimeout;
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      if (ms === 10_000) {
+        scheduled.push(ms);
+        return real(fn, 0);
+      }
+      return real(fn, ms);
+    }) as typeof setTimeout);
+    service = createAttachmentService({ bulletin: null, store: null, hop: main.api });
+    await vi.waitFor(async () => expect((await getAttachmentRow('c3', 0))?.status).toBe('ready'));
+    expect(scheduled).toEqual([10_000]);
   });
 });
 

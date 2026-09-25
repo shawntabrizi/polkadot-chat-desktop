@@ -544,11 +544,18 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (typeof node !== 'string' || node.length > 256) throw new Error('Invalid node.');
     if (typeof identifier !== 'string' || !CONTENT_HASH.test(identifier)) throw new Error('Invalid file id.');
     if (!(ticket instanceof Uint8Array) || ticket.length !== 32) throw new Error('Invalid ticket.');
-    const result = await hopFetch(node, Uint8Array.from(Buffer.from(identifier.slice(2), 'hex')), ticket, (done, total) => {
+    // RFC-0001: after the node's own bitswap, an entry gone from the pool comes through the Bulletin fetch (bitswap, then gateway); opened only then.
+    const bulletinSource = async (hash: Uint8Array, large: boolean): Promise<Uint8Array> => (await (await bulletinFor(countBulletin)).fetchChunk(hash, null, undefined, large)).bytes;
+    const progress = (done: number, total: number) => {
       if (!event.sender.isDestroyed()) event.sender.send(IPC.hopProgress, { requestId, done, total });
-    });
-    // One line per download, no key material: which dialect the sender spoke.
-    console.info(result.ok ? `[hop] received ${result.bytes.length} bytes in ${result.entries.length} entries (${result.cipher}, ${result.layout} root)` : `[hop] not received: ${result.reason}`);
+    };
+    const result = await hopFetch(node, Uint8Array.from(Buffer.from(identifier.slice(2), 'hex')), ticket, progress, undefined, [bulletinSource]);
+    // One line per download, no key material: which dialect the sender spoke, and how many entries came from chain storage.
+    console.info(
+      result.ok
+        ? `[hop] received ${result.bytes.length} bytes in ${result.entries.length + result.fromChain} entries, ${result.fromChain} from chain (${result.cipher}, ${result.layout} root)`
+        : `[hop] not received: ${result.reason}`,
+    );
     return result;
   });
   ipcMain.handle(IPC.hopAck, async (_event, node: unknown, ticket: unknown, entries: unknown): Promise<HopAckResult> => {

@@ -23,10 +23,12 @@ import {
   submitPayload,
   ticketKeys,
 } from './hop';
+import { cidOf } from './bulletin';
 
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const bytes = (text: string): Uint8Array => Uint8Array.from(Buffer.from(text.replace(/^0x/, ''), 'hex'));
 const b2 = (data: Uint8Array): Uint8Array => blake2b(data, { dkLen: 32 });
+const equal = (a: Uint8Array, b: Uint8Array): boolean => hex(a) === hex(b);
 
 /** The fixed ticket of every vector: bytes 0..31. */
 const TICKET = Uint8Array.from({ length: 32 }, (_v, i) => i);
@@ -53,25 +55,34 @@ const VECTORS = {
   specChunkHash: '16dbc3e95185de25374f30fe33cd95527e5b40813ace066129cdda1f52602523',
 };
 
-type Pool = HopRpc & { entries: Map<string, Uint8Array>; calls: { method: string; params: unknown[] }[]; acked: string[] };
+type Pool = HopRpc & { entries: Map<string, Uint8Array>; chain: Map<string, Uint8Array>; calls: { method: string; params: unknown[] }[]; acked: string[] };
 
 /**
  * A HOP pool as the node behaves (substrate/client/hop): positional params,
  * `NotFound` (1004) for a missing entry, a claim or ack only with an sr25519
  * signature of the right payload by the entry's recipient, and an ack removes
- * the entry (the ticket key is the sole recipient).
+ * the entry (the ticket key is the sole recipient). RFC-0001: the same node
+ * serves promoted entries (`chain`, keyed by CID) over `bitswap_v1_get`,
+ * `NotFound` -32810 otherwise, with no signature and no integrity check.
  */
 const pool = (entries: Record<string, Uint8Array>, recipient: Uint8Array = ticketKeys(TICKET).publicKey): Pool => {
   const map = new Map(Object.entries(entries).map(([key, value]) => [key.replace(/^0x/, ''), value]));
+  const chain = new Map<string, Uint8Array>();
   const calls: Pool['calls'] = [];
   const acked: string[] = [];
   const fail = (code: number, message: string) => Object.assign(new Error(message), { code });
   return {
     entries: map,
+    chain,
     calls,
     acked,
     call: async (method, params) => {
       calls.push({ method, params });
+      if (method === 'bitswap_v1_get') {
+        const found = chain.get(params[0] as string);
+        if (!found) throw fail(-32810, 'Not found');
+        return `0x${hex(found)}`;
+      }
       const [hash, signature] = params as [string, string];
       const entry = map.get(hash.replace(/^0x/, ''));
       if (!entry) throw fail(HOP_NOT_FOUND, 'Data not found');
@@ -212,17 +223,21 @@ describe('both dialects', () => {
 });
 
 describe('what goes wrong', () => {
-  it('NotFound (another device acked first, or it expired) is its own outcome, not a network error', async () => {
-    const result = await hopFetch('wss://bullet.sik.rocks', bytes(VECTORS.phoneId), TICKET, () => undefined, async () => pool({}));
-    expect(result).toEqual({ ok: false, reason: 'notFound', message: "No longer available from the sender's node." });
+  it('NotFound without a chain source is its own outcome, not a network error', async () => {
+    await expect(fetchHopFile({ rpc: pool({}), identifier: bytes(VECTORS.phoneId), ticket: TICKET })).rejects.toMatchObject({ reason: 'notFound', message: "No longer available from the sender's node." });
   });
 
-  it('a chunk that disappears between claims (a race with another ack) is NotFound too', async () => {
+  it('NotFound with nothing in chain storage yet is `chainPending` (retry later), not final and not a network error', async () => {
+    const result = await hopFetch('wss://bullet.sik.rocks', bytes(VECTORS.phoneId), TICKET, () => undefined, async () => pool({}));
+    expect(result).toMatchObject({ ok: false, reason: 'chainPending' });
+  });
+
+  it('a chunk that disappears between claims (a race with another ack) and is on no chain is `chainPending` too', async () => {
     const sent = upload(crypto.randomBytes(250_000), 100_000, 'chacha20-poly1305', true);
     const rpc = pool(sent.entries);
     rpc.entries.delete(hex(sent.hashes[1] as Uint8Array));
     const result = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc);
-    expect(result).toMatchObject({ ok: false, reason: 'notFound' });
+    expect(result).toMatchObject({ ok: false, reason: 'chainPending' });
   });
 
   it('an entry whose bytes do not hash to its id is damaged before any decryption', async () => {
@@ -264,6 +279,83 @@ describe('ack', () => {
   it('hopAck opens the same node and never throws for an entry already gone', async () => {
     const rpc = pool({});
     await expect(hopAck('wss://bullet.sik.rocks', TICKET, [`0x${VECTORS.phoneId}`], async () => rpc)).resolves.toEqual({ acked: 0, notFound: 1, failed: 0 });
+  });
+});
+
+/**
+ * RFC-0001 "On-chain fallback". Why these tests exist: an entry the pool
+ * lost may sit in chain storage under the same hash, so NotFound must not
+ * end the download; the bitswap path has no integrity check of its own, so
+ * the client's hash check is the only thing between a node and the
+ * decryption; and an ack of a chain-read entry is meaningless at best, so
+ * only pool entries go back to the caller to ack.
+ */
+describe('chain fallback (RFC-0001)', () => {
+  const promote = (rpc: Pool, hash: Uint8Array) => {
+    const entry = rpc.entries.get(hex(hash)) as Uint8Array;
+    rpc.chain.set(cidOf(hash), entry);
+    rpc.entries.delete(hex(hash));
+  };
+
+  it('a file gone from the pool arrives from chain storage, claim first for every entry, and nothing is offered for an ack', async () => {
+    const file = crypto.randomBytes(250_000);
+    const sent = upload(file, 100_000, 'chacha20-poly1305', true);
+    const rpc = pool(sent.entries);
+    for (const hash of [sent.identifier, ...sent.hashes]) promote(rpc, hash);
+    const result = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc);
+    expect(result.ok && Buffer.from(result.bytes).equals(file)).toBe(true);
+    expect(result).toMatchObject({ ok: true, entries: [], fromChain: 4 });
+    // Every entry: hop_claim, then bitswap_v1_get on its CID; never an ack.
+    expect(rpc.calls.map(call => call.method)).toEqual(Array.from({ length: 4 }, () => ['hop_claim', 'bitswap_v1_get']).flat());
+    expect(rpc.calls.filter(call => call.method === 'bitswap_v1_get').map(call => call.params[0])).toEqual([sent.identifier, ...sent.hashes].map(cidOf));
+  });
+
+  it('mixes sources per entry: only the pool\'s entries are returned to ack', async () => {
+    const sent = upload(crypto.randomBytes(250_000), 100_000, 'chacha20-poly1305', false);
+    const rpc = pool(sent.entries);
+    promote(rpc, sent.hashes[1] as Uint8Array);
+    const result = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc);
+    expect(result).toMatchObject({ ok: true, fromChain: 1, entries: [sent.identifier, sent.hashes[0], sent.hashes[2]].map(hash => `0x${hex(hash as Uint8Array)}`) });
+  });
+
+  it('bytes that do not hash to the entry are dropped, the next source is asked, and none opens without a match', async () => {
+    const file = crypto.randomBytes(1_000);
+    const sent = upload(file, 100_000, 'chacha20-poly1305', true);
+    const rpc = pool(sent.entries);
+    const good = { root: rpc.entries.get(hex(sent.identifier)) as Uint8Array, chunk: rpc.entries.get(hex(sent.hashes[0] as Uint8Array)) as Uint8Array };
+    rpc.entries.clear();
+    // The node's bitswap answers with other bytes (a lagging or lying node): never decrypted.
+    const wrong = seal('chacha20-poly1305', new Uint8Array(40));
+    rpc.chain.set(cidOf(sent.identifier), wrong);
+    rpc.chain.set(cidOf(sent.hashes[0] as Uint8Array), wrong);
+    const asked: string[] = [];
+    const bulletin = async (hash: Uint8Array) => {
+      asked.push(hex(hash));
+      return equal(hash, sent.identifier) ? good.root : good.chunk;
+    };
+    const result = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc, [bulletin]);
+    expect(result.ok && Buffer.from(result.bytes).equals(file)).toBe(true);
+    expect(asked).toEqual([hex(sent.identifier), hex(sent.hashes[0] as Uint8Array)]);
+
+    // Every source wrong: not damaged (a node may lag), a retry later.
+    const again = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc, [async () => wrong]);
+    expect(again).toMatchObject({ ok: false, reason: 'chainPending' });
+  });
+
+  it('a chunk over 512 KB asks the Bulletin source gateway-first, the root never', async () => {
+    const sent = upload(crypto.randomBytes(1_200_000), 600_000, 'chacha20-poly1305', true);
+    const rpc = pool(sent.entries);
+    const store = new Map([sent.identifier, ...sent.hashes].map(hash => [hex(hash), rpc.entries.get(hex(hash)) as Uint8Array]));
+    rpc.entries.clear();
+    const large: boolean[] = [];
+    const result = await hopFetch('wss://bullet.sik.rocks', sent.identifier, TICKET, () => undefined, async () => rpc, [
+      async (hash, isLarge) => {
+        large.push(isLarge);
+        return store.get(hex(hash)) as Uint8Array;
+      },
+    ]);
+    expect(result).toMatchObject({ ok: true, fromChain: 3 });
+    expect(large).toEqual([false, true, true]);
   });
 });
 

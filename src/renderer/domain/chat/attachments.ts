@@ -446,6 +446,7 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
 
   const HOP_STATUS: Record<Extract<HopFetchResult, { ok: false }>['reason'], AttachmentStatus> = {
     notFound: 'unavailable',
+    chainPending: 'fetchingChain',
     tooLarge: 'tooLarge',
     damaged: 'damaged',
     refused: 'failed',
@@ -458,6 +459,10 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
    * file is persisted here; only then are its entries acked, since the ack
    * removes them from the sender's node for good. A network failure retries
    * with the same backoff as a Bulletin fetch; the rest are final.
+   * RFC-0001: an entry gone from the pool is read from chain storage by main
+   * and never acked; while no source has it (`chainPending`) the row stays
+   * `fetchingChain` and retries with the same backoff for 24 h after the
+   * first failure, then ends `unavailable` (Ask to resend).
    */
   const runHopFetch = async (messageId: string, index: number, item: AttachmentItem): Promise<AttachmentStatus> => {
     const existing = await getAttachmentRow(messageId, index);
@@ -495,9 +500,11 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
       hopRequests.delete(requestId);
     }
     if (!result.ok) {
-      const status = HOP_STATUS[result.reason];
-      const { attempts, firstFailedAt } = await settle(status, result.message);
-      if (result.reason === 'network' && now() - firstFailedAt < RETRY_FOR_MS) schedule(messageId, index, item, attempts);
+      const within = now() - (base.firstFailedAt ?? now()) < RETRY_FOR_MS;
+      const gone = result.reason === 'chainPending' && !within;
+      const status = gone ? 'unavailable' : HOP_STATUS[result.reason];
+      const { attempts } = await settle(status, gone ? "No longer available from the sender's node or chain storage." : result.message);
+      if ((result.reason === 'network' || result.reason === 'chainPending') && within) schedule(messageId, index, item, attempts);
       return status;
     }
     // Persisted first: after the ack the node deletes the entries. Not persisted: not acked, still claimable.
@@ -506,8 +513,8 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
       status: 'ready',
       bytes: result.bytes,
       mime: attachment.mimeType,
-      done: result.entries.length,
-      total: result.entries.length,
+      done: result.entries.length + result.fromChain,
+      total: result.entries.length + result.fromChain,
       attempts: 0,
       firstFailedAt: null,
       error: null,
@@ -520,6 +527,8 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
       await settle('failed', error instanceof Error ? error.message : String(error));
       return 'failed';
     }
+    // RFC-0001: entries read from chain storage are not in the pool; only the pool's are acked.
+    if (result.entries.length === 0) return 'ready';
     try {
       await hop.ack(attachment.hop.node, ticket, result.entries);
     } catch (error) {
@@ -589,6 +598,18 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
     return work;
   };
 
+  // RFC-0001: the chain retries outlive a restart; the row keeps `fetchingChain` and when the first failure was.
+  let disposed = false;
+  const resumeChainFetches = async () => {
+    const rows = await db.attachments.filter(row => row.status === 'fetchingChain').toArray();
+    for (const row of rows) {
+      const message = await db.messages.get(row.messageId);
+      const attachment = message?.content.type === 'richText' ? message.content.attachments[row.index] : undefined;
+      if (attachment?.hop && !disposed) schedule(row.messageId, row.index, hopItemOf(attachment), 1);
+    }
+  };
+  if (hop) void resumeChainFetches().catch(() => undefined);
+
   return {
     send,
     reupload,
@@ -596,6 +617,7 @@ export const createAttachmentService = ({ bulletin, store, chat = null, hop = nu
     askResend,
     fetch,
     dispose: () => {
+      disposed = true;
       stopProgress();
       stopHopProgress();
       for (const timer of timers) clearTimeout(timer);

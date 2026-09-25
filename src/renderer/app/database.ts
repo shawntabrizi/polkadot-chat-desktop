@@ -383,11 +383,13 @@ export type GroupRow = {
  * it downloads again on a tap, never on its own.
  * HOP receive (a phone app's `richText` attachment): `unavailable` = the
  * sender's node no longer holds it (another device acked it, or it
- * expired); `tooLarge` = over the app's 32 MiB HOP cap. `hop` records the
+ * expired, and chain storage never had it); `fetchingChain` = not on the
+ * node, so read from chain storage (RFC-0001), retried for 24 h;
+ * `tooLarge` = over the app's 32 MiB HOP cap. `hop` records the
  * dialect the file came in; such a copy is never freed (the ack removed
  * the only other one).
  */
-export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged' | 'freed' | 'unavailable' | 'tooLarge';
+export type AttachmentStatus = 'uploading' | 'uploadFailed' | 'downloading' | 'ready' | 'failed' | 'expired' | 'damaged' | 'freed' | 'unavailable' | 'fetchingChain' | 'tooLarge';
 
 export type AttachmentRow = {
   messageId: string;
