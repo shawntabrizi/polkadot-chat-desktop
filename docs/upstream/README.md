@@ -1,6 +1,25 @@
 # Upstream drafts for paritytech/chat-spec
 
-Drafts for `paritytech/chat-spec`: 11 issues, 1 commit for an open pull request, and 1 comment on a board item. Nothing here is posted yet. The owner reviews the drafts first.
+Drafts for `paritytech/chat-spec`: 11 issues, 1 commit for an open pull request, and 1 comment on a board item. **Posted 2026-09-24.** The drafts here are the source; the posted issues are the live text.
+
+| Draft | Posted |
+|---|---|
+| 01 capabilities | https://github.com/paritytech/chat-spec/issues/7 |
+| 12 HOP text | https://github.com/paritytech/chat-spec/issues/8 |
+| 10 piggybacked ACK | https://github.com/paritytech/chat-spec/issues/9 |
+| 11 statement quota | https://github.com/paritytech/chat-spec/issues/10 |
+| 02 typing and seen | https://github.com/paritytech/chat-spec/issues/11 |
+| 03 buttons | https://github.com/paritytech/chat-spec/issues/12 |
+| 05 bot info | https://github.com/paritytech/chat-spec/issues/13 |
+| 04 transactions | https://github.com/paritytech/chat-spec/issues/14 |
+| 07 attachments | https://github.com/paritytech/chat-spec/issues/15 |
+| 06 private groups | https://github.com/paritytech/chat-spec/issues/16 |
+| 08 bot directory | https://github.com/paritytech/chat-spec/issues/17 |
+| tracking: open decisions | https://github.com/paritytech/chat-spec/issues/18 |
+| 09 RFC-0003 renumber | commit 10c7c56 on chat-spec#5 (`rfc/message-deletion`) |
+| 13 markdown dialect | appended to board draft "Pin the markdown dialect for RichTextContent.text" |
+
+Board: all twelve issues added to paritytech project 297 under their mission. "Link tap opens with preview" and "Bots in group chats" archived with a superseded note. The other linked drafts got a "Related decision record" line.
 
 The evidence is the prototype: this repo (latest commit named in each draft) and `polkadot-chat-agents` branch `desktop/rfc-0003` (b8b9fc4). The full specs are in `docs/spec/`. Base: chat-spec main 134cad7 (RFC-0001 and RFC-0004 merged; the base-spec text not updated).
 
