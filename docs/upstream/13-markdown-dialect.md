@@ -1,51 +1,54 @@
-# Markdown: pin the dialect of RichText text, and render own messages the same way
+# Board comment: markdown dialect for RichTextContent.text
 
-Board mission: M2 Bot-native app
+Not an issue. Post the text below as a comment on the board item "chat-spec · Rendering — Pin the markdown dialect for RichTextContent.text" (M3 Protocol foundations). It is evidence and a proposed subset.
 
-Status: Prototyped in polkadot-chat-desktop (commit b5cbe5d) and polkadot-chat-agents (branch desktop/rfc-0003).
+Related board item: "clients · Rendering — Render a markdown subset in chat bubbles" (M2). The same comment can be linked there.
 
-This adds evidence to the existing board item on the markdown dialect.
+---
 
-## Problem
+Evidence from the polkadot-chat-desktop prototype, for pinning the markdown dialect of `RichTextContent.text`. The base spec says only `text: String? // markdown based text`.
 
-- The base spec says only `text: String? // markdown based text` (`RichText`). It does not say which markdown.
-- Two Parity clients already differ:
-  - polkadot-desktop renders a large set: CommonMark, GFM tables and strikethrough, task lists, LaTeX math, highlighted code, `==mark==`, `||spoiler||`, named inline tags, `<details>` blocks and tappable `/commands`.
-  - This prototype renders a smaller set (below).
-  - The phone apps: **not checked**.
-- Bots and AI agents write markdown without being asked. What a person sees depends on the client.
+**What the prototype renders** (`src/renderer/domain/markdown/markdown.ts`: markdown-it 15.0.1, default preset, then DOMPurify 3.4.14 as a second layer):
 
-## Proposed change (text only, no new wire)
-
-Pin a CommonMark subset as the meaning of `RichText.text`. The set this prototype renders, as a starting point:
-
-- CommonMark blocks and inlines: paragraphs, headings, emphasis, strong, inline code, fenced code, block quotes, ordered and unordered lists, links, thematic breaks.
-- GFM tables and strikethrough.
-- **A newline is a line break** (chat, not documents).
-- Bare URLs become links.
-- **Raw HTML is off.** A message is data, not markup: an LLM reply that says `Vec<T>` keeps its `<T>`.
+- CommonMark blocks and inlines: paragraphs, headings, emphasis, strong, inline code, fenced and indented code, block quotes, ordered and unordered lists, links, thematic breaks.
+- GFM tables and strikethrough (both in markdown-it's default preset).
+- A newline is a line break (`breaks: true`). Chat, not documents.
+- Bare URLs become links (`linkify: true`), plus our group invite links (`polkadot-chat://g#…`).
+- **Raw HTML is off** (`html: false`). A message is data, not markup: an LLM reply that says `Vec<T>` keeps its `<T>`.
 - **Images render as links.** A message must not make the reader's client fetch an arbitrary URL.
-- Links open outside the app (in the system browser).
-- A client that does not render markdown shows the text as it is. The subset is chosen so that the plain text stays readable.
+- Links open outside the app. `javascript:` links are refused.
+- No typographer (quotes and dashes stay as typed). No math, spoilers, `==mark==`, task lists, `<details>` or tappable `/commands`.
 
-Extensions (math, spoilers, `/commands`, task lists) could be a named optional tier.
+**Own messages render the same way.** The first build rendered markdown only for incoming messages. A sender saw `**bold**` while the peer saw **bold**. Own bubbles now use the same renderer, with an inverted colour set. Replies and quotes stay plain on both sides. The composer draft stays raw, and the chat-list preview strips the marks. We suggest the spec says: "A client renders its own sent text the same way as a peer's."
 
-## What the prototype learned
+**Streaming.** While a bot's reply streams, a half-written ```` ```buttons ```` fence is held back until it closes, so raw JSON does not flash. Ordinary code fences render as code while they stream.
 
-- **Own messages must render too.** The first build rendered markdown only for incoming messages. A sender saw `**bold**` while the peer saw **bold**. The owner asked for the same rendering on both sides, and the prototype now does it. The spec should say that a client renders its own sent text the same way as a peer's.
-- **Chat-list previews** strip the marks (a list item or `**bold**` reads as text).
-- **Other proposals rely on it.** The menu-as-text fallback (proposal 03) uses a numbered list. The "ask to resend" convention (proposal 07) uses a link with a fragment (`#resend/<messageId>`), which is inert on click.
-- **Streaming.** While a bot's reply streams, a half-written fence must not flash as text. The prototype holds back a partial fence until it closes.
-- Implementation: markdown-it 15 with HTML off, linkify and breaks on, then DOMPurify as a second layer.
+**What other clients render** (from reading the app code; not tested on a live phone):
 
-## Clients that do not support it
+- Android: no markdown. Plain text and links. **Unverified** on a device.
+- iOS: inline markdown only (Apple's parser). No block elements. **Unverified** on a device.
+- Polkadot Desktop: a large set: CommonMark, GFM tables and strikethrough, task lists, LaTeX math, highlighted code with Copy, `==mark==`, `||spoiler||`, `<details>`, and `/commands` as tappable buttons.
 
-- No wire change. A client that renders nothing shows the raw text, which the subset keeps readable.
+So one bot reply looks three different ways today. Bots and AI agents write markdown without being asked.
 
-## Open questions
+**Proposed base subset** (the text stays readable where a client renders nothing):
 
-1. Which subset is the base, and which parts are an optional tier?
-2. Should the spec forbid images, or allow them behind a tap?
-3. What does a phone app render today? (**not checked**)
+1. CommonMark: paragraphs, headings, emphasis, strong, inline code, fenced code, block quotes, lists, links, thematic breaks.
+2. GFM tables and strikethrough.
+3. A newline is a line break.
+4. Bare URLs become links.
+5. Raw HTML is shown as text, never rendered.
+6. Images are shown as links, never fetched without a tap.
+7. A client renders its own messages the same way as a peer's.
 
-Decision wanted: adopt, adopt with changes, or reject. React 👍/👎 or comment.
+An optional tier, named in the spec so clients agree on the syntax: math, spoilers, task lists, `/commands`.
+
+Other drafts rely on it: the menu-as-text fallback for buttons uses a numbered list, and "Ask to resend" uses a link with the fragment `#resend/<messageId>`, which is inert when tapped.
+
+Questions for the maintainers:
+
+1. Is the base subset above right? Yes / change it.
+2. Images: forbidden, or allowed behind a tap? Choose one.
+3. Should Android and iOS render the base subset? Yes / no.
+
+Built in polkadot-chat-desktop: renderer 05e28f8 (M4), own messages c829af4.
