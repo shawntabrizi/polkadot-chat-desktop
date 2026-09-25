@@ -129,9 +129,15 @@ deterministic for a given key, nonce and file, so a re-store produces the
 same chunks and the same CIDs. `chunkSize` = 2,000,000 gives a ciphertext
 chunk of 2,000,016 bytes, under the 2,097,152-byte `MaxTransactionSize`.
 
-AES-256-GCM, not ChaCha20-Poly1305: it matches the base spec text, 0011, and
-t3ams, and is native in WebCrypto (desktop) and Node (pca). The phone apps use
-ChaCha20-Poly1305 for HOP; that rail is untouched.
+AES-256-GCM, not ChaCha20-Poly1305: it matches 0011 and t3ams, and is native
+in WebCrypto (desktop) and Node (pca). The HOP rail is untouched.
+
+Correction (2026-09-24): this paragraph also said AES-256-GCM "matches the
+base spec text". That is true only of the old `base-spec.md` body. chat-spec
+RFC-0004 (merged 2026-07-31, main `134cad7`) moved every base-protocol AEAD,
+HOP included, to ChaCha20-Poly1305 with no AAD, and the phone apps follow
+it. So this cipher (and its AAD) is our own choice and diverges from the base
+protocol. See Unresolved Questions 8.
 
 ### Upload flow (sender)
 
@@ -400,9 +406,15 @@ thumbnail.
    authorization cost?
 7. **Renewal of pinned files** (`renew` draws on the hard permanent
    allowance).
-8. **Base spec vs phone apps.** The base spec says AES-256-GCM for HOP; the
-   apps ship ChaCha20-Poly1305 and an unpublished "RFC 0001" envelope. Flag to
-   chat-spec.
+8. **Cipher alignment (open, rewritten 2026-09-24).** Our sealing uses
+   AES-256-GCM via Web Crypto; RFC-0004 moved the base protocol to
+   ChaCha20-Poly1305. Align or state the divergence. The owner decides; this
+   RFC does not change its cipher. (Earlier text: "the base spec says
+   AES-256-GCM for HOP; the apps ship ChaCha20-Poly1305 and an unpublished
+   'RFC 0001' envelope". Wrong: both RFCs are on chat-spec main,
+   `rfcs/0001-file-transfer-improvements.md` and
+   `rfcs/rfc-0004-x25519-chacha20poly1305.md`, and the apps follow them. Only
+   the `base-spec.md` body is stale; `docs/upstream/12-hop-cipher-envelope.md`.)
 9. **Gateway deprecation.** Bulletin docs mark HTTP gateways deprecated; the
    fallback order may need a Helia or smoldot path later.
 

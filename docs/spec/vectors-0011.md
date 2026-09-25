@@ -204,7 +204,8 @@ Since `timestamp 1720000000000`, limit 50 (33 bytes, `"GQ-2"`, `1720000008000`):
 ## Vector (i): a real `K(A, B)` and a full `Rekey` with 3 entries
 
 Identity chat keys (X25519, the base spec's `//wallet//chat` keypair as the
-network uses it since the 2026-09-08 migration; not P-256):
+network uses it since the 2026-09-08 migration and as chat-spec RFC-0004
+specifies; not P-256):
 private A = `0x0a × 32`, B = `0x0b × 32`, C = `0x0c × 32`.
 
 | Value | Result (hex) |

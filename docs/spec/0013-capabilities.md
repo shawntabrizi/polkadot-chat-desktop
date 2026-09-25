@@ -23,7 +23,8 @@ spec and mds only. For each outgoing message, the sender takes the
 intersection of the sets of **every known device of the peer** and picks the
 richest form in it. For an attachment that is the Bulletin `FileVariant`
 (0014) when every device lists it, else HOP in a dialect every device lists
-(the phones' legacy dialect for a baseline device).
+(`rfc0004-chacha`, the dialect of the merged chat-spec RFCs that the phones
+speak, for a baseline device).
 
 ## Motivation
 
@@ -38,9 +39,11 @@ without knowing what the receiving devices support:
    iOS code).
 2. **The HOP message does not name its cipher.** `P2PMixnetFile` carries a
    ticket, not a dialect. The phone apps encrypt with ChaCha20-Poly1305
-   inside a versioned pool-entry envelope; the base spec text and t3ams use
+   inside the versioned `VersionedUploadedFile` root, as chat-spec RFC-0004
+   and RFC-0001 say (both merged 2026-07-31, main `134cad7`). The old
+   `base-spec.md` body text (not updated on main) and t3ams standalone use
    AES-256-GCM (`docs/reference/bulletin-and-media.md` §5, §6). pca speaks
-   both (`bot-core/lib/hop-client.mjs`, dialects `legacy` and `t3ams`).
+   both (`bot-core/lib/hop-client.mjs`, pca's names `legacy` and `t3ams`).
 3. **Development mode sends every extension kind freely** (README). Phone
    users see "Unsupported message content. Please update the app." for each
    one. With capabilities, a sender can send a fallback instead.
@@ -84,10 +87,18 @@ Capabilities = {
     features: u32            // bit set, below
 }
 HopDialect = enum {
-    legacy = 0               // the phone apps: ChaCha20-Poly1305 and the V1(Inline | Chunked) pool-entry envelope
-    aesGcm = 1               // base-spec text: AES-256-GCM, UploadedFile metadata (t3ams)
+    rfc0004-chacha = 0       // chat-spec RFC-0004 + RFC-0001 (the phone apps): ChaCha20-Poly1305, VersionedUploadedFile root
+    aesgcm = 1               // in no merged spec: AES-256-GCM, bare UploadedFile root (t3ams; the old base-spec.md body text)
 }
 ```
+
+Labels renamed 2026-09-24: `rfc0004-chacha` was `legacy`, `aesgcm` was
+`aesGcm`. The wire values 0 and 1 do not change, and the desktop code keeps
+the old constant names (`DIALECT_LEGACY`, `DIALECT_AES_GCM`). The old label
+"legacy" came from a stale chat-spec copy (`7af4fab`) without the RFCs: in
+fact dialect 0 is the spec dialect, and `aesgcm` is the one outside the spec.
+If t3ams moves to RFC-0004, `hopDialects` can go
+(`docs/upstream/12-hop-cipher-envelope.md`).
 
 Feature bits (for support that no kind bit shows, because it is inside a
 kind):
@@ -118,7 +129,7 @@ A device that never sent `capabilities` has this set:
 |---|---|---|
 | kinds | 0, 1, 2, 4, 5, 7–18 (base spec v0.16), 20 (`DeviceChatAccepted`, mds v0.2) | `.refs/chat-spec/base-spec.md` "Remote Message Model"; `mds.md` "Accepting a Chat Request" |
 | fileVariants | 0 | base spec "FileVariant" |
-| hopDialects | `legacy` | the shipped phone apps (`bulletin-and-media.md` §5); the base spec text says AES-256-GCM, the apps do not |
+| hopDialects | `rfc0004-chacha` | the shipped phone apps (`bulletin-and-media.md` §5), which follow chat-spec RFC-0004 and RFC-0001; only the old `base-spec.md` body text says AES-256-GCM |
 | features | 0 | |
 
 Baseline `kinds` bitmap: `b7ff17` then 29 zero bytes.
@@ -177,7 +188,7 @@ mode, done on the sender instead of a server.
 
 | Feature | Rich form (needs, in `effective(P)`) | Fallback |
 |---|---|---|
-| Attachment | `RichText` + `FileVariant.bulletin` (fileVariants ∋ 1) | 1. kind 250 (kinds ∋ 250; transition only, 0014). 2. `RichText` + `FileVariant.p2pMixnet` in a dialect in `hopDialects`, `legacy` first for a baseline device. 3. No common dialect: refuse with "This contact's app cannot receive files from this app". |
+| Attachment | `RichText` + `FileVariant.bulletin` (fileVariants ∋ 1) | 1. kind 250 (kinds ∋ 250; transition only, 0014). 2. `RichText` + `FileVariant.p2pMixnet` in a dialect in `hopDialects`, `rfc0004-chacha` first for a baseline device. 3. No common dialect: refuse with "This contact's app cannot receive files from this app". |
 | Buttons (242) | `buttons` | `text` with the menu as numbered lines ("1. Yes · 2. No — reply with a number or the label"); a press arrives as text and the bot matches it |
 | Transaction intents (feature bit 1) | `tx` action in `buttons` | the button is left out; the text says the amount and the recipient |
 | Transaction reference (245) | `transactionReference` | base `send` (kind 2) for a plain transfer; nothing for a contract call |
@@ -190,7 +201,7 @@ mode, done on the sender instead of a server.
 
 **Multi-device example.** Bob has a phone (baseline) and a desktop
 (fileVariants {0, 1}). `effective(Bob).fileVariants = {0}`, so Alice's
-desktop sends the photo over HOP in the `legacy` dialect. Bob's desktop
+desktop sends the photo over HOP in the `rfc0004-chacha` dialect. Bob's desktop
 receives it over HOP too. When Bob's phone is removed (`deviceRemoved`), the
 next photo goes by Bulletin.
 
@@ -198,7 +209,8 @@ next photo goes by Bulletin.
 first `hop_ack` (base spec v0.16). A device that knows it is one of several
 devices of its user SHOULD claim and not ack, so the other devices can claim
 too; the entry then lives out its 24 hours and is promoted to Bulletin, where
-the phone apps' `bitswap_v1_get` fallback finds it. This departs from the
+the `bitswap_v1_get` fallback of chat-spec RFC-0001 (the phone apps have it)
+finds it. This departs from the
 base spec's SHOULD to ack within the retention window. A baseline phone acks
 at once; a sibling device that claims later gets `NotFound`, the entry was
 not promoted, and the file is lost for that device (it can ask to resend,
@@ -245,7 +257,7 @@ capabilities: {
   version: 1,
   kinds: {0,1,2,4,5,7..18,20,21,240..252},
   fileVariants: [0, 1],
-  hopDialects: [legacy, aesGcm],
+  hopDialects: [rfc0004-chacha, aesgcm],
   features: 3
 }
 ```
@@ -266,7 +278,7 @@ ec144341502d310030fd779001000000fc01b7ff3700000000000000000000000000000000000000
 | `01` | `Capabilities.version` | 1 |
 | `b7ff37` + 26 × `00` + `ff1f` | kinds bitmap | bytes 0–2: kinds 0,1,2,4,5,7–18,20,21; bytes 30–31: kinds 240–252 |
 | `08` `0001` | fileVariants | [0, 1] |
-| `08` `0001` | hopDialects | [legacy, aesGcm] |
+| `08` `0001` | hopDialects | [rfc0004-chacha, aesgcm] |
 | `03000000` | features | bits 0, 1 |
 
 Computed 2026-09-24 by a Python SCALE encoder (checked against 0012 vector A)
@@ -373,11 +385,13 @@ handling (how clients read the account capability) is **unverified**.
 4. **Kinds bitmap or list?** 32 fixed bytes versus a sorted `Vec<u8>` (about
    30 bytes today). The bitmap is simpler to intersect.
 5. **Dialect of an incoming HOP file.** The message does not say which
-   dialect the sender used. A receiver tries `legacy` then `aesGcm` (the
-   AEAD tag tells). Should `P2PMixnetFile` gain a dialect field upstream?
+   dialect the sender used. A receiver tries `rfc0004-chacha` then `aesgcm`
+   (the AEAD tag tells). Should `P2PMixnetFile` gain a dialect field
+   upstream? RFC-0004 says no: a flag day, with no cipher-suite field.
 6. **HOP ack with several own devices** (the "claim, do not ack" rule
    above) needs the sibling device list, which mds gives; confirm with the
-   phone team that the promotion fallback is reliable.
+   phone team that the promotion fallback is reliable (RFC-0001 says
+   promotion is best-effort).
 
 ### Owner ruling on baseline clients (2026-09-24)
 

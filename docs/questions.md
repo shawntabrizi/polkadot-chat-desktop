@@ -244,7 +244,7 @@ Write the question, what you did meanwhile, and the date.
 
 ## HOP receive (2026-09-24)
 
-- **Promoted entries.** The base spec leaves out a fetch for HOP data promoted on chain (unacked for 22 h). The phones fall back to `bitswap_v1_get` on the entry's blake2b-256 CID. Should this client do the same (a desktop offline for a day would then still get the file)? Not built.
+- **Promoted entries.** The base spec leaves out a fetch for HOP data promoted on chain (unacked for 22 h). The phones fall back to `bitswap_v1_get` on the entry's blake2b-256 CID. Should this client do the same (a desktop offline for a day would then still get the file)? Not built. Update 2026-09-24: this is no longer optional. chat-spec RFC-0001 (merged 2026-07-31) says `NotFound` from `hop_claim` no longer ends a download: the client MUST try `bitswap_v1_get` and retry for a bounded window before it gives up. The desktop shows `unavailable` at once, so it does not meet RFC-0001 here. Build it?
 - **Phone node list.** The phones read their HOP nodes from Firebase config (not in the repos). This client trusts the devnet Bulletin nodes and `paseo-hop-next-0/1.polkadot.io` (pca's list). If a phone photo shows "The sender's node <host> is not one this app trusts", please send the host.
 - **Devnet `//Eve` budget.** A 64 MiB grant by `//Eve` now fails (`InsufficientAuthorizerBudget`); 8 MiB works. This app's own M15 devnet grant asks 64 MiB. Lower it, or is the devnet budget being refilled?
 - **Real phone test.** Only the owner can send a photo from the Polkadot phone app to a desktop identity; the phones' dialect (ChaCha20-Poly1305 + versioned root) is covered by vectors from the app code, not by a live phone.

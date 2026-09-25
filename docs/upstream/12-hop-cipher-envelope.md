@@ -27,11 +27,13 @@ Three sources describe HOP attachments in three ways:
 
 ## What the prototype learned
 
-- The desktop and pca speak two HOP dialects: `legacy` (the phones: ChaCha20-Poly1305 and the versioned envelope) and `aesGcm` (the base spec text and t3ams).
+- The desktop and pca speak two HOP dialects: `rfc0004-chacha` (the RFCs and the phones: ChaCha20-Poly1305 and the versioned envelope; our old label was `legacy`) and `aesgcm` (the old base spec text and t3ams; old label `aesGcm`).
 - **Live.** A photo from the owner's phone opened on the desktop, and a desktop photo opened on the phone, in the phones' dialect.
 - A `P2PMixnetFile` does not say which cipher was used. A receiver tries one, then the other; the AEAD tag tells.
 - Our capabilities draft (proposal 01) has a `hopDialects` field only because of this split. If the spec text and t3ams follow RFC-0004, that field can go.
 - Our Bulletin and group drafts (proposals 06, 07) chose AES-256-GCM "to match the base spec text". After RFC-0004 they should use ChaCha20-Poly1305.
+- The RFC texts have two loose ends. RFC-0001 was written before RFC-0004 and still says "AES key" and "AES-GCM" in its upload flow and drawbacks; RFC-0004 §3 item 3 governs. RFC-0001's Drawbacks and Compatibility cite a "try-versioned-then-legacy decode rule above", but its "Legacy blobs" section says no legacy fallback should be built.
+- pca's sender still wrote the bare root in our e2e on 2026-09-24 (ChaCha20-Poly1305, plain `UploadedFile`), which RFC-0001 replaced. The desktop reads both.
 
 ## Clients that do not support it
 

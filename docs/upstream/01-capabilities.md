@@ -22,7 +22,7 @@ Capabilities = {
     version: u8              // 1
     kinds: [u8; 32]          // bitmap of the content kinds this device decodes and shows
     fileVariants: Vec<u8>    // RichText FileVariant indices it can fetch
-    hopDialects: Vec<HopDialect>  // HOP ciphers it can decrypt: legacy = 0 (phones), aesGcm = 1 (t3ams)
+    hopDialects: Vec<HopDialect>  // HOP ciphers it can decrypt: rfc0004-chacha = 0 (RFC-0004 + RFC-0001, phones), aesgcm = 1 (t3ams)
     features: u32            // support that no kind bit shows (for example tx actions inside buttons)
 }
 ```

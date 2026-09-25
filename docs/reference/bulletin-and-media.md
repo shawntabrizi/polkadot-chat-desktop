@@ -29,6 +29,10 @@ inference, not stated by the source.
 - pca: `polkadot-chat-agents` `desktop/rfc-0003` `675f948` (2026-09-23).
 - Tooling: `bulletin-deploy` `bddd640`, `product-sdk` `1981a2d`.
 - Chat spec: `paritytech/chat-spec` `7af4fab` (2026-07-10), `base-spec.md`.
+  That copy was stale (branch `rfc/message-deletion`). Main at `134cad7`
+  (2026-07-31) has the same `base-spec.md` and adds
+  `rfcs/0001-file-transfer-improvements.md` (RFC-0001) and
+  `rfcs/rfc-0004-x25519-chacha20poly1305.md` (RFC-0004). Checked 2026-09-24.
 - Live RPC on 2026-09-24 against `https://bullet.sik.rocks` (devnet) and
   `https://paseo-bulletin-next-rpc.polkadot.io`.
 
@@ -199,16 +203,23 @@ Submitting requires an active Bulletin authorization
   `feature/chats/impl/.../data/hop/HopService.kt:64-121, 280-284`; iOS
   `Packages/HandoffService/Sources/FileLoader/HandoffFileLoadConfig.swift:15`).
   No `store` extrinsic for chat media. When a claim returns `NotFound` (1004)
-  they fall back to `bitswap_v1_get` on a CIDv1 raw Blake2b-256, which works
-  only if the node promoted the entry (Android `HopService.kt:123-166`; iOS
+  they fall back to `bitswap_v1_get` on a CIDv1 raw Blake2b-256, as RFC-0001
+  "On-chain fallback" specifies, which works only if the node promoted the entry (Android `HopService.kt:123-166`; iOS
   `RemoteStore/BitswapRemoteStore.swift:36,56-61`).
-- **They differ from the base spec** (`base-spec.md:1740-1791`): they encrypt
-  with **ChaCha20-Poly1305**, not AES-256-GCM (Android
-  `data/hop/encryption/HopEncryption.kt:8`; iOS `FileLoader/FileEncryptor.swift:9-28`),
-  and they wrap pool entries in a versioned envelope `V1(Inline | Chunked{totalSize, chunks})`
-  with small files inline (Android `VersionedHopPoolEntry.kt:9-39`), from an
-  "RFC 0001" that is not in `chat-spec/rfcs/`. The spec text and the shipped
-  apps disagree; the apps are the de facto standard. Flag for chat-spec.
+- **They follow the merged chat-spec RFCs, not the old `base-spec.md` body**
+  (`base-spec.md:1740-1791`, unchanged on main): they encrypt with
+  **ChaCha20-Poly1305** (Android `data/hop/encryption/HopEncryption.kt:8`; iOS
+  `FileLoader/FileEncryptor.swift:9-28`), as RFC-0004 §3 item 3 says, and they
+  wrap the root entry in RFC-0001's versioned envelope
+  `VersionedUploadedFile = v1(inline | chunked{totalSize, chunks})` with small
+  files inline (Android `VersionedHopPoolEntry.kt:9-39`;
+  `rfcs/0001-file-transfer-improvements.md` "Versioned upload model"). Both
+  RFCs merged on 2026-07-31; the `base-spec.md` body still says AES-256-GCM
+  and a bare `UploadedFile`. Correction 2026-09-24: this bullet said "RFC 0001
+  is not in `chat-spec/rfcs/`" and "the apps are the de facto standard". That
+  came from the stale copy. The divergence is between the old base-spec text
+  and the RFCs, not between the apps and the spec
+  (`docs/upstream/12-hop-cipher-envelope.md`).
 - **Wire:** `RichText { text, attachments: [FileVariant] }`, `FileVariant =
   p2pMixnet { identifier, claimTicket, node, meta }`, `FileMeta = general |
   image{w,h,thumbnail?} | video{duration,thumbnail?}` (`base-spec.md:636-680`).
@@ -246,13 +257,14 @@ Submitting requires an active Bulletin authorization
   In a host, the RFC-0010 preimage manager: the host signs the
   TransactionStorage call and owns the allowance; the product checks the key
   is Blake2b-256 of the blob. Standalone: HOP with AES-256-GCM and a per-file
-  ticket (`hop-crypto.ts:61-141`). The reference rides inside the E2E
+  ticket (`hop-crypto.ts:61-141`). AES-256-GCM is t3ams's choice: it matches
+  the old `base-spec.md` text, not RFC-0004. The reference rides inside the E2E
   message as `hop:` + base64url JSON with the ticket (`attachment-ref.ts:14-70`);
   in groups it rides in the epoch-key envelope. Max 25 MiB per file
   (`cloud-media.ts:20`). Gateways are configured but unused.
 - **pca** [V]: receives phone-app attachments (`richText.attachments`, kind
-  `p2pMixnetFile`), downloads them over HOP ("legacy" dialect,
-  ChaCha20-Poly1305, `bot-core/lib/hop-client.mjs:98-110`), 32 MiB cap, and
+  `p2pMixnetFile`), downloads them over HOP (pca's "legacy" dialect,
+  which is the RFC-0004 cipher, ChaCha20-Poly1305, `bot-core/lib/hop-client.mjs:98-110`), 32 MiB cap, and
   stages them for the brain (`lib/agent-runtime.mjs:932-973`). It can send one
   (`index.mjs:1799-1845`, `sendAttachment` → `uploadP2PFile`) signed by
   `//allowance//bulletin//chat` from the bot seed. "Photo and document
@@ -270,7 +282,7 @@ Submitting requires an active Bulletin authorization
 |---|---|---|---|---|---|---|---|
 | Blob store | Signal CDN | media servers (blob store) | Telegram cloud | homeserver media repo (`mxc://`) | any HTTPS host | one Bulletin node's pool | Bulletin chain (every full node) |
 | E2E encrypted | yes | yes | no (cloud chats) | yes, in E2E rooms | yes | yes | yes |
-| Cipher | AES-CBC + HMAC [S] | AES-256-CBC + HMAC-SHA256, random IV [V] | server-side | AES-CTR-256 + SHA-256 hash [V] | per-attachment secret, salt, nonce [V] | ChaCha20-Poly1305 (apps); spec says AES-GCM | AES-256-GCM per chunk |
+| Cipher | AES-CBC + HMAC [S] | AES-256-CBC + HMAC-SHA256, random IV [V] | server-side | AES-CTR-256 + SHA-256 hash [V] | per-attachment secret, salt, nonce [V] | ChaCha20-Poly1305 (apps, chat-spec RFC-0004); old base-spec text says AES-GCM | AES-256-GCM per chunk |
 | Key | random per attachment | random 32-byte AES + 32-byte HMAC per attachment [V] | n/a | JWK per file [V] | 32-byte secret per attachment [V] | ticket per file, keys derived | random 32-byte key + 12-byte nonce per attachment |
 | In the message | pointer, key, digest [S] | key, HMAC key, SHA-256 of blob, pointer [V] | file id | `url`, `key`, `iv`, `hashes.sha256`, `thumbnail_file` [V] | `url`, `contentDigest`, `secret`, `salt`, `nonce`, `scheme`, `contentLength`, `filename` [V] | identifier, ticket, node, meta, blurhash | chunk hashes (= CIDs), key, nonce, store, meta, blurhash/thumbnail |
 | Who can fetch ciphertext | holder of the id [S] | holder of the pointer [I] | server decides | homeserver users (auth media) [I] | anyone with the URL | listed recipient keys only | **anyone with the CID** (public chain data) |
