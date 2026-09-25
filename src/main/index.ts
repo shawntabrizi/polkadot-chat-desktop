@@ -11,7 +11,7 @@ import { registerIpc, shutdownAgent } from './ipc';
 import { installAppMenu, installContextMenu } from './menu';
 import { setMetadataCacheDir } from './metadataCache';
 import { loadWindowBounds, rememberWindowBounds } from './windowState';
-import { notifyProfileName, registerProfilesIpc, startProfile } from './profileSession';
+import { chooseInviteProfile, notifyProfileName, openStartLink, registerProfilesIpc, startProfile } from './profileSession';
 import { bundleMoved, reopenWindow } from './reopen';
 
 const SMOKE_TIMEOUT_MS = 30_000;
@@ -44,7 +44,8 @@ if (profileStart.kind === 'exit') process.exit(profileStart.code);
 const headless = isHeadless();
 
 // Group invite links (`polkadot-chat://g#…`, 0011 ruling 9) open the join view. Before `ready`.
-installInviteLinks({ headless });
+// With several profiles, the app first asks which profile joins.
+installInviteLinks({ headless, choose: url => chooseInviteProfile(url, getWindow, headless) });
 
 // Test only (scripts/smoke-reopen.sh): close the window and reopen it through
 // `activate`, with the window never shown. `--test-reopen-moved` waits for the
@@ -175,6 +176,7 @@ void app.whenReady().then(async () => {
   registerIpc(getWindow);
   registerProfilesIpc(getWindow);
   setInviteLinkWindow(getWindow);
+  openStartLink();
   installAppMenu(getWindow);
   openMainWindow(process.argv.includes('--smoke'));
   if (testReopen) void runReopenTest();

@@ -233,7 +233,7 @@ Write the question, what you did meanwhile, and the date.
 
 - **No recovery-phrase export exists.** Step 4 asks the remove warning to link to "the existing export"; the app never shows the mnemonic. The warning says the keys are the only backup instead. Should a "Show recovery phrase" (with its own safeguards) come before profiles ship?
 - **"Default at launch"** is read as "Ask which profile" (the start value) or one profile to open without asking. Is that the intended meaning, or should the default only preselect a row in the picker?
-- **Invite links with several processes.** macOS hands a `polkadot-chat://` link (M16b) to one running process of the app, whichever LaunchServices picks; it is not routed to a chosen profile. Should the picker (or each window) ask which profile joins?
+- **Invite links with several processes.** macOS hands a `polkadot-chat://` link (M16b) to one running process of the app, whichever LaunchServices picks; it is not routed to a chosen profile. Should the picker (or each window) ask which profile joins? (Built 2026-09-25: the process that gets the link asks which profile joins; see decisions.md "Invite-link profile prompt".)
 - **Dock tiles.** Each profile's process is started from the binary, so each should have its own Dock tile and badge. Not checked by eye: every run here was headless (no dock icon). Please check with two windows open.
 
 ## M19 (2026-09-24)

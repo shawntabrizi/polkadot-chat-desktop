@@ -38,11 +38,28 @@ export const takePendingInviteLink = (): string | null => {
   return url;
 };
 
-/** Before `ready`: macOS delivers the link that launched the app as an early `open-url`. */
-export const installInviteLinks = (options: { headless: boolean }): void => {
+/**
+ * Before `ready`: macOS delivers the link that launched the app as an early `open-url`.
+ * `choose` asks which profile joins when several exist (inviteRoute.ts); it
+ * returns true when this window should open the link. It runs after `ready`
+ * (a dialog cannot open before), and before anything else happens.
+ */
+export const installInviteLinks = (options: { headless: boolean; choose?: (url: string) => Promise<boolean> }): void => {
   app.on('open-url', (event, url) => {
     event.preventDefault();
-    openInviteLink(url);
+    if (!isGroupInviteUrl(url)) return;
+    const choose = options.choose;
+    if (!choose) {
+      openInviteLink(url);
+      return;
+    }
+    void app
+      .whenReady()
+      .then(() => choose(url))
+      .then(here => {
+        if (here) openInviteLink(url);
+      })
+      .catch((error: unknown) => console.warn('[invite] could not ask which profile joins', error));
   });
   if (app.isPackaged && !options.headless) app.setAsDefaultProtocolClient(INVITE_SCHEME);
 };

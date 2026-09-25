@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 
-import { type BrowserWindow, app, ipcMain } from 'electron';
+import { type BrowserWindow, app, dialog, ipcMain } from 'electron';
 
 import { IPC, type ProfilesState } from '../shared/desktop-api';
 import { isNetworkProfileId } from '../shared/network';
@@ -20,6 +20,8 @@ import { isNetworkProfileId } from '../shared/network';
 import { withPeopleDirectory } from './identity/directory';
 import { recoverIdentity } from './identity/recovery';
 import { saveIdentityAt } from './identity/store';
+import { openInviteLink } from './inviteLinks';
+import { OPEN_LINK_FLAG, inviteChoices, inviteRouteOf, openLinkFlag, withoutOpenLink } from './inviteRoute';
 
 import {
   type LaunchChoice,
@@ -143,15 +145,55 @@ const state = (): ProfilesState => {
 /** The command line of a new process: the app path in a dev run, then our flags. */
 const baseArgs = (): string[] => (app.isPackaged || !process.argv[1] ? [] : [process.argv[1]]);
 
-const openInNewWindow = (name: string): void => {
+/** `extra`: more flags for the new process (an invite link it must open). */
+const openInNewWindow = (name: string, extra: string[] = []): void => {
   const env = { ...process.env };
   delete env.PCD_PROFILE;
-  spawn(process.execPath, [...baseArgs(), '--profile', name], { cwd: process.cwd(), env, detached: true, stdio: 'ignore' }).unref();
+  spawn(process.execPath, [...baseArgs(), '--profile', name, ...extra], { cwd: process.cwd(), env, detached: true, stdio: 'ignore' }).unref();
+};
+
+/**
+ * An invite link from macOS, with more than one profile: ask which profile
+ * joins before anything else (inviteRoute.ts). True: this window opens it.
+ * Another profile gets it as `--open-link`: if that profile runs, its
+ * `second-instance` takes it; else the new process opens it at its start.
+ * Cancel does nothing. A headless run never shows the question (no one can
+ * answer it); it opens the link here, as before.
+ */
+export const chooseInviteProfile = async (url: string, getWindow: () => BrowserWindow | null, headless: boolean): Promise<boolean> => {
+  if (!session) return true;
+  const { root, current } = session;
+  const choices = inviteChoices(readProfiles(root), current);
+  if (!choices) return true;
+  if (headless) {
+    console.log(`INVITE_PROFILE_NOT_ASKED headless; ${choices.length} profiles`);
+    return true;
+  }
+  const win = getWindow();
+  const options = {
+    type: 'question' as const,
+    message: 'Which profile should join this group?',
+    detail: 'The invite link opens in the profile you choose. Nothing happens until you choose.',
+    buttons: [...choices.map(choice => choice.label), 'Cancel'],
+    cancelId: choices.length,
+    defaultId: 0,
+    noLink: true,
+  };
+  const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  const route = inviteRouteOf(choices, response, current);
+  if (route.kind === 'profile') openInNewWindow(route.name, [OPEN_LINK_FLAG, url]);
+  return route.kind === 'here';
+};
+
+/** A profile started with `--open-link` (the question chose it while it was closed). */
+export const openStartLink = (): void => {
+  const url = openLinkFlag(process.argv);
+  if (url) openInviteLink(url);
 };
 
 /** This window becomes `name`: the app restarts with `--profile` (the debugging port and other flags stay). */
 const relaunchInto = (name: string): void => {
-  const argv = process.argv.slice(1);
+  const argv = withoutOpenLink(process.argv.slice(1));
   const kept = argv.filter((arg, index) => arg !== '--picker' && arg !== '--profile' && !arg.startsWith('--profile=') && argv[index - 1] !== '--profile');
   app.relaunch({ args: [...kept, '--profile', name] });
   app.exit(0);
@@ -166,7 +208,10 @@ const known = (value: unknown): string => {
 
 export const registerProfilesIpc = (getWindow: () => BrowserWindow | null): void => {
   // A second launch of this profile (or of the picker) brings this window to the front.
-  app.on('second-instance', () => {
+  // A second launch that carries an invite link (the question chose this profile) opens it here.
+  app.on('second-instance', (_event, argv) => {
+    const url = openLinkFlag(argv);
+    if (url) openInviteLink(url);
     const win = getWindow();
     if (!win || win.isDestroyed() || process.env.PCD_HEADLESS === '1') return;
     if (win.isMinimized()) win.restore();
