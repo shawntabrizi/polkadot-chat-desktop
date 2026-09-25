@@ -6,12 +6,14 @@
  * the merge of back-to-back session requests must really save a submission.
  */
 
-import { createInMemoryStatementStore, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { AccountFullError, createInMemoryStatementStore, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { errAsync } from 'neverthrow';
 import { describe, expect, it } from 'vitest';
 
 import { bytesToHex } from '../../app/bytes';
 
-import { type SubmissionCounts, createSubmissionMeter, forwardCounts, submissionsLine } from './submissions';
+import { AccountFullStop, createAccountSpace } from './accountSpace';
+import { ACCOUNT_FULL_HOLD_MS, type SubmissionCounts, createSubmissionMeter, forwardCounts, submissionsLine } from './submissions';
 
 type Store = ReturnType<typeof createInMemoryStatementStore>;
 type Signed = Parameters<Store['submitStatement']>[0];
@@ -77,5 +79,62 @@ describe('forwardCounts', () => {
       { submissions: 0, acknowledgements: 0, messages: 1 },
       { submissions: 0, acknowledgements: 0, messages: 1 },
     ]);
+  });
+});
+
+// docs/decisions.md "AccountFull". Why: the SDK retries an `AccountFull`
+// without a limit. One try above the raised floor is fair (a higher expiry
+// can push out the account's lowest statement); after that the meter must
+// stop the loop, and only a statement that really goes in may clear the banner.
+describe('AccountFull in the meter', () => {
+  const fullStore = () => {
+    const inner = createInMemoryStatementStore();
+    const state = { full: true, calls: 0 };
+    const store = {
+      ...inner,
+      submitStatement: (s: Signed) => {
+        state.calls += 1;
+        return state.full ? errAsync(new AccountFullError(s.expiry ?? 0n, (s.expiry ?? 0n) + 1n)) : inner.submitStatement(s);
+      },
+    } as Store;
+    return { store, state };
+  };
+
+  it('passes the first refusal on, stops at the second, holds the SDK retries, and clears only on a good submission to a refused channel', async () => {
+    const { store, state } = fullStore();
+    let clock = 1_000;
+    const lines: string[] = [];
+    const space = createAccountSpace(() => clock, line => lines.push(line));
+    const meter = createSubmissionMeter(store, space, () => clock);
+    const group = new Uint8Array(32).fill(9);
+
+    const first = await meter.store.submitStatement(statement(group, 1n));
+    expect(first.isErr() && first.error instanceof AccountFullError).toBe(true);
+    expect(space.snapshot().full).toBe(false);
+
+    const second = await meter.store.submitStatement(statement(group, 2n));
+    expect(second.isErr() && second.error instanceof AccountFullStop).toBe(true);
+    expect(space.snapshot()).toEqual({ full: true, since: 1_000 });
+
+    const held = await meter.store.submitStatement(statement(group, 3n));
+    expect(held.isErr() && held.error instanceof AccountFullStop).toBe(true);
+    expect(state.calls).toBe(2);
+
+    // A statement on another channel that goes in (a replacement frees its own slot) does not clear the banner.
+    state.full = false;
+    await meter.store.submitStatement(statement(null, 4n));
+    expect(space.snapshot().full).toBe(true);
+
+    clock += ACCOUNT_FULL_HOLD_MS;
+    const later = await meter.store.submitStatement(statement(group, 5n));
+    expect(later.isOk()).toBe(true);
+    expect(space.snapshot()).toEqual({ full: false, since: null });
+
+    // A second episode in the same session is not logged again.
+    state.full = true;
+    await meter.store.submitStatement(statement(group, 6n));
+    await meter.store.submitStatement(statement(group, 7n));
+    expect(space.snapshot().full).toBe(true);
+    expect(lines).toHaveLength(1);
   });
 });

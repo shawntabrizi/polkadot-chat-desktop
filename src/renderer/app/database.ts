@@ -212,6 +212,8 @@ export type MessageRow = {
   groupSeq?: number;
   /** M12e, own rows only: a forwarded copy and whose message it was. Local caption; nothing on the wire. */
   forwardedFrom?: string;
+  /** Own `failed` rows only: why the message did not go out (for example `AccountFull`). Not indexed, so no schema version. */
+  failure?: string;
 };
 
 /**

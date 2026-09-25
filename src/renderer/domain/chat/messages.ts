@@ -77,8 +77,9 @@ export const ensureRoom = (peerAccountId: PeerId): Promise<void> =>
     await db.rooms.put({ peerAccountId, unreadCount: 0, lastMessageAt: 0, lastPreview: '', createdAt: now, updatedAt: now });
   });
 
-export const setMessageStatus = (messageId: string, status: MessageStatus): Promise<number> =>
-  db.messages.update(messageId, { status });
+/** `failure` is kept only on a `failed` row; any other status removes it. */
+export const setMessageStatus = (messageId: string, status: MessageStatus, failure?: string): Promise<number> =>
+  db.messages.update(messageId, { status, failure: status === 'failed' ? failure : undefined });
 
 /** The peer acknowledged the whole outgoing batch: everything sent before `before` is delivered. */
 export const markDeliveredBefore = (peerAccountId: HexString, before: number): Promise<number> =>

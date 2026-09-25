@@ -111,6 +111,7 @@ import type { IncomingChatMessage } from './peerSession';
 import { createSessionRegistry } from './sessions';
 import { type TypingStore, createPendingSeen, createSeenSender, createTypingSender, createTypingStore } from './signals';
 import { type SubmissionMeter, createSubmissionMeter } from './submissions';
+import { ACCOUNT_FULL_NOTICE, ACCOUNT_FULL_REASON, type AccountSpace, isAccountFullStop } from './accountSpace';
 
 export type ChatManagerDeps = {
   identity: UserIdentity;
@@ -226,6 +227,8 @@ export type ChatManager = {
   typing: TypingStore;
   /** M12c: statements this manager submitted and messages the user sent, this session. */
   submissions: Pick<SubmissionMeter, 'snapshot' | 'subscribe'>;
+  /** `AccountFull`: the chat list banner shows while `full` is true. */
+  accountSpace: Pick<AccountSpace, 'snapshot' | 'subscribe'>;
   /** Every `transactionReference` a peer sends (spec 0007), so its finality can be followed on the chain. */
   onReference: (listener: (reference: TxReference) => void) => VoidFunction;
   /**
@@ -357,6 +360,25 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
   const guard = (work: Promise<void>, what: string) => {
     if (!disposed) void work.catch(error => console.warn('[chat] %s failed', what, error));
+  };
+
+  /**
+   * An own message did not go out. After a final `AccountFull` the row says
+   * why, and its chat gets one error line while the account stays full
+   * (docs/decisions.md "AccountFull"). No retry starts on its own.
+   */
+  const failOutgoing = async (peer: ChatTargetId, messageId: string, error: unknown): Promise<void> => {
+    const row = await getMessage(messageId);
+    if (!row || row.direction !== 'outgoing') return;
+    if (!isAccountFullStop(error)) {
+      await setMessageStatus(messageId, 'failed');
+      return;
+    }
+    await setMessageStatus(messageId, 'failed', ACCOUNT_FULL_REASON);
+    const since = meter.space.snapshot().since ?? Date.now();
+    const notice: MessageContent = { type: 'notice', text: ACCOUNT_FULL_NOTICE, tone: 'error' };
+    const line = systemRow(peer, `account-full:${since}:${peer}`, Date.now(), notice);
+    await addMessage(isGroupPeer(peer) ? { ...line, groupId: groupIdOf(peer) } : line, { read: true });
   };
 
   // ── Spec 0005 signals (ephemeral: never a row, a notification or unread) ─
@@ -645,6 +667,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     allocator,
     statementStore,
     onMessage: (peer, message) => guard(handleIncoming(peer, message), 'incoming message'),
+    onSendFailed: (peer, messageId, error) => guard(failOutgoing(peer, messageId, error), 'failed message'),
   });
 
   // Spec 0011: v2 groups (one statement per message on the group topic).
@@ -672,6 +695,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       return !!contact && !contact.joinedVia;
     },
     joinRequested: async groupId => !!(await db.groupJoins.get(groupId)),
+    onAccountFull: where => meter.space.markFull(where),
   });
   let groupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1124,7 +1148,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     // Too large, or no usable peer device: the row stays as evidence.
     await submit(peer, content, ids).catch(async error => {
       if (bot) typing.endLocal(peer);
-      await setMessageStatus(ids.messageId, 'failed');
+      await failOutgoing(peer, ids.messageId, error);
       throw error;
     });
     meter.messageSent();
@@ -1141,7 +1165,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       await upload(ids.messageId);
       await submit(peer, { type: 'attachment', items: content.items, caption: content.caption }, ids);
     } catch (error) {
-      await setMessageStatus(ids.messageId, 'failed');
+      await failOutgoing(peer, ids.messageId, error);
       throw error;
     }
     meter.messageSent();
@@ -1177,7 +1201,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       await setHopLocation(ids.messageId, 0, attachment);
       await submit(peer, { type: 'hopFile', text: content.text, attachment }, ids);
     } catch (error) {
-      await setMessageStatus(ids.messageId, 'failed');
+      await failOutgoing(peer, ids.messageId, error);
       throw error;
     }
     meter.messageSent();
@@ -1290,7 +1314,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         editedAt: null,
       });
       await submit(peer, content, ids).catch(async error => {
-        await setMessageStatus(ids.messageId, 'failed');
+        await failOutgoing(peer, ids.messageId, error);
         throw error;
       });
     },
@@ -1335,7 +1359,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         const attachment: Attachment = { ...hopFile, hop: { ...hopFile.hop, ticket: await hopTicket(messageId, 0, hopFile) } };
         await setMessageStatus(messageId, 'sending');
         await submit(peer, { type: 'hopFile', text: row.content.text, attachment }, { messageId, timestamp: row.timestamp }).catch(async error => {
-          await setMessageStatus(messageId, 'failed');
+          await failOutgoing(peer, messageId, error);
           throw error;
         });
         return;
@@ -1351,7 +1375,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       await setMessageStatus(messageId, 'sending');
       // The same id: the peer dedups by it, so a first attempt that did land is not shown twice.
       await submit(peer, content, { messageId, timestamp: row.timestamp }).catch(async error => {
-        await setMessageStatus(messageId, 'failed');
+        await failOutgoing(peer, messageId, error);
         throw error;
       });
     },
@@ -1369,6 +1393,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     typing,
 
     submissions: { snapshot: meter.snapshot, subscribe: meter.subscribe },
+
+    accountSpace: { snapshot: meter.space.snapshot, subscribe: meter.space.subscribe },
 
     onReference: listener => {
       referenceListeners.add(listener);
@@ -1407,7 +1433,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       const ids = unsent && row ? { messageId: row.messageId, timestamp: row.timestamp } : { messageId: randomId(), timestamp: Date.now() };
       await submit(peer, { type: 'transactionReference', reference }, ids).catch(async error => {
         // The chain state is real even when the peer was not told: the row stays, marked.
-        if (unsent) await setMessageStatus(messageId, 'failed');
+        if (unsent) await failOutgoing(peer, messageId, error);
         throw error;
       });
     },

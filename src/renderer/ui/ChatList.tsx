@@ -1,4 +1,4 @@
-import { Archive, ChevronDown, ChevronRight, MessagesSquare } from 'lucide-react';
+import { Archive, ChevronDown, ChevronRight, CircleAlert, MessagesSquare } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import type { HexString } from '../app/bytes';
@@ -16,6 +16,7 @@ import {
   groupPeerOf,
 } from '../app/database';
 import { ASSISTANT_PEER, ASSISTANT_USERNAME } from '../domain/assistant/assistant';
+import { ACCOUNT_FULL_BANNER, type AccountSpace, type AccountSpaceState } from '../domain/chat/accountSpace';
 import { isLiveFrame } from '../domain/chat/content';
 import { displayName } from '../domain/chat/chatActions';
 import { groupDisplayName, readSelfAccount } from '../domain/chat/groupNames';
@@ -43,11 +44,23 @@ type Props = {
   onOpenOutgoing: (peer: HexString) => void;
   /** Spec 0005 typing states: a row shows "typing…" / "working…" while one is active. */
   typing?: TypingStore;
+  /** `AccountFull` (docs/decisions.md): one banner above the list while the account is full. */
+  accountSpace?: Pick<AccountSpace, 'snapshot' | 'subscribe'>;
 };
 
 // A stable snapshot: useSyncExternalStore re-renders on every new object.
 const NO_TYPING: ReadonlyMap<PeerId, PeerTyping> = new Map();
 const noTyping = { subscribe: () => () => undefined, snapshot: () => NO_TYPING };
+const SPACE_FREE: AccountSpaceState = { full: false, since: null };
+const noSpace = { subscribe: () => () => undefined, snapshot: () => SPACE_FREE };
+
+/** Not modal and not dismissable: it goes when a refused statement goes in. */
+export const AccountFullBanner = () => (
+  <div role="status" data-testid="account-full-banner" className="mb-2 flex items-start gap-2 rounded-nested bg-surface-nested px-3 py-2 text-body-s text-fg-error">
+    <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+    <p>{ACCOUNT_FULL_BANNER}</p>
+  </div>
+);
 
 export type ListData = {
   contacts: ContactRow[];
@@ -494,10 +507,12 @@ const ArchivedSection = ({ rows, unread }: { rows: Row[]; unread: number }) => {
   );
 };
 
-export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing }: Props) => {
+export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing, accountSpace }: Props) => {
   const data = useLiveQuery(loadList, []);
   const store = typing ?? noTyping;
   const typingStates = useSyncExternalStore(store.subscribe, store.snapshot);
+  const spaceStore = accountSpace ?? noSpace;
+  const space = useSyncExternalStore(spaceStore.subscribe, spaceStore.snapshot);
   const pending = usePending();
   const now = useSentClock(data);
   if (!data) return null;
@@ -516,6 +531,7 @@ export const ChatList = ({ selected, onOpenRoom, onOpenOutgoing, typing }: Props
 
   return (
     <div className="flex flex-col gap-0.5">
+      {space.full ? <AccountFullBanner /> : null}
       {rows.map(row => row.render())}
       {others === 0 && archived.length === 0 ? (
         <div className="flex flex-col items-center gap-1 px-4 py-10 text-center">

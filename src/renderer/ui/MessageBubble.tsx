@@ -432,7 +432,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
         {actions?.below ?? null}
         {own && row.status === 'failed' ? (
           <p className="text-caption text-fg-error" data-testid="not-sent">
-            Not sent
+            {row.failure ? `Not sent: ${row.failure}` : 'Not sent'}
             {actions?.retry ? (
               <>
                 {' · '}

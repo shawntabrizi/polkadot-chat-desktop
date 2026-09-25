@@ -33,6 +33,8 @@ export const createSessionRegistry = (deps: {
   allocator: ExpiryAllocator;
   statementStore: StatementStoreAdapter;
   onMessage: (peer: HexString, message: IncomingChatMessage) => void;
+  /** The store refused a sent message for good (`AccountFullStop`). */
+  onSendFailed?: (peer: HexString, messageId: string, error: Error) => void;
 }): SessionRegistry => {
   const sessions = new Map<HexString, { session: PeerSession; roster: PeerRosterHandle }>();
 
@@ -57,6 +59,7 @@ export const createSessionRegistry = (deps: {
         onMessage: message => deps.onMessage(peer, message),
         onSent: messageId => void setMessageStatus(messageId, 'sent'),
         onDelivered: messageId => void setMessageStatus(messageId, 'delivered'),
+        onFailed: (messageId, error) => deps.onSendFailed?.(peer, messageId, error),
         onBatchDelivered: () => {
           if (batchChecked) return;
           batchChecked = true;

@@ -15,13 +15,25 @@
  *   out back to back, the first statement is replaced before anyone can read
  *   it. Only the newest (the full batch, highest expiry) is sent; both
  *   callers get its result. That makes "the seen rides the message" one
- *   submission on the wire, not only in the batch.
+ *   submission on the wire, not only in the batch;
+ * - stops blind retries after the store's `AccountFull` (docs/decisions.md
+ *   "AccountFull"). The first refusal on a channel goes back unchanged, so
+ *   the SDK raises its expiry floor and tries once more (a higher expiry can
+ *   push out the account's lowest statement). A second refusal on the same
+ *   channel is final: it becomes `AccountFullStop`, the account is marked
+ *   full, and for 500 ms more submissions on that channel do not reach the
+ *   store (the SDK's own three quick retries end there).
  */
 
-import { type StatementStoreAdapter, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
-import { ResultAsync } from 'neverthrow';
+import { AccountFullError, type StatementStoreAdapter, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { ResultAsync, err, errAsync } from 'neverthrow';
 
 import { bytesToHex, hexToBytes } from '../../app/bytes';
+
+import { type AccountSpace, AccountFullStop, createAccountSpace } from './accountSpace';
+
+/** After a final `AccountFull`, the SDK's own retries on that channel in this time do not reach the store. */
+export const ACCOUNT_FULL_HOLD_MS = 500;
 
 export type SubmissionCounts = {
   /** Statements submitted, session acknowledgements not included. */
@@ -39,6 +51,8 @@ export type SubmissionMeter = {
   subscribe: (listener: VoidFunction) => VoidFunction;
   /** The user sent one message (however many statements it took). */
   messageSent: () => void;
+  /** `AccountFull`: the chat list banner reads it. */
+  space: AccountSpace;
 };
 
 /** Settings › Diagnostics: "1.00 (12 / 12)", statements per message; a dash before the first message. */
@@ -77,7 +91,7 @@ const roleOf = (statement: Signed): Role => {
   return 'other';
 };
 
-export const createSubmissionMeter = (inner: StatementStoreAdapter): SubmissionMeter => {
+export const createSubmissionMeter = (inner: StatementStoreAdapter, space: AccountSpace = createAccountSpace(), now: () => number = Date.now): SubmissionMeter => {
   let counts: SubmissionCounts = { submissions: 0, acknowledgements: 0, messages: 0 };
   const listeners = new Set<VoidFunction>();
   const bump = (key: keyof SubmissionCounts) => {
@@ -88,12 +102,30 @@ export const createSubmissionMeter = (inner: StatementStoreAdapter): SubmissionM
   // Request statements waiting for the end of this task, by channel.
   const waiting = new Map<string, { statement: Signed; settle: ((result: Submitted) => void)[] }>();
 
-  const send = (statement: Signed, role: Role): Promise<Submitted> => {
+  // AccountFull refusals in a row, and the time of the final one, by channel.
+  const refused = new Map<string, { count: number; stoppedAt: number | null }>();
+
+  const send = async (statement: Signed, role: Role): Promise<Submitted> => {
     bump(role === 'response' ? 'acknowledgements' : 'submissions');
-    return Promise.resolve(inner.submitStatement(statement));
+    const key = statement.channel?.toLowerCase() ?? '';
+    const result = await Promise.resolve(inner.submitStatement(statement));
+    if (result.isOk()) {
+      if (refused.delete(key)) space.markFreed();
+      return result;
+    }
+    if (!(result.error instanceof AccountFullError)) return result;
+    const entry = refused.get(key) ?? { count: 0, stoppedAt: null };
+    entry.count += 1;
+    refused.set(key, entry);
+    if (entry.count < 2) return result;
+    entry.stoppedAt = now();
+    space.markFull(role);
+    return err(new AccountFullStop(role));
   };
 
   const submitStatement: StatementStoreAdapter['submitStatement'] = statement => {
+    const held = refused.get(statement.channel?.toLowerCase() ?? '');
+    if (held?.stoppedAt != null && now() - held.stoppedAt < ACCOUNT_FULL_HOLD_MS) return errAsync(new AccountFullStop('held'));
     const role = roleOf(statement);
     if (role !== 'request' || !statement.channel) return new ResultAsync(send(statement, role));
     const channel = statement.channel.toLowerCase();
@@ -127,5 +159,6 @@ export const createSubmissionMeter = (inner: StatementStoreAdapter): SubmissionM
       return () => listeners.delete(listener);
     },
     messageSent: () => bump('messages'),
+    space,
   };
 };

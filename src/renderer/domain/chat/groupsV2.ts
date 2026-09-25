@@ -30,6 +30,7 @@ import { compact } from 'scale-ts';
 import { type HexString, bytesEqual, bytesToHex, hexToBytes } from '../../app/bytes';
 import { type GroupEpochKey, type GroupRow, type MessageRow, db, groupPeerOf } from '../../app/database';
 
+import { AccountFullStop } from './accountSpace';
 import type { GroupMember } from './content';
 import {
   ALL_PERMISSIONS,
@@ -375,6 +376,8 @@ export type GroupsV2Deps = {
   now?: () => number;
   random?: (length: number) => Uint8Array;
   log?: (event: string, detail?: Record<string, unknown>) => void;
+  /** The store refused a group statement with `AccountFull` (accountSpace.ts). */
+  onAccountFull?: (where: string) => void;
   storage?: GroupsV2Storage;
 };
 
@@ -502,7 +505,11 @@ export const createGroupsV2 = (deps: GroupsV2Deps) => {
     if (result.isErr()) {
       // 0011 Unresolved 3, seen live: DM statements never expire and have the
       // higher expiry, so an account full of them has no room for a group statement.
-      if (result.error instanceof AccountFullError) throw new Error('Your account’s space on the network is full of chat statements, so a group statement cannot be stored.');
+      // The group allocator never raises its expiry above a DM's, so the first refusal is final.
+      if (result.error instanceof AccountFullError) {
+        deps.onAccountFull?.('group');
+        throw new AccountFullStop('group');
+      }
       throw result.error;
     }
   };

@@ -35,6 +35,7 @@ import { bytesToHex } from '../../app/bytes';
 import type { DeviceKeys } from '../device/keys';
 import type { UserIdentity } from '../identity/userIdentity';
 
+import { isAccountFullStop } from './accountSpace';
 import { type ChatContent, ChatMessageCodec, type ChatMessageWire } from './identityEvents';
 
 /**
@@ -161,6 +162,11 @@ export type PeerSessionParams = {
    * waiters the SDK cannot restore.
    */
   onBatchDelivered: () => void;
+  /**
+   * The store refused the batch for good (`AccountFullStop`, accountSpace.ts).
+   * Other errors do not come here: dispose also rejects the waiters.
+   */
+  onFailed?: (messageId: string, error: Error) => void;
 };
 
 export type PeerSession = {
@@ -238,7 +244,11 @@ export const createPeerSession = (params: PeerSessionParams): PeerSession => {
         () => params.onDelivered(ids.messageId),
         // Also fires on dispose, where the message is still live in the store;
         // treating that as a failure would drop a good row on every teardown.
-        error => console.warn('[peer-session] no ack for %s: %s', ids.messageId, error.message),
+        error => {
+          const failure: unknown = error;
+          if (isAccountFullStop(failure)) params.onFailed?.(ids.messageId, failure);
+          else console.warn('[peer-session] no ack for %s: %s', ids.messageId, error.message);
+        },
       );
     },
     dispose: () => {

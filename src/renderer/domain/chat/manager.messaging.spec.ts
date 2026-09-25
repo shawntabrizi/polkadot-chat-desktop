@@ -3,7 +3,8 @@
  * that runs the same SDK sessions over one in-memory store.
  */
 
-import { createExpiryAllocator, createInMemoryStatementStore, createRequestChannel, createSr25519Prover } from '@novasamatech/statement-store';
+import { AccountFullError, createExpiryAllocator, createInMemoryStatementStore, createRequestChannel, createSr25519Prover } from '@novasamatech/statement-store';
+import { errAsync } from 'neverthrow';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
@@ -14,6 +15,7 @@ import type { IdentityLookup } from '../identity/lookup';
 import { sendChatRequest } from '../requests/gateway';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
+import { ACCOUNT_FULL_NOTICE, ACCOUNT_FULL_REASON } from './accountSpace';
 import { OWN_CAPABILITIES } from './capabilities';
 import { toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
@@ -23,6 +25,7 @@ import { type ChatManager, createChatManager } from './manager';
 import { createPeerRoster } from './peerRoster';
 import { type IncomingChatMessage, createPeerSession } from './peerSession';
 import { SEEN_INTERVAL_MS } from './signals';
+import { ACCOUNT_FULL_HOLD_MS } from './submissions';
 
 const lookupOf = (peer: TestPeer): IdentityLookup => ({
   getPeerIdentity: async accountId =>
@@ -298,6 +301,51 @@ describe('chat manager: messaging', () => {
     expect((await db.messages.get('failed-1'))?.status).toBe('sent');
     const arrived = await waitFor(() => transport!.received.find(m => m.messageId === 'failed-1'));
     expect(arrived.content).toEqual({ tag: 'text', value: 'try again' });
+  });
+
+  // docs/decisions.md "AccountFull": a full account must not retry blindly
+  // (the SDK would try every 25 ms for ever), the user must see why the
+  // message did not go out, and the banner must go once space is free again.
+  it('AccountFull: the message fails with the reason, the chat gets one line, the banner shows; a later good submission clears it', async () => {
+    const inner = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    const webSigner = bytesToHex(web.device.statementAccountPublicKey).toLowerCase();
+    let full = false;
+    let refusals = 0;
+    const store: Store = {
+      ...inner,
+      submitStatement: statement => {
+        const signer = (statement.proof as { value?: { signer?: string } } | undefined)?.value?.signer?.toLowerCase();
+        if (full && signer === webSigner) {
+          refusals += 1;
+          const expiry = statement.expiry ?? 0n;
+          return errAsync(new AccountFullError(expiry, expiry + 1n));
+        }
+        return inner.submitStatement(statement);
+      },
+    };
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+
+    full = true;
+    await manager.sendMessage(peerKey, { type: 'text', text: 'no room' });
+    const sent = (await listMessages(peerKey)).find(r => r.direction === 'outgoing' && r.content.type === 'text')!;
+    await waitFor(async () => (await db.messages.get(sent.messageId))?.status === 'failed');
+    expect((await db.messages.get(sent.messageId))?.failure).toBe(ACCOUNT_FULL_REASON);
+    expect(manager.accountSpace.snapshot().full).toBe(true);
+    const notices = (await listMessages(peerKey)).filter(r => r.direction === 'system' && r.content.type === 'notice');
+    expect(notices.map(r => r.content)).toEqual([{ type: 'notice', text: ACCOUNT_FULL_NOTICE, tone: 'error' }]);
+    // Two refusals reach the store (the SDK's one try above the raised floor), then it stops.
+    await new Promise(resolve => setTimeout(resolve, ACCOUNT_FULL_HOLD_MS + 50));
+    expect(refusals).toBe(2);
+
+    full = false;
+    await manager.retry(peerKey, sent.messageId);
+    await waitFor(() => transport!.received.find(m => m.messageId === sent.messageId));
+    await waitFor(() => !manager!.accountSpace.snapshot().full);
+    expect((await db.messages.get(sent.messageId))?.failure).toBeUndefined();
   });
 
   it('keeps a retried message failed when it still cannot go out', async () => {

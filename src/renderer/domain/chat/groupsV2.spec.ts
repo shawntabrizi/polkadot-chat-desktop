@@ -7,7 +7,8 @@
  * from one member to the other in process.
  */
 
-import { createSr25519Prover, submitStatementOnce } from '@novasamatech/statement-store';
+import { AccountFullError, createSr25519Prover, submitStatementOnce } from '@novasamatech/statement-store';
+import { errAsync } from 'neverthrow';
 import { describe, expect, it } from 'vitest';
 
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
@@ -15,6 +16,7 @@ import type { GroupRow, MessageRow } from '../../app/database';
 import { makeGroupStore as makeStore } from '../testing/groupStore';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
+import { AccountFullStop } from './accountSpace';
 import { type Member2, PERMISSIONS, ROLES, decodeGroupData, decodeGroupMessages, decodeGroupState, encodeGroupData, encodeGroupMessages, encodeGroupState } from './groupCodec';
 import { VARIANT, createGroupExpiryAllocator, deriveEpoch, joinProof, open, seal } from './groupKeys';
 import {
@@ -175,6 +177,21 @@ describe('spec 0011: create and send', () => {
     await p('A').service.send(groupId, text('hello all'), nextIds(clock));
     expect(store.submittedBy(p('A').signer) - before).toBe(1);
     for (const name of ['B', 'C', 'bot']) await waitFor(() => texts(p(name), groupId).includes('hello all'));
+  });
+
+  // docs/decisions.md "AccountFull": the group allocator never goes above a DM's expiry, so the
+  // first refusal is final. The send must fail at once (the row shows why), with no second try.
+  it('AccountFull: a group send fails with AccountFullStop after one store call', async () => {
+    const { store, p, clock, groupId } = await created();
+    const real = store.adapter.submitStatement;
+    let calls = 0;
+    store.adapter.submitStatement = statement => {
+      calls += 1;
+      return errAsync(new AccountFullError(statement.expiry ?? 0n, (statement.expiry ?? 0n) + 1n));
+    };
+    await expect(p('A').service.send(groupId, text('no room'), nextIds(clock))).rejects.toBeInstanceOf(AccountFullStop);
+    expect(calls).toBe(1);
+    store.adapter.submitStatement = real;
   });
 
   it('messages composed in the same task share one statement (the per-second merge)', async () => {
