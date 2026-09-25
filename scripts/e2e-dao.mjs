@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // M14 e2e (DAO chat) on devnet: two people through this repo's domain code
 // and main-process signer, and a throwaway pca DAO bot as the group's admin.
-//   npm run e2e:dao -- [--profile devnet] [--identity-a pcdrevchibacbfcc] [--identity-b pcdbenchzzlx]
+//   npm run e2e:dao -- [--profile devnet] [--identity-a <name>] [--identity-b <name>]
 //                      [--pca <polkadot-chat-agents checkout with the M14 commit>] [--contract 0x…] [--voting 90]
 //
-// a and b are identities with room in their statement allowance (review M16:
-// pcde2e and pcdeceb get AccountFull for any group statement; by M14 pcdbenchfinb and
-// pcdbenchfina too). The bot is a
+// a and b are NEW identities made for this run, each funded with 1 PAS from
+// the dev accounts (scripts/lib/freshIdentity.mjs, IDENTITY_FRESH): the shared
+// test identities get AccountFull for group statements (review M16, 2026-09-24).
+// --identity-a / --identity-b reuse a saved one. The bot is a
 // NEW identity made for this run (`pca create <name> --brain echo --public`
 // in a scratch PCA_BOTS_DIR), started with BOT_DAO_CONTRACT, stopped and its
 // folder deleted at the end. Never a fleet bot. Funds come from the public dev
@@ -40,6 +41,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { groupIdentities } from './lib/identityPool.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -75,7 +78,7 @@ async function parent() {
     console.log(`NO_PCA_DAO ${pcaRoot} (pass --pca <a polkadot-chat-agents checkout with the M14 Dao bot>)`);
     process.exit(1);
   }
-  const identities = { a: flag('identity-a') ?? 'pcdrevchibacbfcc', b: flag('identity-b') ?? 'pcdbenchzzlx' };
+  const identities = await groupIdentities(flag, { profile, fundPas: 1 });
   const publicOf = (name) => {
     const file = join(root, '.agent-runs', `identity-${name}`, 'identity.json');
     if (!existsSync(file)) {
@@ -303,6 +306,8 @@ async function parent() {
   const accepted = await ask('b', `ACCEPT ${field(request.line, 'id')}`, /^ACCEPTED |_FAILED /);
   if (failed(accepted)) return fail(accepted ? 1 : 13, accepted?.line ?? 'E2E_TIMEOUT b accepts');
   if (!(await ask('a', 'WAIT_CONTACT', /^CONTACT /))) return fail(13, 'E2E_TIMEOUT a learns the accept');
+  const dm = await ask('b', 'DM_OTHER hi, add me to the group', /^DM_SENT|_FAILED /);
+  if (failed(dm)) return fail(dm ? 1 : 13, dm?.line ?? 'E2E_TIMEOUT b says hi');
   const botContact = await ask('a', `OPEN_BOT ${bot.accountHex}`, /^BOT_CONTACT |_FAILED /, BOT_WAIT_MS);
   if (failed(botContact)) return fail(botContact ? 1 : 13, botContact?.line ?? 'E2E_TIMEOUT the bot accepts a');
   const botFrom = botLines.length;
@@ -505,6 +510,11 @@ async function child() {
           console.log(`ACCEPTED ${request.peerUsername}`);
         }
       }
+      if (command === 'DM_OTHER') {
+        // Our capabilities (0013) ride this DM, so the other person's picker and guard take us.
+        await manager.sendMessage(otherHex, { type: 'text', text: rest.join(' ') });
+        console.log('DM_SENT');
+      }
       if (command === 'WAIT_CONTACT') {
         const contact = await waitFor(() => db.contacts.get(otherHex), WAIT_MS);
         if (contact) console.log(`CONTACT ${contact.username}`);
@@ -516,6 +526,14 @@ async function child() {
       }
       if (command === 'CREATE2') {
         const [bHex, bName, botHex, botName] = rest;
+        // The capability-gated picker (2026-09-24): every member's devices must be known to support groups first.
+        const { loadGroupSupport } = await load('src/renderer/domain/chat/capabilities.ts');
+        const supportOf = async (hex) => {
+          const [contact, info] = await Promise.all([db.contacts.get(hex), db.peerInfo.get(hex)]);
+          return loadGroupSupport(hex, contact?.devices ?? [], (info?.botInfo ?? null) !== null, bytesOf(hex));
+        };
+        const ready = await waitFor(async () => ((await supportOf(bHex)) === 'ready' && (await supportOf(botHex)) === 'ready' ? true : null), BOT_WAIT_MS);
+        console.log(`MEMBERS_GROUP_SUPPORT ${ready ? 'ready' : `b=${await supportOf(bHex)} bot=${await supportOf(botHex)}`}`);
         groupId = await manager.createGroup(`M14 DAO ${new Date().toISOString().slice(11, 19)}`, [
           { account: bHex, username: bName },
           { account: botHex, username: botName },

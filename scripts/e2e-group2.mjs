@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // M16 e2e (spec 0011 private groups v2) on devnet: two people through this
 // repo's domain code and a pca v2 bot as the third member.
-//   npm run e2e:group2 -- [--profile devnet] [--identity-a pcdbenchfinb] [--identity-b pcdeceb] [--pca <polkadot-chat-agents checkout>]
+//   npm run e2e:group2 -- [--profile devnet] [--identity-a <name>] [--identity-b <name>] [--pca <polkadot-chat-agents checkout>] [--register-wait <s>]
+//
+// a and b are NEW identities made for this run (scripts/lib/freshIdentity.mjs,
+// IDENTITY_FRESH): every run takes statement slots for 14 days, and the shared
+// test identities are full. --identity-a / --identity-b reuse a saved one.
 //
 // The bot is a NEW throwaway identity, made for this run the way pca's own
 // live proof uses a local bot (bot-core/scripts/e2e-groups-v2.mjs): `pca
@@ -38,6 +42,8 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { groupIdentities } from './lib/identityPool.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -66,11 +72,9 @@ async function parent() {
     console.log(`NO_PCA ${pcaCli} (pass --pca <polkadot-chat-agents checkout>)`);
     process.exit(1);
   }
-  // a posts every group statement, so a needs room in its statement allowance.
-  // pcde2e (and pcdeceb) are full of never-expiring DM statements from earlier
-  // runs and get AccountFull for any group statement (M16, docs/decisions.md);
-  // b only reads, so pcdeceb serves.
-  const identities = { a: flag('identity-a') ?? 'pcdbenchfinb', b: flag('identity-b') ?? 'pcdeceb' };
+  // a posts every group statement, so a needs room in its statement allowance:
+  // fresh identities by default (the shared ones get AccountFull, M16 and 2026-09-24).
+  const identities = await groupIdentities(flag, { profile });
   const publicOf = (name) => {
     const file = join(root, '.agent-runs', `identity-${name}`, 'identity.json');
     if (!existsSync(file)) {
@@ -87,11 +91,11 @@ async function parent() {
   const botName = `pcdgrp${Array.from({ length: 5 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('')}`;
   const pcaEnv = { ...process.env, PCA_BOTS_DIR: botsDir };
   console.log(`BOT_CREATE ${botName} (scratch PCA_BOTS_DIR, brain echo, allow ${who.a.username}) at=${at()}`);
-  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', '180'], {
+  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', flag('register-wait') ?? '1800'], {
     cwd: pcaRoot,
     env: pcaEnv,
     encoding: 'utf8',
-    timeout: 6 * 60_000,
+    timeout: (Number(flag('register-wait') ?? 1800) + 180) * 1000,
   });
   const botConfigFile = join(botsDir, botName, 'config.json');
   const botConfig = existsSync(botConfigFile) ? JSON.parse(readFileSync(botConfigFile, 'utf8')) : null;
@@ -233,6 +237,8 @@ async function parent() {
   const accepted = await ask('b', `ACCEPT ${field(request.line, 'id')}`, /^ACCEPTED |_FAILED /);
   if (failed(accepted)) return fail(accepted ? 1 : 13, accepted?.line ?? 'E2E_TIMEOUT b accepts a');
   if (!(await ask('a', 'WAIT_CONTACT', /^CONTACT /))) return fail(13, 'E2E_TIMEOUT a learns the accept');
+  const dm = await ask('b', 'DM_OTHER hi, add me to the group', /^DM_SENT|_FAILED /);
+  if (failed(dm)) return fail(dm ? 1 : 13, dm?.line ?? 'E2E_TIMEOUT b says hi');
   const botContact = await ask('a', `OPEN_BOT ${bot.accountHex}`, /^BOT_CONTACT |_FAILED /, BOT_WAIT_MS);
   if (failed(botContact)) return fail(botContact ? 1 : 13, botContact?.line ?? 'E2E_TIMEOUT the bot accepts a');
   console.log(`CONTACTS_OK a↔b, a↔${bot.username} at=${at()}`);
@@ -444,6 +450,11 @@ async function child() {
           console.log(`ACCEPTED ${request.peerUsername} id=${rest[0]}`);
         }
       }
+      if (command === 'DM_OTHER') {
+        // Our capabilities (0013) ride this DM, so the other person's picker and guard take us.
+        await manager.sendMessage(otherHex, { type: 'text', text: rest.join(' ') });
+        console.log('DM_SENT');
+      }
       if (command === 'WAIT_CONTACT') {
         const contact = await waitFor(() => db.contacts.get(otherHex), WAIT_MS);
         if (contact) console.log(`CONTACT ${contact.username} devices=${contact.devices.length}`);
@@ -456,6 +467,14 @@ async function child() {
       }
       if (command === 'CREATE2') {
         const [bHex, bName, botHex, botName] = rest;
+        // The capability-gated picker (2026-09-24): every member's devices must be known to support groups first.
+        const { loadGroupSupport } = await load('src/renderer/domain/chat/capabilities.ts');
+        const supportOf = async (hex) => {
+          const [contact, info] = await Promise.all([db.contacts.get(hex), db.peerInfo.get(hex)]);
+          return loadGroupSupport(hex, contact?.devices ?? [], (info?.botInfo ?? null) !== null, bytesOf(hex));
+        };
+        const ready = await waitFor(async () => ((await supportOf(bHex)) === 'ready' && (await supportOf(botHex)) === 'ready' ? true : null), BOT_WAIT_MS);
+        console.log(`MEMBERS_GROUP_SUPPORT ${ready ? 'ready' : `b=${await supportOf(bHex)} bot=${await supportOf(botHex)}`}`);
         const before = manager.submissions.snapshot().submissions;
         groupId = await manager.createGroup(`M16 e2e ${new Date().toISOString().slice(11, 19)}`, [
           { account: bHex, username: bName },

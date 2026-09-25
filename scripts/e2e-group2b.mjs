@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // M16b e2e (spec 0011 supergroup features) on devnet: two people through this
 // repo's domain code and a throwaway pca v2 bot as the third member.
-//   npm run e2e:group2b -- [--profile devnet] [--identity-a pcdbenchfinb] [--identity-b pcdbenchfina] [--pca <polkadot-chat-agents checkout>] [--register-wait <s>]
+//   npm run e2e:group2b -- [--profile devnet] [--identity-a <name>] [--identity-b <name>] [--pca <polkadot-chat-agents checkout>] [--register-wait <s>]
 //
-// a and b are the identities with room in their statement allowance (review
-// M16: pcde2e and pcdeceb are full of never-expiring DM statements and get
-// AccountFull for any group statement). a posts the states; b posts carriers,
+// a and b are NEW identities made for this run (scripts/lib/freshIdentity.mjs,
+// IDENTITY_FRESH): each run takes statement slots for 14 days, and the shared
+// test identities get AccountFull for group statements (review M16,
+// 2026-09-24). --identity-a / --identity-b reuse a saved one. a posts the states; b posts carriers,
 // and in the last step (as an admin) a rekey and a state.
 //
 // The bot is a NEW identity made for this run, as in e2e-group2: `pca create
@@ -47,6 +48,8 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { groupIdentities } from './lib/identityPool.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -76,7 +79,7 @@ async function parent() {
     console.log(`NO_PCA ${pcaCli} (pass --pca <polkadot-chat-agents checkout>)`);
     process.exit(1);
   }
-  const identities = { a: flag('identity-a') ?? 'pcdbenchfinb', b: flag('identity-b') ?? 'pcdbenchfina' };
+  const identities = await groupIdentities(flag, { profile });
   const publicOf = (name) => {
     const file = join(root, '.agent-runs', `identity-${name}`, 'identity.json');
     if (!existsSync(file)) {
@@ -93,11 +96,11 @@ async function parent() {
   const botName = `pcdgrp${Array.from({ length: 5 }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('')}`;
   const pcaEnv = { ...process.env, PCA_BOTS_DIR: botsDir };
   console.log(`BOT_CREATE ${botName} (scratch PCA_BOTS_DIR, brain echo, allow ${who.a.username}) at=${at()}`);
-  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', flag('register-wait') ?? '180'], {
+  const created = spawnSync(process.execPath, [pcaCli, 'create', botName, '--brain', 'echo', '--allow', who.a.accountHex, '--network', profile, '--wait', flag('register-wait') ?? '1800'], {
     cwd: pcaRoot,
     env: pcaEnv,
     encoding: 'utf8',
-    timeout: (Number(flag('register-wait') ?? 180) + 180) * 1000,
+    timeout: (Number(flag('register-wait') ?? 1800) + 180) * 1000,
   });
   const botConfigFile = join(botsDir, botName, 'config.json');
   const botConfig = existsSync(botConfigFile) ? JSON.parse(readFileSync(botConfigFile, 'utf8')) : null;

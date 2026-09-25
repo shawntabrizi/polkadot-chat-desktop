@@ -14,7 +14,7 @@ import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { type ContactRow, type GroupRow, type MessageRow, type PeerCapabilitiesRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
 import { hexToBytes } from '../app/bytes';
 import { type TxRunner, referenceNote } from '../domain/chain/transactions';
-import { GROUP_SUPPORT_WORDS, type GroupSupport, groupSupportOf } from '../domain/chat/capabilities';
+import { GROUP_SUPPORT_WORDS, type GroupSupport, groupSupportOf, loadAnsweredPeers } from '../domain/chat/capabilities';
 import type { BotCommand, TxStatus } from '../domain/chat/content';
 import { getDraft, saveDraft } from '../domain/chat/drafts';
 import { PERMISSIONS, ROLES } from '../domain/chat/groupCodec';
@@ -53,6 +53,7 @@ import { type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 const UNDO_MS = 6000;
 const DRAFT_SAVE_MS = 300;
 const NO_ROWS: readonly MessageRow[] = [];
+const NO_PEERS: ReadonlySet<string> = new Set();
 
 type Mode = { mode: 'new' } | { mode: 'reply'; target: MessageRow } | { mode: 'edit'; target: MessageRow };
 
@@ -68,12 +69,18 @@ export const memberStatus = (group: GroupRow, account: HexString, self: HexStrin
  * when every known device advertised groups v2 (0013 feature bit 0; a bot by
  * its `botInfo`). The manager checks the same again before anything is sent.
  */
-export const contactGroupSupport = (contact: ContactRow, capabilities: readonly PeerCapabilitiesRow[], peerInfo: ReadonlyMap<string, PeerInfoRow>): GroupSupport =>
+export const contactGroupSupport = (
+  contact: ContactRow,
+  capabilities: readonly PeerCapabilitiesRow[],
+  peerInfo: ReadonlyMap<string, PeerInfoRow>,
+  answered: ReadonlySet<string> = NO_PEERS,
+): GroupSupport =>
   groupSupportOf(
     contact.devices,
     capabilities.filter(row => row.peer === contact.accountId),
     (peerInfo.get(contact.accountId)?.botInfo ?? null) !== null,
     hexToBytes(contact.accountId),
+    answered.has(contact.accountId),
   );
 
 /** A contact the picker cannot take: greyed, with the reason as its caption and on hover. */
@@ -109,6 +116,8 @@ type PanelProps = {
   contacts: readonly ContactRow[];
   capabilities: readonly PeerCapabilitiesRow[];
   peerInfo: ReadonlyMap<string, PeerInfoRow>;
+  /** Contacts that answered our set without one of their own (`loadAnsweredPeers`). */
+  answered: ReadonlySet<string>;
   manager: ChatManager;
   onClose: () => void;
 };
@@ -131,7 +140,7 @@ export const mayRemove = (group: GroupRow, self: HexString, account: HexString):
 };
 
 /** The members side panel: who is in, their state; the admin adds and removes; anyone leaves. */
-const MembersPanel = ({ group, self, contacts, capabilities, peerInfo, manager, onClose }: PanelProps) => {
+const MembersPanel = ({ group, self, contacts, capabilities, peerInfo, answered, manager, onClose }: PanelProps) => {
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
@@ -158,7 +167,7 @@ const MembersPanel = ({ group, self, contacts, capabilities, peerInfo, manager, 
   };
 
   const add = (contact: ContactRow) => {
-    if (v2 && contactGroupSupport(contact, capabilities, peerInfo) !== 'ready') return;
+    if (v2 && contactGroupSupport(contact, capabilities, peerInfo, answered) !== 'ready') return;
     setError(null);
     setQuery('');
     const member = { account: contact.accountId, username: contact.username };
@@ -291,7 +300,7 @@ const MembersPanel = ({ group, self, contacts, capabilities, peerInfo, manager, 
           />
           {candidates.map(contact => {
             // A v1 room fans out by kind (0013 gate per message); a private group takes only capable contacts.
-            const support = v2 ? contactGroupSupport(contact, capabilities, peerInfo) : 'ready';
+            const support = v2 ? contactGroupSupport(contact, capabilities, peerInfo, answered) : 'ready';
             const gated = support !== 'ready';
             return (
               <button
@@ -494,6 +503,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
   const contacts = useLiveQuery(() => db.contacts.toArray(), []) ?? [];
   const peerInfoRows = useLiveQuery(() => db.peerInfo.toArray(), []) ?? [];
   const capabilityRows = useLiveQuery(() => db.peerCapabilities.toArray(), []) ?? [];
+  const answeredPeers = useLiveQuery(loadAnsweredPeers, []) ?? NO_PEERS;
   const prefs = useLiveQuery(readChatPrefs, []) ?? DEFAULT_CHAT_PREFS;
   const [panel, setPanel] = useState(false);
   const [draft, setDraft] = useState('');
@@ -834,7 +844,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
         )}
       </div>
       {panel ? (
-        <MembersPanel group={group} self={self} contacts={contacts} capabilities={capabilityRows} peerInfo={peerInfo} manager={manager} onClose={() => setPanel(false)} />
+        <MembersPanel group={group} self={self} contacts={contacts} capabilities={capabilityRows} peerInfo={peerInfo} answered={answeredPeers} manager={manager} onClose={() => setPanel(false)} />
       ) : null}
     </div>
   );
@@ -854,13 +864,14 @@ export const NewGroupRoom = ({ manager, onCreated }: NewGroupProps) => {
   const contacts = useLiveQuery(() => db.contacts.toArray(), []) ?? [];
   const peerInfoRows = useLiveQuery(() => db.peerInfo.toArray(), []) ?? [];
   const capabilityRows = useLiveQuery(() => db.peerCapabilities.toArray(), []) ?? [];
+  const answeredPeers = useLiveQuery(loadAnsweredPeers, []) ?? NO_PEERS;
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sorted = [...contacts].sort((a, b) => a.username.localeCompare(b.username));
   const peerInfo = new Map(peerInfoRows.map(row => [row.peerId, row]));
-  const supportOf = (contact: ContactRow) => contactGroupSupport(contact, capabilityRows, peerInfo);
+  const supportOf = (contact: ContactRow) => contactGroupSupport(contact, capabilityRows, peerInfo, answeredPeers);
   // A pick whose contact stopped qualifying (a new device without groups) no longer counts.
   const chosen = sorted.filter(contact => picked.has(contact.accountId) && supportOf(contact) === 'ready');
   const ready = chosen.length > 0 && !busy && manager !== null;

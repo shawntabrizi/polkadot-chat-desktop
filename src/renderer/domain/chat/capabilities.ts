@@ -264,8 +264,10 @@ export const loadEffective = async (peer: HexString, devices: readonly PeerDevic
  * every known device reads kind 249 with feature bit 0, the same test the
  * send gate (`formFor`, `groupControl`) applies. `unknown`: no device of the
  * peer sent a set yet (and it is not a bot, whose `botInfo` counts as the
- * pca transition set). `unsupported`: a set without the bit, or a silent
- * device next to one that sent a set (a baseline client, 0013).
+ * pca transition set), and the contact has not sent us a message since our
+ * set went out. `unsupported`: a set without the bit, a silent device next to
+ * one that sent a set, or a silent contact that answered our set (a baseline
+ * client, 0013).
  */
 export type GroupSupport = 'ready' | 'unsupported' | 'unknown';
 
@@ -279,6 +281,7 @@ export const groupSupportOf = (
   rows: readonly Pick<PeerCapabilitiesRow, 'device' | 'caps'>[],
   bot: boolean,
   identity?: Uint8Array,
+  answered = false,
 ): GroupSupport => {
   // The same device list `loadEffective` intersects over.
   const roster = devices.length === 0 && identity ? [{ statementAccountId: identity }] : devices;
@@ -286,12 +289,40 @@ export const groupSupportOf = (
   const effective = effectiveOf(roster, sets, bot ? PCA_TRANSITION : BASELINE);
   if (hasKind(effective, KIND.groupControl) && (effective.features & FEATURE_GROUPS_V2) !== 0) return 'ready';
   const heard = roster.some(device => sets.has(deviceKey(device.statementAccountId)));
-  return heard || bot ? 'unsupported' : 'unknown';
+  return heard || bot || answered ? 'unsupported' : 'unknown';
+};
+
+/**
+ * Silent devices (2026-09-24): a contact that sent us a message after our set
+ * went out, and sent no set of its own, runs a baseline client (0013). Its
+ * device had our set and answered without one. Before that answer we cannot
+ * tell a baseline client from one that has not spoken yet.
+ */
+export const answeredOwnSet = (ownSetSentAt: number | null, lastIncomingAt: number | null): boolean =>
+  ownSetSentAt !== null && lastIncomingAt !== null && lastIncomingAt > ownSetSentAt;
+
+/** `answeredOwnSet` from the stored rows: the time our set went out, and the newest DM from the peer after it. */
+export const loadAnsweredOwnSet = async (peer: HexString): Promise<boolean> => {
+  const sent = await db.capabilitiesSent.get(peer);
+  if (!sent) return false;
+  const later = await db.messages
+    .where('[peerAccountId+timestamp]')
+    .between([peer, sent.sentAt], [peer, Infinity], false, true)
+    .filter(row => row.direction === 'incoming')
+    .last();
+  return answeredOwnSet(sent.sentAt, later?.timestamp ?? null);
+};
+
+/** The peers that answered our set (for the picker, one read for all contacts). */
+export const loadAnsweredPeers = async (): Promise<ReadonlySet<string>> => {
+  const peers = (await db.capabilitiesSent.toArray()).map(row => row.peer);
+  const answered = await Promise.all(peers.map(loadAnsweredOwnSet));
+  return new Set(peers.filter((_, i) => answered[i]));
 };
 
 /** `groupSupportOf` from the stored rows (the manager's guard). */
 export const loadGroupSupport = async (peer: HexString, devices: readonly PeerDevice[], bot: boolean, identity?: Uint8Array): Promise<GroupSupport> =>
-  groupSupportOf(devices, await db.peerCapabilities.where('peer').equals(peer).toArray(), bot, identity);
+  groupSupportOf(devices, await db.peerCapabilities.where('peer').equals(peer).toArray(), bot, identity, await loadAnsweredOwnSet(peer));
 
 /** Whether our set must ride the next message to `peer`: never sent this chat, or sent before a set change. */
 export const capabilitiesDue = async (peer: HexString, own: Capabilities = OWN_CAPABILITIES): Promise<boolean> =>

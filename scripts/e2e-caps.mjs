@@ -2,7 +2,10 @@
 // M20 e2e (specs 0013 capabilities, 0014 Bulletin FileVariant, HOP send) on devnet,
 // through this repo's domain code and main-process chain code (never the owner's
 // identity, never the fleet):
-//   npm run e2e:caps -- [--profile devnet] [--identity-a pcde2e] [--identity-b pcdbenchqmwk] [--pca <polkadot-chat-agents checkout>]
+//   npm run e2e:caps -- [--profile devnet] [--identity-a <name>] [--identity-b <name>] [--pca <polkadot-chat-agents checkout>]
+//
+// a and b are NEW identities made for this run (scripts/lib/freshIdentity.mjs,
+// IDENTITY_FRESH); --identity-a / --identity-b reuse a saved one.
 //
 // Each person is a child process (`--role a|b`), as in e2e-attach.mjs. Every
 // message each child encodes and decodes is recorded (a spy on the app's
@@ -38,6 +41,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { groupIdentities } from './lib/identityPool.mjs';
 import { drawTestImage, shrink } from './lib/testImage.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -63,7 +67,7 @@ else await parent();
 async function parent() {
   const READY_WAIT_MS = 4 * 60_000;
   const STEP_WAIT_MS = 5 * 60_000;
-  const identities = { a: flag('identity-a') ?? 'pcde2e', b: flag('identity-b') ?? 'pcdbenchqmwk' };
+  const identities = await groupIdentities(flag, { profile });
   const saved = {};
   for (const [name, identity] of Object.entries(identities)) {
     if (!existsSync(identityFile(identity))) {

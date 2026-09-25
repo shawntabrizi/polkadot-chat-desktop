@@ -15,11 +15,15 @@ import {
   effectiveOf,
   fileRailOf,
   formFor,
+  answeredOwnSet,
   groupSupportOf,
   hasKind,
   intersect,
   kindsBitmap,
+  loadAnsweredOwnSet,
+  loadAnsweredPeers,
   loadEffective,
+  loadGroupSupport,
   markCapabilitiesSent,
   menuAsText,
   storeCapabilities,
@@ -249,5 +253,56 @@ describe('who may be put in a private group (owner ask 2026-09-24)', () => {
       const effective = effectiveOf(devices, new Map(rows.map(r => [r.device, r.caps])), BASELINE);
       expect(groupSupportOf(devices, rows, false) === 'ready').toBe('send' in formFor(effective, welcome));
     }
+  });
+});
+
+describe('a silent contact after our set: baseline, not unknown (2026-09-24)', () => {
+  // The phone apps never send a set. Once a device had ours and answered without one, waiting
+  // longer tells us nothing new: "message them first" would send the owner in a circle.
+  const row = (device: typeof desktop, caps: typeof OWN_CAPABILITIES) => ({ device: hexOf(device.statementAccountId), caps });
+  const incoming = (timestamp: number, direction: 'incoming' | 'outgoing' = 'incoming') =>
+    db.messages.put({ messageId: `m${timestamp}${direction}`, peerAccountId: PEER, timestamp, direction, status: 'sent', content: { type: 'text', text: 'hi' }, reactions: [], editedAt: null } as never);
+
+  it('answered only by a message after our set went out', () => {
+    expect(answeredOwnSet(null, 500)).toBe(false);
+    expect(answeredOwnSet(1_000, null)).toBe(false);
+    expect(answeredOwnSet(1_000, 900)).toBe(false);
+    expect(answeredOwnSet(1_000, 1_001)).toBe(true);
+  });
+
+  it('never exchanged a message after our set: not known yet', () => {
+    expect(groupSupportOf([phone], [], false, undefined, false)).toBe('unknown');
+  });
+
+  it('answered our set without one of its own: a client without group support', () => {
+    expect(groupSupportOf([phone], [], false, undefined, true)).toBe('unsupported');
+    expect(groupSupportOf([], [], false, phone.statementAccountId, true)).toBe('unsupported');
+  });
+
+  it('a contact that later advertises groups is ready, answered or not', () => {
+    expect(groupSupportOf([desktop], [row(desktop, OWN_CAPABILITIES)], false, undefined, true)).toBe('ready');
+  });
+
+  it('from the stored rows: an older message or our own does not count, a later answer does, then a set wins', async () => {
+    await incoming(900);
+    await markCapabilitiesSent(PEER, OWN_CAPABILITIES, 1_000);
+    await incoming(1_500, 'outgoing');
+    expect(await loadAnsweredOwnSet(PEER)).toBe(false);
+    expect(await loadGroupSupport(PEER, [phone], false)).toBe('unknown');
+
+    await incoming(2_000);
+    expect(await loadAnsweredOwnSet(PEER)).toBe(true);
+    expect([...(await loadAnsweredPeers())]).toEqual([PEER]);
+    expect(await loadGroupSupport(PEER, [phone], false)).toBe('unsupported');
+
+    await storeCapabilities(PEER, phone.statementAccountId, OWN_CAPABILITIES, 2_500);
+    expect(await loadGroupSupport(PEER, [phone], false)).toBe('ready');
+  });
+
+  it('a new chat or a new device clears the sent mark: not known yet again until they answer', async () => {
+    await markCapabilitiesSent(PEER, OWN_CAPABILITIES, 1_000);
+    await incoming(2_000);
+    await capabilitiesUnsent(PEER);
+    expect(await loadGroupSupport(PEER, [phone], false)).toBe('unknown');
   });
 });

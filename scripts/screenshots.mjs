@@ -62,8 +62,9 @@
 //   group-rename    the fixture private group's members panel: a new name
 //                   typed in Settings › Name, Save shown
 //   group-picker-gated  New group with fixture contacts: one capable, one
-//                   with a phone that never advertised groups, one never
-//                   heard from; the last two greyed with their reason
+//                   with a phone that never advertised groups, one phone-only
+//                   who answered our set without one, one never heard from;
+//                   the last three greyed with their reason
 //   room-group      (group) "hello all", the member's answer, the bot's reply
 //   group-members   (group) the members panel, the member's row hovered
 //   room-flip       (flip) the "Stake 0.5 PAS" signing strip after its dry-run
@@ -748,15 +749,18 @@ const daoFixture = async self => {
 };
 
 /**
- * group-picker-gated (owner ask 2026-09-24): three fictional contacts with no
+ * group-picker-gated (owner ask 2026-09-24): four fictional contacts with no
  * chat room (so the list does not show them). Aurora's one desktop advertised
  * groups (0013 feature bit 0); Ben's desktop did, his phone never sent a set
- * (a baseline client); Clara never sent one at all. Nothing is ever sent to them.
+ * (a baseline client); Dara's one phone had our set and answered without one
+ * (a baseline client too); Clara never exchanged a message after our set.
+ * Nothing is ever sent to them.
  */
 const PICKER = {
   capable: { account: account('c1'), username: 'aurorafield.21', device: 0x61 },
   phone: { account: account('c2'), username: 'bennorth.47', device: 0x62, phone: 0x63 },
   unknown: { account: account('c3'), username: 'clarawest.09', device: 0x64 },
+  answered: { account: account('c4'), username: 'daraquinn.52', device: 0x65 },
 };
 const pickerFixture = () => {
   const at = Date.now() - 86_400_000;
@@ -764,17 +768,21 @@ const pickerFixture = () => {
   const deviceHex = byte => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
   // A set that lists every kind with groups v2 and tx buttons (features 3).
   const groupsSet = { version: 1, kinds: fill(32, 0xff), fileVariants: [0, 1], hopDialects: [0, 1], features: 3 };
-  const { capable, phone, unknown } = PICKER;
+  const { capable, phone, unknown, answered } = PICKER;
   return {
     contacts: [
       contactRow({ ...capable, at }, [device(capable.device)]),
       contactRow({ ...phone, at }, [device(phone.device), device(phone.phone)]),
       contactRow({ ...unknown, at }, [device(unknown.device)]),
+      contactRow({ ...answered, at }, [device(answered.device)]),
     ],
     peerCapabilities: [
       { peer: capable.account, device: deviceHex(capable.device), caps: groupsSet, timestamp: at },
       { peer: phone.account, device: deviceHex(phone.device), caps: groupsSet, timestamp: at },
     ],
+    // Our set went to Clara and Dara; only Dara answered after it (with no set of her own).
+    capabilitiesSent: [unknown, answered].map(p => ({ peer: p.account, hash: 'fixture', sentAt: at })),
+    messages: [messageRow('fixture-picker-answer', { ...answered, at }, at + 60_000, 'incoming', { type: 'text', text: 'Sounds good, see you then' })],
   };
 };
 
@@ -840,6 +848,7 @@ const mainFixture = ({ txIntent, expiredIntent, pay, self }) => {
   const stores = {
     groups: [g2.group],
     peerCapabilities: picker.peerCapabilities,
+    capabilitiesSent: picker.capabilitiesSent,
     contacts: [
       ...picker.contacts,
       ...m.contacts.map(c => contactRow(c, [])),
@@ -889,6 +898,7 @@ const mainFixture = ({ txIntent, expiredIntent, pay, self }) => {
         : []),
       ...assistant,
       ...g2.messages,
+      ...picker.messages,
     ],
     requests: [
       { requestId: m.outgoing.requestId, peerAccountId: m.outgoing.account, peerUsername: m.outgoing.username, peerChatPublicKey: fill(32, 7), direction: 'outgoing',
@@ -2384,9 +2394,10 @@ const groupNameShots = async app => {
     if (!(await app.waitFor(app.exists('[data-testid=new-group]'), 5_000))) throw new Error('no "New group" in the New chat panel');
     await app.click('[data-testid=new-group]');
     const candidate = name => `[...document.querySelectorAll('[data-testid=group-candidate]')].find(r => r.textContent.includes(${JSON.stringify(name)}))`;
-    const { capable, phone, unknown } = PICKER;
-    const ready = `!!${candidate(capable.username)} && !${candidate(capable.username)}.dataset.gated && ${candidate(phone.username)}?.dataset.gated === 'true' && ${candidate(unknown.username)}?.dataset.gated === 'true'`;
-    if (!(await app.waitFor(ready, 10_000))) throw new Error('the picker does not grey the phone and the unknown contact');
+    const { capable, phone, unknown, answered } = PICKER;
+    const reason = name => `${candidate(name)}?.querySelector('[data-testid=candidate-reason]')?.textContent`;
+    const ready = `!!${candidate(capable.username)} && !${candidate(capable.username)}.dataset.gated && ${candidate(phone.username)}?.dataset.gated === 'true' && ${candidate(unknown.username)}?.dataset.gated === 'true' && ${reason(answered.username)} === 'Uses a client without group support' && ${reason(unknown.username)} === 'Not known yet: message them first'`;
+    if (!(await app.waitFor(ready, 10_000))) throw new Error('the picker does not grey the phones and the unknown contact with their reasons');
     await app.evaluate(`${candidate(capable.username)}.querySelector('[role=checkbox]').click(); true`);
     if (!(await app.waitFor(`${candidate(capable.username)}.querySelector('[role=checkbox]').dataset.state === 'checked'`, 5_000))) throw new Error('the capable contact was not checked');
   });

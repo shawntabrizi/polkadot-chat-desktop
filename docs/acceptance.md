@@ -4324,3 +4324,129 @@ Earlier runs today: default a (`pcdbenchfinb`) and `pcdtestjaia` got AccountFull
 
 - `e2e:group2`, `e2e:dao`: not rerun (they create v2 groups right after a chat opens; see decisions).
 - GROUP2B_OK: SLOW_OK and BOT_REMOVED_OK did not run (AccountFull for b; see decisions).
+
+## Fresh e2e identities and silent devices (2026-09-24)
+
+`npm run check`: 957 tests passed, then:
+
+```
+check:tokens: clean (204 files)
+```
+
+`PCD_HEADLESS=1 PCD_USER_DATA_DIR=<tmp> npm run smoke`: `SMOKE_OK`.
+
+`npm run screenshots -- --only group-picker-gated`: `SCREENSHOTS_OK in 14.2 s`, retaken after the restart: `SCREENSHOTS_OK in 12.3 s` (both themes; daraquinn.52 reads "Uses a client without group support", clarawest.09 "Not known yet: message them first"). Checked by eye.
+
+Runs before the pool (fresh live registrations).
+
+`npm run e2e:group2b` (markers only):
+
+```
+IDENTITY_CLAIMED pcdgtbanucwvi pcdgtbanucwvi.77 attempt=1 at=14.5s
+IDENTITY_CLAIMED pcdgtbbssdtxy pcdgtbbssdtxy.77 attempt=1 at=16.1s
+IDENTITY_REGISTERED pcdgtbbssdtxy pcdgtbbssdtxy.77 claims=1 in=81.4s
+IDENTITY_REGISTERED pcdgtbanucwvi pcdgtbanucwvi.77 claims=1 in=271.8s
+IDENTITY_FRESH a=pcdgtbanucwvi.77 b=pcdgtbbssdtxy.77
+BOT_CREATE pcdgrpurlaq (scratch PCA_BOTS_DIR, brain echo, allow pcdgtbanucwvi.77) at=271.8s
+BOT_REGISTERED pcdgrpurlaq.70 0x146b94efa57615d1bd8adaf1c67b018cf0d5ba12d5a323a1e47f2668ad1f2b16 at=592.8s
+PEOPLE a=pcdgtbanucwvi.77 b=pcdgtbbssdtxy.77 bot=pcdgrpurlaq.70 at=595.6s
+GROUP_READY group=c2eb2e55-32a9-4d64-9aa8-efc86732f6bb a=140d7f06-c086-48e1-adae-1ada29f158a6 bot=2F891167-3FC5-4AFF-8EF4-0EDEC03EB0C2 at=607.5s
+JOIN_APPROVED policy=1 a accepted the chat request itself (auto-accepted), b heard pending, approve cost 1 submissions (the state; the welcome and the history ride the DM), b epoch=1 at=612.7s
+HISTORY_OK b has both earlier messages and the line "History shared by pcdgtbanucwvi.77" at=613.7s
+DERIVED_NAME_OK created unnamed; a saw "pcdgrpurlaq.70" at creation, now a sees "pcdgrpurlaq.70, pcdgtbbssdtxy.77" and b sees "pcdgrpurlaq.70, pcdgtbanucwvi.77" at=613.7s
+RENAME_OK cost 1 statement(s); b shows "Trail crew 22:51:00" with the line "pcdgtbanucwvi.77 named the group “Trail crew 22:51:00”" at=614.0s
+PIN_OK cost 1 statement(s); b's state pins 1 at=614.3s
+SLOW_OK b's second message waited (0 submissions in 3 s), a hid the forged one, the held one reached a 11.6 s after the first at=626.2s
+PROMOTED_OK cost 1 statement(s); b is admin with flags 0xbf at=626.9s
+BOT_REMOVED_OK by b in 2 submissions; a epoch=2 members=2 signer=b (pcdgtbbssdtxy.77); bot: {"time":"2026-09-24T22:51:17.086Z","event":"BOT_GROUP2_KEY_R at=629.9s
+GROUP2B_OK at=629.9s
+```
+
+`npm run e2e:group2` (markers only):
+
+```
+IDENTITY_CLAIMED pcdgtwbtqdacj pcdgtwbtqdacj.34 attempt=1 at=16.5s
+IDENTITY_CLAIMED pcdgtwakmolpt pcdgtwakmolpt.80 attempt=1 at=22.1s
+IDENTITY_REGISTERED pcdgtwakmolpt pcdgtwakmolpt.80 claims=1 in=106.2s
+IDENTITY_REGISTERED pcdgtwbtqdacj pcdgtwbtqdacj.34 claims=1 in=168.8s
+IDENTITY_FRESH a=pcdgtwakmolpt.80 b=pcdgtwbtqdacj.34
+BOT_CREATE pcdgrpnzhxt (scratch PCA_BOTS_DIR, brain echo, allow pcdgtwakmolpt.80) at=168.9s
+BOT_REGISTERED pcdgrpnzhxt.94 0x5856c4d46af102fc01041b310eab326244db420421003984c5ce554163ad6328 at=449.4s
+PEOPLE a=pcdgtwakmolpt.80 b=pcdgtwbtqdacj.34 bot=pcdgrpnzhxt.94 at=452.9s
+CONTACTS_OK a↔b, a↔pcdgrpnzhxt.94 at=461.2s
+V2_CREATED group=e6051a02-1ca0-4c28-9998-e6066a75d503 create_statements=1 b epoch=1 bot joined at=462.9s
+ONE_SUBMISSION submissions=1 messages=1 at=463.2s
+BOT_REPLY_OK id=94A87D82-0B7B-455F-AF9C-40EAE7DF64BA text="Echo: hello bot" bot statements on Topic_1: ChMsgs_1=1 at=464.5s
+CARRY_OK b got 3 messages from a's current statement after a restart at=471.5s
+REMOVED_LOCKED_OUT submissions=2 b: no entry, epoch=1, a's epoch-2 statements=2 opened=0 at=474.4s
+BOT_EPOCH2_OK text="Echo: after b left" on Topic_2 at=474.7s
+HISTORY_OK the bot's page brought back id=94A87D82-0B7B-455F-AF9C-40EAE7DF64BA ("History shared by pcdgrpnzhxt.94") at=475.8s
+MIGRATED_OK group=f8f5d4cf-5a1b-4adc-97cd-4a63a1de98ca b kept its v1 row (true) and read a's v2 message at=481.3s
+GROUP2_OK at=481.3s
+[a] MEMBERS_GROUP_SUPPORT ready
+```
+
+Pool seed: `node scripts/lib/identityPool.mjs refill 8` (first version of the pool; the 8 claims took about 22 s; `IDENTITY_CLAIMED` lines left out; the log was lost in the restart, lines copied from the session):
+
+```
+POOL_REFILL 2026-09-24T22:53:31.052Z unused=0 target=8 registering=8
+IDENTITY_REGISTERED pcdpoolocfxtl pcdpoolocfxtl.59 claims=1 in=38.3s
+IDENTITY_REGISTERED pcdpoolazmuxd pcdpoolazmuxd.46 claims=1 in=46.0s
+POOL_REFILL_MISS no fresh identity attested in 30 min (4 claims, 4 attempts)   (6 times)
+POOL_REFILLED added=2/8 wall=1803.8s sum=84.3s
+POOL {"total":2,"unused":2}
+```
+
+A second refill (the version committed) adopted the 24 pending claims and watched them; all landed. After the restart: `POOL {"total":26,"ready":17,"pending":0}` before the runs below; 24 measured claims took 1 610–2 956 s each from claim to attestation, sum 52 071 s.
+
+Runs from the pool, after the restart. `npm run check`: 957 tests passed, last line `check:tokens: clean (204 files)`. Smoke again: `SMOKE_OK`.
+
+`npm run e2e:group2` (markers only):
+
+```
+IDENTITY_FRESH a=pcdpoolmiqbuv.91 b=pcdpoolywhnpk.31 from=pool,pool in=20.1s pool={"total":26,"ready":12,"pending":9}
+BOT_CREATE pcdgrpchhfh (scratch PCA_BOTS_DIR, brain echo, allow pcdpoolmiqbuv.91) at=20.1s
+BOT_REGISTERED pcdgrpchhfh.24 0xaef02bc2d3749c1a36fd8508ab903e2be8e4afab359f169e6c12d9497633b879 at=82.3s
+PEOPLE a=pcdpoolmiqbuv.91 b=pcdpoolywhnpk.31 bot=pcdgrpchhfh.24 at=85.3s
+CONTACTS_OK a↔b, a↔pcdgrpchhfh.24 at=94.7s
+V2_CREATED group=caa0672b-3c8a-4268-9b26-9eda71ebaf6f create_statements=2 b epoch=1 bot joined at=96.4s
+ONE_SUBMISSION submissions=1 messages=1 at=96.7s
+BOT_REPLY_OK id=09A44B08-8A70-4D14-A3FD-DB82024F9BED text="Echo: hello bot" bot statements on Topic_1: ChMsgs_1=1 at=98.0s
+CARRY_OK b got 3 messages from a's current statement after a restart at=104.5s
+REMOVED_LOCKED_OUT submissions=2 b: no entry, epoch=1, a's epoch-2 statements=2 opened=0 at=106.1s
+BOT_EPOCH2_OK text="Echo: after b left" on Topic_2 at=108.0s
+HISTORY_OK the bot's page brought back id=09A44B08-8A70-4D14-A3FD-DB82024F9BED ("History shared by pcdgrpchhfh.24") at=109.0s
+MIGRATED_OK group=c3a36909-112d-45b9-a89c-21b403b0ed8e b kept its v1 row (true) and read a's v2 message at=113.0s
+GROUP2_OK at=113.0s
+```
+
+`npm run e2e:group2b`, first run at the same time (markers only):
+
+```
+IDENTITY_FRESH a=pcdpoolyqdcjr.93 b=pcdpooltcsegt.38 from=pool,pool in=26.5s pool={"total":26,"ready":10,"pending":9}
+BOT_CREATE pcdgrpgfeeb (scratch PCA_BOTS_DIR, brain echo, allow pcdpoolyqdcjr.93) at=26.5s
+BOT_REGISTERED pcdgrpgfeeb.06 0xfa62e3e8abb30672e28eb8ae2de74e4096003a358fdfea17dd742457ebf16462 at=99.5s
+PEOPLE a=pcdpoolyqdcjr.93 b=pcdpooltcsegt.38 bot=pcdgrpgfeeb.06 at=105.8s
+OPEN_BOT_FAILED the bot did not accept in 170 s
+```
+
+`npm run e2e:group2b`, rerun (markers only):
+
+```
+IDENTITY_FRESH a=pcdpoolqxjoiw.23 b=pcdpoolyyghcq.88 from=pool,pool in=17.5s pool={"total":26,"ready":17,"pending":0}
+BOT_CREATE pcdgrpiwzjk (scratch PCA_BOTS_DIR, brain echo, allow pcdpoolqxjoiw.23) at=17.5s
+BOT_REGISTERED pcdgrpiwzjk.56 0xe049227aa576312ef6bb975c9411131c4760dd5c37c125a43bf33c15d2a8c772 at=69.3s
+PEOPLE a=pcdpoolqxjoiw.23 b=pcdpoolyyghcq.88 bot=pcdgrpiwzjk.56 at=72.0s
+GROUP_READY group=9acc7895-c91c-47d7-b195-fe4681f8b928 a=1c2d3557-5065-47a5-9944-fb2efffedda9 bot=E2D25FB4-FB55-4E5B-B23E-1B67AAF61C19 at=87.0s
+JOIN_APPROVED policy=1 a accepted the chat request itself (auto-accepted), b heard pending, approve cost 2 submissions (the state; the welcome and the history ride the DM), b epoch=1 at=92.4s
+HISTORY_OK b has both earlier messages and the line "History shared by pcdpoolqxjoiw.23" at=93.4s
+DERIVED_NAME_OK created unnamed; a saw "pcdgrpiwzjk.56" at creation, now a sees "pcdgrpiwzjk.56, pcdpoolyyghcq.88" and b sees "pcdgrpiwzjk.56, pcdpoolqxjoiw.23" at=93.4s
+RENAME_OK cost 1 statement(s); b shows "Trail crew 00:03:42" with the line "pcdpoolqxjoiw.23 named the group “Trail crew 00:03:42”" at=93.7s
+PIN_OK cost 1 statement(s); b's state pins 1 at=95.0s
+SLOW_OK b's second message waited (0 submissions in 3 s), a hid the forged one, the held one reached a 11.6 s after the first at=108.0s
+PROMOTED_OK cost 1 statement(s); b is admin with flags 0xbf at=108.6s
+BOT_REMOVED_OK by b in 2 submissions; a epoch=2 members=2 signer=b (pcdpoolyyghcq.88); bot: {"time":"2026-09-25T00:03:59.392Z","event":"BOT_GROUP2_KEY_R at=109.8s
+GROUP2B_OK at=109.8s
+```
+
+Not run: `e2e:dao` (`DAO_E2E_PENDING` stays), `e2e:caps`.
