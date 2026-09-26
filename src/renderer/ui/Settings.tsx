@@ -130,6 +130,8 @@ const IdentitySection = ({ username, identity, profileId }: Pick<Props, 'usernam
 
 /** How long the 12 words stay on screen (M19). */
 const PHRASE_SHOWN_MS = 60_000;
+/** How long "Clipboard cleared" shows after main cleared a copied phrase. */
+const CLEARED_HINT_MS = 5_000;
 const REVEAL_WORD = 'reveal';
 
 type PhraseState = { kind: 'idle' } | { kind: 'confirm'; typed: string; error: string | null } | { kind: 'shown'; words: string[]; until: number };
@@ -144,8 +146,23 @@ const SecuritySection = () => {
   const [state, setState] = useState<PhraseState>({ kind: 'idle' });
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  const [clipboardCleared, setClipboardCleared] = useState(false);
   const api = window.desktop?.identity;
   const shownUntil = state.kind === 'shown' ? state.until : null;
+  // Main clears a copied phrase after 60 s if the clipboard still holds it; the hint says so for 5 s.
+  useEffect(() => {
+    if (!api) return;
+    let hide: ReturnType<typeof setTimeout> | undefined;
+    const stop = api.onSecretCleared(() => {
+      setClipboardCleared(true);
+      clearTimeout(hide);
+      hide = setTimeout(() => setClipboardCleared(false), CLEARED_HINT_MS);
+    });
+    return () => {
+      stop();
+      clearTimeout(hide);
+    };
+  }, [api]);
   useEffect(() => {
     if (shownUntil === null) return;
     const tick = setInterval(() => setNow(Date.now()), 1000);
@@ -235,7 +252,10 @@ const SecuritySection = () => {
               variant="secondary"
               className="w-fit rounded-medium text-label-m"
               onClick={() => {
-                void navigator.clipboard.writeText(state.words.join(' ')).then(() => setCopied(true));
+                void api.copySecret(state.words.join(' ')).then(() => {
+                  setCopied(true);
+                  setClipboardCleared(false);
+                });
               }}
               data-testid="recovery-copy"
             >
@@ -247,7 +267,13 @@ const SecuritySection = () => {
             </Button>
             <span className="text-body-s text-fg-tertiary tabular-nums">Hides in {Math.max(0, Math.ceil((state.until - now) / 1000))} s</span>
           </div>
+          {copied ? <p className="text-body-s text-fg-tertiary">The clipboard clears in 60 s if it still holds the phrase.</p> : null}
         </div>
+      ) : null}
+      {clipboardCleared ? (
+        <p className="text-body-s text-fg-tertiary" role="status" data-testid="clipboard-cleared">
+          Clipboard cleared
+        </p>
       ) : null}
     </Section>
   );

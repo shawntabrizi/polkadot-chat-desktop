@@ -240,7 +240,7 @@ Write the question, what you did meanwhile, and the date.
 
 - **The GitHub repo name in the README.** The install steps link to `github.com/shawntabrizi/polkadot-chat-desktop` Releases and Issues (the `origin` remote). If the public repo moves (for example to an organisation), the two links change.
 - **Restore on Paseo.** Only devnet was restored in e2e. A Paseo phrase goes the same path (the People chain of the chosen network); not run.
-- **Clipboard after Copy.** The copied phrase stays on the clipboard until something else is copied. Should Copy be removed, or should the app clear the clipboard at the 60 s hide when it still holds the phrase (Electron's main can read the clipboard)?
+- **Clipboard after Copy.** The copied phrase stays on the clipboard until something else is copied. Should Copy be removed, or should the app clear the clipboard at the 60 s hide when it still holds the phrase (Electron's main can read the clipboard)? (Built 2026-09-25: main clears it 60 s after the copy when it still holds the phrase; see decisions.md "Clipboard clear".)
 
 ## HOP receive (2026-09-24)
 

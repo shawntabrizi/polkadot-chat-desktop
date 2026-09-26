@@ -15,6 +15,8 @@ export const IPC = {
   identityReset: 'identity:reset',
   identityResetUndo: 'identity:resetUndo',
   identityRecoveryPhrase: 'identity:recoveryPhrase',
+  clipboardCopySecret: 'clipboard:copySecret',
+  clipboardSecretCleared: 'clipboard:secretCleared',
   chainMetadataGet: 'chain:metadataGet',
   chainMetadataSet: 'chain:metadataSet',
   assistantGetSettings: 'assistant:getSettings',
@@ -143,6 +145,13 @@ export type DesktopIdentityApi = {
    * them nowhere else.
    */
   recoveryPhrase: (confirm: string) => Promise<string>;
+  /**
+   * Copies a secret (the recovery phrase). Main clears the clipboard after
+   * 60 s if it still holds the same text, then sends `onSecretCleared`.
+   */
+  copySecret: (secret: string) => Promise<void>;
+  /** The copied secret left the clipboard (the 60 s ended and nothing else was copied). */
+  onSecretCleared: (listener: () => void) => () => void;
   /** Progress lines of a running `create`. Returns the unsubscribe function. */
   onProgress: (listener: (line: string) => void) => () => void;
 };

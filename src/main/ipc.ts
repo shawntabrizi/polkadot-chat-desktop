@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { type BrowserWindow, Notification, app, ipcMain, shell } from 'electron';
+import { type BrowserWindow, Notification, app, clipboard, ipcMain, shell } from 'electron';
 
 import {
   type AccountBalance,
@@ -54,6 +54,7 @@ import { assertDevnetChain, dripDevnet } from './chain/faucet';
 import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
 import { revealRecoveryPhrase } from './identity/recovery';
+import { createSecretClipboard } from './secretClipboard';
 import { checkAvailability, createIdentity } from './identity/service';
 import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
 import { createDemoManifestSource } from './demoManifest';
@@ -340,6 +341,15 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
 
   // M19: the one channel that hands the mnemonic to the page, behind the typed word.
   ipcMain.handle(IPC.identityRecoveryPhrase, (_event, confirm: unknown): string => revealRecoveryPhrase(confirm, loadIdentity()));
+  // The copied phrase leaves the clipboard after 60 s if nothing else was copied (secretClipboard.ts).
+  const secretClipboard = createSecretClipboard(clipboard, () => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.clipboardSecretCleared);
+  });
+  ipcMain.handle(IPC.clipboardCopySecret, async (_event, secret: unknown): Promise<void> => {
+    if (typeof secret !== 'string' || secret.length === 0 || secret.length > 1_000) throw new Error('Nothing to copy.');
+    await secretClipboard.copy(secret);
+  });
 
   ipcMain.handle(IPC.identityResetUndo, (): boolean => {
     if (!resetTimer) return false;

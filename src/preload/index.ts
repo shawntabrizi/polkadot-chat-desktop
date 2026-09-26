@@ -24,6 +24,8 @@ const api: DesktopApi = {
     reset: () => ipcRenderer.invoke(IPC.identityReset),
     resetUndo: () => ipcRenderer.invoke(IPC.identityResetUndo),
     recoveryPhrase: confirm => ipcRenderer.invoke(IPC.identityRecoveryPhrase, confirm),
+    copySecret: secret => ipcRenderer.invoke(IPC.clipboardCopySecret, secret),
+    onSecretCleared: listener => listen<void>(IPC.clipboardSecretCleared)(() => listener()),
     onProgress: listener => {
       const handler = (_event: IpcRendererEvent, line: string) => listener(line);
       ipcRenderer.on(IPC.identityProgress, handler);

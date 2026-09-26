@@ -889,3 +889,15 @@ Carry item for docs/questions.md M18 "Invite links with several processes".
 - **Not asked.** A link clicked in a message or pressed as a button comes from a profile's own window, so it opens there with no question. A headless run never shows the question (nobody can answer it); it opens the link in this process and logs `INVITE_PROFILE_NOT_ASKED`.
 - **Tests.** `src/main/inviteRoute.spec.ts` (no question with one profile, labels and order, the picker case, the answer routes, `--open-link` parsing, the relaunch drops it). **Not run live:** the dialog needs a packaged, non-headless app that owns the scheme, and the rule for agents forbids a non-headless run on the owner's profile. Please try it once: two profiles, click an invite link in another app.
 - **New files no step names:** `src/main/inviteRoute.ts` (+ spec). No new dependency. No wire change. No Dexie change.
+
+## Clipboard clear (2026-09-25)
+
+Carry item for docs/questions.md M19 "Clipboard after Copy". It replaces the M19 bullet "The clipboard is not cleared after 60 s": that bullet was right that the page cannot read the clipboard, but main can.
+
+- **What.** Settings › Security › Copy now goes through main (`identity.copySecret`, IPC `clipboard:copySecret`). Main writes the phrase and starts a 60 s timer (a second copy starts it again). When it ends, main reads the clipboard; if it still holds the same text, main clears it and sends `clipboard:secretCleared`. Anything copied after the phrase stays. Main keeps a SHA-256 of the phrase for the check, never the text (`src/main/secretClipboard.ts`).
+- **Hints.** Under Copy, after a copy: "The clipboard clears in 60 s if it still holds the phrase." After main cleared it: "Clipboard cleared" in the Security section for 5 s (only while Settings is open).
+- **Electron 44:** `clipboard.readText` and `writeText` are promises, so the module is async.
+- **Scope.** The recovery phrase is the only secret the UI can copy. No wallet or identity screen shows or copies a raw key (Settings copies the account id, which is public). So nothing else changed.
+- **Not built.** A quit inside the 60 s leaves the phrase on the clipboard (the timer dies with the process).
+- **Tests.** `src/main/secretClipboard.spec.ts` (cleared when it still holds the phrase, with the hint; kept when the person copied something else, no hint; a second copy keeps one timer). Not run live (no clipboard in a headless check; the owner's clipboard is not to be touched by an agent run).
+- **New files no step names:** `src/main/secretClipboard.ts` (+ spec). No new dependency. No wire change. No Dexie change.
