@@ -80,6 +80,22 @@ const FOLLOW_SLACK_PX = 80;
 /** How long a message search hit stays highlighted (M7b step 1c). */
 const JUMP_HIGHLIGHT_MS = 1500;
 
+/**
+ * The quoted original of a reply. In a DM the other side is `peerName`. In a
+ * group `senderOf` names the member who wrote the original (the room title
+ * would name the group, not the person). The wire is the same kind-7 reply
+ * in both, so a phone keeps its plain reply.
+ */
+export const quoteOf = (
+  quoted: MessageRow | undefined,
+  peerName: string,
+  senderOf?: (row: MessageRow) => string | null,
+): { sender: string; text: string } => {
+  if (!quoted) return { sender: peerName, text: 'Message not available' };
+  const sender = quoted.direction === 'outgoing' ? 'You' : ((senderOf ? senderOf(quoted) : null) ?? peerName);
+  return { sender, text: messagePreview(quoted) };
+};
+
 export const MessageFlow = ({
   rows: liveRows,
   peerName,
@@ -279,13 +295,7 @@ export const MessageFlow = ({
                       >
                         <MessageBubble
                           row={row}
-                          quote={
-                            row.content.type === 'reply'
-                              ? quoted
-                                ? { sender: quoted.direction === 'outgoing' ? 'You' : peerName, text: messagePreview(quoted) }
-                                : { sender: peerName, text: 'Message not available' }
-                              : null
-                          }
+                          quote={row.content.type === 'reply' ? quoteOf(quoted, peerName, senderOf) : null}
                           first={separator !== null || previous?.direction !== row.direction || previous.senderAccountId !== row.senderAccountId}
                           last={next?.direction !== row.direction || next.senderAccountId !== row.senderAccountId || next.messageId === firstUnreadId}
                           sender={senderOf && row.direction === 'incoming' ? senderOf(row) : null}

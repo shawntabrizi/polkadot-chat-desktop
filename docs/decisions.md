@@ -901,3 +901,13 @@ Carry item for docs/questions.md M19 "Clipboard after Copy". It replaces the M19
 - **Not built.** A quit inside the 60 s leaves the phrase on the clipboard (the timer dies with the process).
 - **Tests.** `src/main/secretClipboard.spec.ts` (cleared when it still holds the phrase, with the hint; kept when the person copied something else, no hint; a second copy keeps one timer). Not run live (no clipboard in a headless check; the owner's clipboard is not to be touched by an agent run).
 - **New files no step names:** `src/main/secretClipboard.ts` (+ spec). No new dependency. No wire change. No Dexie change.
+
+## Quoted replies in groups (2026-09-25)
+
+Carry item; answers docs/questions.md M14 "The quoted sender of a reply in a group".
+
+- **What was there.** A v2 group reply already goes as the kind-7 `reply` in the carrier and comes back as a `reply` row (`fromWire`), and `MessageFlow` already drew the quote. But the quote named the room title for every incoming original, so in a group it said the group's name ("Garden DAO") and not the member.
+- **Fix.** `quoteOf` (MessageFlow.tsx) names the quoted original as the DM does: "You" for our own, else `senderOf(original)` (the group room's member name, which the bubble header uses too), else the room name (a DM). An original that is not on this device still shows "Message not available".
+- **No wire change.** The reply stays the base kind 7 with only the quoted id, so a phone and pca keep their plain reply.
+- **Tests.** `src/renderer/ui/groupQuote.spec.tsx` (a member's original names the member, not the group; own is "You" in both; a DM names the peer; an unknown original).
+- **New files no step names:** the spec. No new dependency. No Dexie change.

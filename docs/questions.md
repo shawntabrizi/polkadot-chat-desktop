@@ -227,7 +227,7 @@ Write the question, what you did meanwhile, and the date.
 
 - **The card reads the bot's English.** No wire kind carries a proposal (M14 "Do not"), so the card parses dao.md's lines (`Proposal #N:`, `Tally #N:`, `Voting on #N … closed:`, `Proposal #N executed`). A wording change in pca silently turns the card off. Pin the wording in dao.md as a contract for clients, or give botInfo/buttons a structured field later?
 - **Status 0 in groups.** A group reference goes out once (in block or failed), never the 30 s "submitted". Spec 0007 rule 3 allows both; is one statement per transaction the rule for groups (it is what the brief asked)?
-- **The quoted sender of a reply in a group** shows the group's name ("Garden DAO") instead of the member who wrote the quoted message (visible under the bot's tally replies in room-dao.png). Existing M16 behaviour, not changed here. Fix in a group follow-up?
+- **The quoted sender of a reply in a group** shows the group's name ("Garden DAO") instead of the member who wrote the quoted message (visible under the bot's tally replies in room-dao.png). Existing M16 behaviour, not changed here. Fix in a group follow-up? (Fixed 2026-09-25: the quote names the member; see decisions.md "Quoted replies in groups".)
 
 ## M18 (2026-09-24)
 
