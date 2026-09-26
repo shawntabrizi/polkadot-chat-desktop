@@ -911,3 +911,17 @@ Carry item; answers docs/questions.md M14 "The quoted sender of a reply in a gro
 - **No wire change.** The reply stays the base kind 7 with only the quoted id, so a phone and pca keep their plain reply.
 - **Tests.** `src/renderer/ui/groupQuote.spec.tsx` (a member's original names the member, not the group; own is "You" in both; a DM names the peer; an unknown original).
 - **New files no step names:** the spec. No new dependency. No Dexie change.
+
+## Vendored bot-core: expiresAt 0 (2026-09-25)
+
+Carry item: refresh the vendored bot-core from `polkadot-chat-agents` `desktop/rfc-0003` b8b9fc4 so the meter's top-up intents carry `expiresAt: 0`, and change nothing else.
+
+- **Conflict, and the choice.** The vendored copy is `vendor/*.tgz` (M13 rule above), not files under `src/main/agent/`. A full refresh to b8b9fc4 would bring 16 bot-core commits (55 files, about 9,200 lines: groups v2, attachments, capabilities, HOP send, the colour bot) and a new dependency (`jpeg-js` 0.4.4 in bot-core's package.json). That breaks "change nothing else" and "no new dependencies". So the new copy is 675f948 plus only the `expiresAt` lines of 289d02c (the b8b9fc4 ancestor "tx: expiresAt 0 means never; the meter top-up never expires"):
+  - `lib/meter.mjs`: `METER_INTENT_TTL_MS = 0` and the top-up intent's `expiresAt: METER_INTENT_TTL_MS` (was `now() + 10 min`). The intermediate 7-day value of 6ae060b is skipped; b8b9fc4 has 0.
+  - `lib/buttons-block.mjs` `toTxIntent`: 0 or no `expiresAt` is accepted (was dropped). Without it the parser would still drop the meter's 0 and every agent `tx` with 0.
+  - `README.md`: one HTML comment at the top that names the source (675f948 + the lines of 289d02c, branch tip b8b9fc4).
+  - Byte check: `diff -r` of the old and new packages shows only these three files. The meter's `METER_TOPUP_WORST` limits of b8b9fc4 are not taken (not asked).
+- **File.** `vendor/polkadot-chat-agents-bot-core-675f948-p289d02c.tgz` (`git archive 675f948 bot-core`, the edits, `npm pack --ignore-scripts`; sha256 7078b88c08e305b3a3ce27e52e90f902994ff18e3b7a6ed89c4d872d21719566). package.json and the lock point to it; the old tgz is removed. The package version stays 0.10.0.
+- **Effect in this app.** The desktop's published agent does not run bot-core's meter (nothing in `src/main/agent/` uses it), so the visible change is the parser: a published agent's `tx` button with `expiresAt` 0 now reaches the peer. This closes the "Known gap" of "Expired tx buttons" above. `directives.spec.ts` now asserts that bot-core keeps the intent with `expiresAt` 0n (it asserted the drop before and failed on this change, as planned).
+- **Not run:** `e2e:agent` (devnet). Loading checked: `lib/meter.mjs` imports and reads `METER_INTENT_TTL_MS = 0`.
+- No new dependency. No wire change. No Dexie change.

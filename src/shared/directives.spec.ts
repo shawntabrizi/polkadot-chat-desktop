@@ -134,11 +134,13 @@ describe('a tx intent that never expires', () => {
     expect(txIntentFromJson({ ...tx, expiresAt: 1.5 })).toBeNull();
   });
 
-  // Known gap, kept loud: the vendored bot-core (675f948) encodes the agent's
-  // block and still drops an intent with expiresAt 0. When a new bot-core is
-  // vendored with the spec change, this fails: then assert it is accepted.
-  it("is still dropped by the vendored bot-core's parser", () => {
+  // The vendored bot-core (675f948 + the expiresAt lines of 289d02c) encodes the
+  // agent's block: a published agent's never-expiring button must reach the peer.
+  it("is kept by the vendored bot-core's parser, with expiresAt 0", () => {
     const { directive } = directiveFromToolCalls([{ name: TX_TOOL, arguments: JSON.stringify({ label: 'Top up 1 PAS', ...tx, expiresAt: 0 }) }], ['tx']);
-    expect(botCoreExtract(withDirectiveBlock('Top up?', directive))?.invalid.length).toBeGreaterThan(0);
+    const extracted = botCoreExtract(withDirectiveBlock('Top up?', directive));
+    expect(extracted?.invalid).toEqual([]);
+    const button = extracted?.rows?.[0]?.[0] as { action?: { tx?: { expiresAt?: bigint } } } | undefined;
+    expect(button?.action?.tx?.expiresAt).toBe(0n);
   });
 });

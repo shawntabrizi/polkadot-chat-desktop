@@ -1,5 +1,5 @@
 // Types for the parts of pca bot-core (the `polkadot-chat-agents` package,
-// vendor/polkadot-chat-agents-bot-core-675f948.tgz) this app imports. The
+// vendor/polkadot-chat-agents-bot-core-675f948-p289d02c.tgz) this app imports. The
 // package ships plain ESM without types.
 
 declare module 'polkadot-chat-agents/lib/agent-context.mjs' {

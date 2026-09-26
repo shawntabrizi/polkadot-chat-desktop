@@ -65,7 +65,7 @@
     "markdown-it": "15.0.1",
     "neverthrow": "8.2.0",
     "polkadot-api": "3.1.0",
-    "polkadot-chat-agents": "file:vendor/polkadot-chat-agents-bot-core-675f948.tgz",
+    "polkadot-chat-agents": "file:vendor/polkadot-chat-agents-bot-core-675f948-p289d02c.tgz",
     "qrcode": "1.5.4",
     "radix-ui": "1.6.7",
     "react": "19.2.8",
