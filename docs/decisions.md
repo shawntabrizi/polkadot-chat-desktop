@@ -938,3 +938,11 @@ Carry item: tell a peer whose app cannot take kind 21 that a message was deleted
 - **Groups:** not changed (v2 groups have no per-device gate in this app; a group deletion goes as before).
 - **Tests.** `manager.messaging.spec.ts`: a peer without kind 21 (setting off: the row is marked and nothing goes; setting on: the text arrives and is an own row, and no `deleted` goes); a peer with kind 21 (no mark, no text, even with the setting on).
 - No new dependency. No wire change (the notice is a base text). No Dexie version.
+
+## "Fetching from chain" screenshot (2026-09-25)
+
+Carry item: a screenshot of the HOP chain fallback state.
+
+- **Mocked, and the file names say so.** `docs/screenshots/room-hop-fetching-chain-mocked-day.png` and `-night.png` (Berlin Day and Night, 1280×800). A live fetch from chain storage needs a HOP upload that a node has promoted, and the scratch bot cannot `hop_submit` while the devnet //Eve budget refuses its Bulletin grant ("HOP chain fallback" above; docs/questions.md "//Eve refused even 8 MiB"). So the state comes from a fixture row.
+- **How.** New shot `room-hop-fetching-chain-mocked` in `scripts/screenshots.mjs` (main worker, fixture): a fictional phone contact `noahphone.14`, a text, and a photo over HOP whose local `attachments` row is `fetchingChain` (as `runHopFetch` leaves it after `chainPending`; 6 attempts, first failure 2 h ago). No key row is written, so a retry after the reload fails before it reaches any node; the shot writes the row again just before capture. No node or chain is asked.
+- **Run.** `PCD_HEADLESS=1 PCD_SCREENSHOT_IDENTITY=<pcde2e test identity> node scripts/screenshots.mjs --only room-hop-fetching-chain-mocked` → `SCREENSHOTS_OK in 11.2 s`; the harness uses a throwaway `PCD_USER_DATA_DIR`. Checked by eye: the photo's blurhash with the chip "Fetching from chain storage" and its spinner, in both themes.

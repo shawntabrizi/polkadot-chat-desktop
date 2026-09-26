@@ -122,6 +122,12 @@
 //                   sender's node" with Ask to resend, one still downloading
 //                   (the sender's blurhash), one received with its text; a
 //                   video not yet downloaded above them
+//   room-hop-fetching-chain-mocked  HOP chain fallback (fixture, mocked):
+//                   a phone photo whose pool entry is gone and whose bytes
+//                   are being fetched from chain storage by hash
+//                   ("Fetching from chain storage"). Mocked: the row is written
+//                   in that state; no node or chain is asked (a live fetch needs
+//                   a HOP upload, which the devnet //Eve budget blocks)
 //   room-own-markdown own markdown (fixture): a peer's message with bold,
 //                   inline code, a fenced block and a link, and the same
 //                   text sent by us, in the inverted bubble
@@ -196,7 +202,7 @@ const WORKER_SHOTS = {
     'chat-menu', 'archived', 'settings-privacy', 'room-meter', 'room-tx-last', 'room-tx-expired', 'room-request', 'send-pas', 'room-request-paid', 'room-group2', 'group2-members',
     'group-invite', 'group-roles', 'room-pinned', 'room-dao', 'group-rename', 'group-picker-gated',
     'settings-agent', 'demo-onboarding', 'settings-demo',
-    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'room-own-markdown', 'settings-storage',
+    'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'room-hop-fetching-chain-mocked', 'room-own-markdown', 'settings-storage',
     'settings-profiles', 'settings-security',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
@@ -1115,6 +1121,35 @@ const hopFixture = async () => {
   };
 };
 
+/**
+ * HOP chain fallback (RFC-0001), mocked: a fictional friend's phone photo whose
+ * pool entry is gone. Its local row is `fetchingChain`, as `runHopFetch` leaves
+ * it after `chainPending`. No key row is written, so a retry never reaches a
+ * node (it fails first); the shot writes the row again just before capture.
+ */
+const NOAH = { account: account('9c'), username: 'noahphone.14', at: Date.now() - 3 * 3_600_000 };
+const hopChainRow = () => ({
+  messageId: 'fixture-noah-chain', index: 0, status: 'fetchingChain', done: 0, total: 1, bytes: null, mime: 'image/jpeg', expiresAt: 0,
+  attempts: 6, firstFailedAt: Date.now() - 2 * 3_600_000, error: 'No source has this entry yet.', updatedAt: Date.now(),
+});
+const hopChainFixture = async () => {
+  const { encodeBlurhash } = await loadTs('src/renderer/domain/chat/blurhash.ts');
+  const image = drawScene(480, 320, { top: [150, 190, 230], bottom: [236, 226, 200], sun: [255, 240, 190], sea: [70, 110, 150] });
+  const small = shrink(image.rgba, 480, 320);
+  const blurhash = encodeBlurhash(small.pixels, small.w, small.h, 4, 3);
+  const hop = { identifier: account('9d'), node: 'wss://paseo-hop-next-0.polkadot.io', ticket: fill(0, 0) };
+  const photo = { kind: 'image', mimeType: 'image/jpeg', fileSize: image.png.length, width: 480, height: 320, blurhash, hop };
+  return {
+    contacts: [contactRow(NOAH)],
+    rooms: [roomRow(NOAH, 'The harbour yesterday', NOAH.at + 60_000)],
+    messages: [
+      messageRow('fixture-noah-hello', NOAH, NOAH.at, 'incoming', { type: 'text', text: 'Back online. Here is the photo from yesterday.' }),
+      messageRow('fixture-noah-chain', NOAH, NOAH.at + 60_000, 'incoming', { type: 'richText', text: 'The harbour yesterday', attachments: [photo] }),
+    ],
+    attachments: [hopChainRow()],
+  };
+};
+
 /** Own markdown: the same text from a fictional peer and from us, side by side. */
 const MATEO = { account: account('c5'), username: 'mateodev.31', at: Date.now() - 20 * 60_000 };
 const MARKDOWN_TEXT = 'The fix is **in**: call `renderMarkdown` on both sides.\n\n```ts\nconst html = renderMarkdown(text);\n```\n\nNotes in [the decisions](https://example.com/decisions).';
@@ -1199,6 +1234,7 @@ const mainWorker = async () => {
     const { pick, voiceRows, videoRows, ...attachRows } = await attachmentFixture();
     await writeRows(app, attachRows);
     await writeRows(app, await hopFixture());
+    await writeRows(app, await hopChainFixture());
     await writeRows(app, ownMarkdownFixture());
     await recordFixtureVoice(app, voiceRows);
     await recordFixtureVideo(app, videoRows);
@@ -1449,6 +1485,14 @@ const attachmentShots = async (app, pickPath) => {
     if (!(await app.waitFor(shown, 15_000))) throw new Error('the HOP bubbles did not show: the photo, the download, "no longer available" and the video');
     await app.waitFor(`[...document.querySelectorAll('[data-via=hop] [data-testid=attachment-image]')].every(img => img.complete && img.naturalWidth > 0)`, 10_000);
     await app.evaluate(`document.querySelector('[data-message-id="fixture-priya-garden"]')?.scrollIntoView({ block: 'end' }); true`);
+  });
+
+  await app.shot('room-hop-fetching-chain-mocked', async () => {
+    if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== NOAH.username) await openRow(app, NOAH.username);
+    // Mocked state: written again now, since a retry of the fixture row (no key) may have failed it meanwhile.
+    await writeRows(app, { attachments: [hopChainRow()] });
+    if (!(await app.waitFor(app.exists('[data-message-id="fixture-noah-chain"] [data-testid=attachment-fetching-chain]'), 15_000))) throw new Error('the "Fetching from chain storage" chip did not show');
+    await app.evaluate(`document.querySelector('[data-message-id="fixture-noah-chain"]')?.scrollIntoView({ block: 'end' }); true`);
   });
 
   await app.shot('room-own-markdown', async () => {
