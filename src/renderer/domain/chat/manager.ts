@@ -53,6 +53,8 @@ import {
   loadGroupSupport,
   markCapabilitiesSent,
   storeCapabilities,
+  DELETION_NOTICE_TEXT,
+  deletionReaches,
 } from './capabilities';
 import { sharedGroupName } from './groupNames';
 import { admitAfterDelete, deleteChatLocally, isBlocked, unfinishedDeletes, withdrawRequestLocally } from './chatActions';
@@ -1345,6 +1347,13 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       // batch (RFC-0003 case 2), so a sent message is always retracted
       // cooperatively (docs/decisions.md).
       await tombstoneMessage(messageId);
+      // Spec 0013: a peer whose devices do not all list kind 21 gets no `deleted` (the gate
+      // drops it), so the row says the peer keeps the message. The plain text notice is opt-in.
+      if (!isGroupPeer(peer) && !deletionReaches(await effectiveFor(peer))) {
+        await db.messages.update(messageId, { deletedHereOnly: true });
+        if ((await readChatPrefs()).tellPhonesDeletions) await sendMessage(peer, { type: 'text', text: DELETION_NOTICE_TEXT });
+        return;
+      }
       await submit(peer, { type: 'deleted', targetMessageId: messageId }, { messageId: randomId(), timestamp: Date.now() });
     },
 

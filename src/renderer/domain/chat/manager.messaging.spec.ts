@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type HexString, bytesToHex, hexToBytes } from '../../app/bytes';
 import { appDatabase, db } from '../../app/database';
+import { writeTellPhonesDeletions } from '../../app/chatPrefs';
 import { writeSetting } from '../../app/settings';
 import type { ConnectionStatus } from '../../app/statementStore';
 import type { IdentityLookup } from '../identity/lookup';
@@ -16,7 +17,7 @@ import { sendChatRequest } from '../requests/gateway';
 import { type TestPeer, makePeer, waitFor } from '../testing/peers';
 
 import { ACCOUNT_FULL_NOTICE, ACCOUNT_FULL_REASON } from './accountSpace';
-import { OWN_CAPABILITIES } from './capabilities';
+import { DELETION_NOTICE_TEXT, OWN_CAPABILITIES } from './capabilities';
 import { toWire } from './content';
 import { createIdentityChannel } from './identityChannel';
 import type { ChatContent, IdentityChannelEvent } from './identityEvents';
@@ -377,6 +378,52 @@ describe('chat manager: messaging', () => {
     // The deletion is its own message with a fresh id, never a row of its own.
     expect(deletion.messageId).not.toBe(mine.messageId);
     expect((await listMessages(peerKey)).filter(r => r.direction === 'outgoing')).toHaveLength(1);
+  });
+
+  // Spec 0013 gate: a phone that did not list kind 21 never gets `deleted`, so it keeps the
+  // message. The row must say so; a plain text notice goes only when the owner turned it on,
+  // because it costs one more submission and the peer sees a message.
+  it('delete for everyone to a peer without kind 21: removed here only; the text notice only with the setting on', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport, { capable: false });
+    await manager.sendMessage(peerKey, { type: 'text', text: 'first' });
+    await manager.sendMessage(peerKey, { type: 'text', text: 'second' });
+    const [first, second] = (await listMessages(peerKey)).filter(r => r.direction === 'outgoing');
+    await waitFor(() => transport!.received.find(m => m.messageId === second!.messageId));
+
+    // Setting off (default): nothing goes, the row is marked.
+    await manager.deleteForEveryone(peerKey, first!.messageId);
+    expect(await db.messages.get(first!.messageId)).toMatchObject({ content: { type: 'deleted' }, deletedHereOnly: true });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(transport.received.some(m => m.content.tag === 'deleted' || (m.content.tag === 'text' && m.content.value === DELETION_NOTICE_TEXT))).toBe(false);
+
+    // Setting on: the plain text goes, as an own message the user can see.
+    await writeTellPhonesDeletions(true);
+    await manager.deleteForEveryone(peerKey, second!.messageId);
+    expect((await db.messages.get(second!.messageId))?.deletedHereOnly).toBe(true);
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'text' && m.content.value === DELETION_NOTICE_TEXT));
+    expect(transport.received.some(m => m.content.tag === 'deleted')).toBe(false);
+    expect((await listMessages(peerKey)).some(r => r.direction === 'outgoing' && r.content.type === 'text' && r.content.text === DELETION_NOTICE_TEXT)).toBe(true);
+  });
+
+  it('delete for everyone to a peer with kind 21: no mark and no text notice, even with the setting on', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(bot) });
+    transport = openPeerTransport(store, bot, web);
+    const { peerKey } = await establish(store, web, bot, manager, transport);
+    await writeTellPhonesDeletions(true);
+    await manager.sendMessage(peerKey, { type: 'text', text: 'oops' });
+    const mine = (await listMessages(peerKey)).find(r => r.direction === 'outgoing')!;
+    await manager.deleteForEveryone(peerKey, mine.messageId);
+    await waitFor(() => transport!.received.find(m => m.content.tag === 'deleted'));
+    expect((await db.messages.get(mine.messageId))?.deletedHereOnly).toBeUndefined();
+    expect(transport.received.some(m => m.content.tag === 'text' && m.content.value === DELETION_NOTICE_TEXT)).toBe(false);
   });
 
   it('delete for everyone of a message that never went out removes it and sends nothing', async () => {

@@ -23,6 +23,11 @@ export type ChatPrefs = {
   readReceipts: boolean;
   /** Where "View on …" opens a transaction or an account. */
   explorer: ExplorerId;
+  /**
+   * After a delete for everyone that the peer's app cannot take (no kind 21),
+   * send it the plain text "I deleted a message". Default off: one more submission.
+   */
+  tellPhonesDeletions: boolean;
 };
 
 export const DEFAULT_CHAT_PREFS: ChatPrefs = {
@@ -33,10 +38,11 @@ export const DEFAULT_CHAT_PREFS: ChatPrefs = {
   sendTyping: false,
   readReceipts: true,
   explorer: DEFAULT_EXPLORER,
+  tellPhonesDeletions: false,
 };
 
 export const readChatPrefs = async (): Promise<ChatPrefs> => {
-  const [sendKey, notifications, sound, reveal, typing, receipts, explorer] = await Promise.all([
+  const [sendKey, notifications, sound, reveal, typing, receipts, explorer, tellDeletions] = await Promise.all([
     readSetting('chat.sendKey'),
     readSetting('chat.notifications'),
     readSetting('chat.sound'),
@@ -44,6 +50,7 @@ export const readChatPrefs = async (): Promise<ChatPrefs> => {
     readSetting('chat.sendTyping'),
     readSetting('chat.readReceipts'),
     readSetting('chat.explorer'),
+    readSetting('chat.tellPhonesDeletions'),
   ]);
   return {
     sendKey: sendKey === 'mod-enter' ? 'mod-enter' : 'enter',
@@ -53,6 +60,7 @@ export const readChatPrefs = async (): Promise<ChatPrefs> => {
     sendTyping: typing === 'on',
     readReceipts: receipts !== 'off',
     explorer: isExplorerId(explorer) ? explorer : DEFAULT_EXPLORER,
+    tellPhonesDeletions: tellDeletions === 'on',
   };
 };
 
@@ -63,3 +71,4 @@ export const writeRevealReplies = (on: boolean): Promise<unknown> => writeSettin
 export const writeSendTyping = (on: boolean): Promise<unknown> => writeSetting('chat.sendTyping', on ? 'on' : 'off');
 export const writeReadReceipts = (on: boolean): Promise<unknown> => writeSetting('chat.readReceipts', on ? 'on' : 'off');
 export const writeExplorer = (value: ExplorerId): Promise<unknown> => writeSetting('chat.explorer', value);
+export const writeTellPhonesDeletions = (on: boolean): Promise<unknown> => writeSetting('chat.tellPhonesDeletions', on ? 'on' : 'off');

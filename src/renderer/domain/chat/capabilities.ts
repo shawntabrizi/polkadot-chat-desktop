@@ -167,6 +167,16 @@ export const menuAsText = (text: string, rows: readonly ButtonWire[][]): string 
   return text.trim() === '' ? menu : `${text}\n\n${menu}`;
 };
 
+/**
+ * RFC-0003 through the 0013 gate: a `deleted` goes only when every device of
+ * the peer lists kind 21. When it does not, the deletion stays on this device
+ * and the peer's app keeps the message.
+ */
+export const deletionReaches = (caps: Capabilities): boolean => hasKind(caps, KIND.deleted);
+
+/** The plain text a peer gets instead, when "Tell phone peers about deletions" is on. */
+export const DELETION_NOTICE_TEXT = 'I deleted a message';
+
 const needs = (caps: Capabilities, kind: number, content: OutgoingContent, why: string): Form => (hasKind(caps, kind) ? { send: content } : { drop: why });
 
 /**

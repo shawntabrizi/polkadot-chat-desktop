@@ -262,6 +262,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
       return (
         <p className={quiet} data-testid="message-deleted">
           Message deleted
+          {own && row.deletedHereOnly ? <span data-testid="deleted-here-only"> · removed here; the phone keeps it</span> : null}
         </p>
       );
     }

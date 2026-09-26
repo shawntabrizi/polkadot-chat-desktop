@@ -925,3 +925,16 @@ Carry item: refresh the vendored bot-core from `polkadot-chat-agents` `desktop/r
 - **Effect in this app.** The desktop's published agent does not run bot-core's meter (nothing in `src/main/agent/` uses it), so the visible change is the parser: a published agent's `tx` button with `expiresAt` 0 now reaches the peer. This closes the "Known gap" of "Expired tx buttons" above. `directives.spec.ts` now asserts that bot-core keeps the intent with `expiresAt` 0n (it asserted the drop before and failed on this change, as planned).
 - **Not run:** `e2e:agent` (devnet). Loading checked: `lib/meter.mjs` imports and reads `METER_INTENT_TTL_MS = 0`.
 - No new dependency. No wire change. No Dexie change.
+
+## Delete-for-everyone notice to phones (2026-09-25)
+
+Carry item: tell a peer whose app cannot take kind 21 that a message was deleted, behind a setting.
+
+- **What was there (differs from the brief).** The brief says the row "already says 'removed here; the phone keeps it'". It did not: for a peer without kind 21 the 0013 gate dropped the `deleted` without a word, and the row said only "Message deleted". So this change adds that caption too.
+- **The gate** (`capabilities.ts`): `deletionReaches(effective)` is `hasKind(effective, 21)`, the same test `formFor` uses for `deleted`. `effective` is the intersection over the contact's devices (M20), so when one device lacks 21, no device gets the deletion.
+- **The row.** An own tombstone that did not go out gets `deletedHereOnly: true` (optional, not indexed, no Dexie version). The bubble says "Message deleted · removed here; the phone keeps it".
+- **The notice.** Settings › Chat › "Tell phone peers about deletions" (`chat.tellPhonesDeletions`, default off; caption: one more network submission). When it is on and the gate drops the deletion, the app sends the plain text "I deleted a message" through `sendMessage`, so it is an own row that the user sees, with the usual status and Retry. Cost: 1 submission per such deletion, opt-in (efficiency.md tier 2).
+- **"To that device only": not possible, so not built.** A DM goes through the SDK's multi-device session, which wraps one batch for every device in the contact's roster. No API sends to one device, and a roster change for one message would also change the batch that is still waiting for an ACK. The text goes to all of the contact's devices. Because the gate uses the intersection, none of those devices got the deletion, so the text is true for each of them. Question below.
+- **Groups:** not changed (v2 groups have no per-device gate in this app; a group deletion goes as before).
+- **Tests.** `manager.messaging.spec.ts`: a peer without kind 21 (setting off: the row is marked and nothing goes; setting on: the text arrives and is an own row, and no `deleted` goes); a peer with kind 21 (no mark, no text, even with the setting on).
+- No new dependency. No wire change (the notice is a base text). No Dexie version.

@@ -64,6 +64,8 @@ export type SettingKey =
   | 'chat.readReceipts'
   /** `subscan` (default) or `polkadotjs`: where "View on …" opens a transaction or an account (M12c). */
   | 'chat.explorer'
+  /** "Tell phone peers about deletions" (2026-09-25): `on` or `off` (default). */
+  | 'chat.tellPhonesDeletions'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session'
   /** `seen` once the first attachment went out: its notice (spec 0012 review) shows once. */
@@ -212,6 +214,11 @@ export type MessageRow = {
   groupSeq?: number;
   /** M12e, own rows only: a forwarded copy and whose message it was. Local caption; nothing on the wire. */
   forwardedFrom?: string;
+  /**
+   * Own tombstones only: the peer's app cannot take a `deleted` (0013 gate), so
+   * the message is removed here and the peer keeps it. Not indexed, so no schema version.
+   */
+  deletedHereOnly?: true;
   /** Own `failed` rows only: why the message did not go out (for example `AccountFull`). Not indexed, so no schema version. */
   failure?: string;
 };

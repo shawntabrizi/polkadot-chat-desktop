@@ -256,3 +256,7 @@ Write the question, what you did meanwhile, and the date.
 - **Groups and a peer that has not advertised yet.** Group kinds go only to devices that listed them. A desktop that creates a group with a contact before that contact sent anything now gets "This contact's app cannot take part in groups yet." (desktop pairs in `e2e:group2`/`group2b` exchange texts first? not checked). Should the accepter's first session statement carry its set at once (one statement per new chat), so desktop pairs are capable from the start?
 - **A field for the sending device upstream.** The desktop reads the sending device from the statement topic and opens each incoming statement twice (once in the tracker, once in the SDK). A `device` field on the SDK's `RequestMessage` would remove the second decryption. Ask the SDK team?
 - **Deleting for everyone on a baseline phone** tombstones our row but sends nothing (0013: `deleted` not sent), so the phone keeps the message. Show "Deleted here only" on such a row?
+
+## Carry items (2026-09-25)
+
+- **Deletion notice to one device.** The brief asks to send "I deleted a message" to the device without kind 21 only. The SDK session wraps each batch for every device of the contact, so the text goes to all of them (which is true for each: the 0013 intersection means none got the deletion). Is that acceptable, or do you want a per-device send (an SDK ask)?

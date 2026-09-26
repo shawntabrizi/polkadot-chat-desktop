@@ -5,6 +5,7 @@ import {
   DEFAULT_CHAT_PREFS,
   type SendKey,
   readChatPrefs,
+  writeTellPhonesDeletions,
   writeExplorer,
   writeNotifications,
   writeReadReceipts,
@@ -365,6 +366,14 @@ const ChatSection = () => {
         testId="typing-switch"
       />
       <SwitchRow id="read-receipts" label="Send read receipts" checked={prefs.readReceipts} onChange={on => void writeReadReceipts(on)} testId="receipts-switch" />
+      <SwitchRow
+        id="tell-phones-deletions"
+        label="Tell phone peers about deletions"
+        caption="When a peer’s app cannot delete a message for everyone, send it “I deleted a message”. One more network submission."
+        checked={prefs.tellPhonesDeletions}
+        onChange={on => void writeTellPhonesDeletions(on)}
+        testId="tell-deletions-switch"
+      />
       <Field label="Block explorer" htmlFor="explorer">
         <Select value={prefs.explorer} onValueChange={value => void writeExplorer(value as ExplorerId)}>
           <SelectTrigger id="explorer" className="w-64 rounded-nested text-body-m" data-testid="explorer-select">
