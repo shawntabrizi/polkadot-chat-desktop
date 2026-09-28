@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { appDatabase } from '../app/database';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
 import { type ConnectionSnapshot, createConnectionTracker } from '../app/connectionState';
+import { isWeb } from '../app/platform';
 import { getPeopleConnection } from '../app/statementStore';
 import { type AssistantChat, createAssistantChat } from '../domain/assistant/assistant';
 import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
@@ -89,10 +90,10 @@ export const App = () => {
     };
   }, [startCount]);
 
-  // The Assistant needs no identity or chain, only the main process.
+  // The Assistant needs no identity or chain, only the main process (none on the web, M22a).
   const [assistant, setAssistant] = useState<AssistantChat | null>(null);
   useEffect(() => {
-    const api = window.desktop?.assistant;
+    const api = isWeb() ? undefined : window.desktop?.assistant;
     if (!api) return;
     let active = true;
     const chat = createAssistantChat(api);
@@ -274,7 +275,7 @@ export const App = () => {
         profileId={boot.profileId}
         runtime={runtime}
         assistant={assistant}
-        assistantApi={window.desktop?.assistant ?? null}
+        assistantApi={isWeb() ? null : (window.desktop?.assistant ?? null)}
         connection={connection}
         onReset={resetWithUndo}
       />

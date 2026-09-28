@@ -14,6 +14,7 @@ import { CONNECTION_LABEL, type ConnectionSnapshot } from '../app/connectionStat
 import { type PeerId, db, groupIdOf, groupPeerOf, isGroupPeer } from '../app/database';
 import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
+import { isWeb } from '../app/platform';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
 import { deleteKey, withdrawKey } from '../domain/chat/undo';
@@ -29,7 +30,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/cn';
 
-import type { DesktopAssistantApi } from '../../shared/desktop-api';
+import { type DesktopAssistantApi, NOT_ON_WEB } from '../../shared/desktop-api';
 
 import { PeerAvatar } from './Avatar';
 import { ChatList, type ChatSelection, type ChatTarget, useChatOrder, useForwardTargets } from './ChatList';
@@ -295,6 +296,8 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               scrollToMessageId={selection.jump?.messageId ?? null}
               scrollRequest={selection.jump?.seq ?? 0}
             />
+          ) : isWeb() ? (
+            <EmptyRoom title="Assistant" text={NOT_ON_WEB} />
           ) : null;
         }
         if (isGroupPeer(selection.peer)) {

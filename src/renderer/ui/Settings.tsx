@@ -16,6 +16,7 @@ import {
 } from '../app/chatPrefs';
 import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
+import { isWeb } from '../app/platform';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
 import type { ChatManager } from '../domain/chat/manager';
 import { listBlocked } from '../domain/chat/chatActions';
@@ -27,7 +28,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { BUILD, bugReportLine } from '../../shared/appVersion';
-import type { AssistantEngineId, AssistantEngineStatus, AssistantSettings, AssistantTool, DesktopAssistantApi } from '../../shared/desktop-api';
+import { type AssistantEngineId, type AssistantEngineStatus, type AssistantSettings, type AssistantTool, type DesktopAssistantApi, NOT_ON_WEB } from '../../shared/desktop-api';
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
 import { AgentSettings } from './AgentSettings';
@@ -790,6 +791,7 @@ const DemoSection = ({ profileId, runtime }: { profileId: NetworkProfileId; runt
 /** M13: publish the Assistant as an on-chain peer; only inside the desktop app. */
 const AgentSection = ({ profileId }: { profileId: NetworkProfileId }) => {
   const desktop = window.desktop;
+  if (isWeb()) return <NotOnWebSection title="Agent" />;
   if (!desktop?.agent) return null;
   return (
     <Section title="Agent">
@@ -827,13 +829,22 @@ const VersionFooter = () => {
   );
 };
 
+/** M22a: a desktop-only section in the web build, as Assistant shows outside the desktop app. */
+const NotOnWebSection = ({ title }: { title: string }) => (
+  <Section title={title}>
+    <p className="text-body-m text-fg-secondary">{NOT_ON_WEB}</p>
+  </Section>
+);
+
 /** Settings fill the right pane: sections as containers on the page surface. */
 export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
     <div className="mx-auto flex max-w-2xl flex-col gap-2 pb-2">
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
       <IdentitySection username={username} identity={identity} profileId={profileId} />
-      {window.desktop?.profiles ? (
+      {isWeb() ? (
+        <NotOnWebSection title="Profiles" />
+      ) : window.desktop?.profiles ? (
         <Section title="Profiles">
           <ProfilesSettings api={window.desktop.profiles} />
         </Section>

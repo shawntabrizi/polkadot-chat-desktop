@@ -10,3 +10,6 @@
 /** `navigator.userAgent` in the browser; `unknown` where there is no navigator. */
 export const userAgent = (): string =>
   typeof navigator === 'undefined' || typeof navigator.userAgent !== 'string' ? 'unknown' : navigator.userAgent;
+
+/** M22a: the renderer runs in the web build (src/web), not inside Electron. */
+export const isWeb = (): boolean => typeof window !== 'undefined' && window.desktop?.platform === 'web';
