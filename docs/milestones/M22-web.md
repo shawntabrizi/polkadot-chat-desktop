@@ -48,6 +48,8 @@ Goal: first run shows the phone QR as the primary path in both desktop and web; 
 
 Static hosting for the web bundle and a reverse proxy for `/idb/*`, or an allowlist request to the backend's operator. Outward-facing, so it waits for the owner.
 
+**Status (2026-09-28): workflow ready, Pages not enabled.** Branch `m22c-pages`. GitHub Pages on the public repo, no proxy: `PCD_WEB_BASE` and `VITE_IDB_PROXY` build settings, `.github/workflows/pages.yml`, and a "Not available on this site" state for local sign-up and username search. The phone QR sign-in is the way in on Pages. A proxy or a CORS allowlist (open questions 1 and 2) can come later with no code change. Details: docs/web.md, Hosting. Owner steps: set the Pages source to GitHub Actions, merge, run the workflow.
+
 ## Open questions for the owner
 
 1. Hosting for M22c: GitHub Pages on the public repo plus a small proxy, or somewhere else.

@@ -6,6 +6,8 @@ then loads `src/renderer/main.tsx` unchanged.
 
 - `npm run dev:web`: Vite dev server with the `/idb/*` proxy.
 - `npm run build:web`: static bundle in `out/web/` (relative paths, any static host).
+  M22c build settings: `PCD_WEB_BASE` (Vite `base`, default `./`) and
+  `VITE_IDB_PROXY` (see "Identity backend" below). Both unset keep dev and preview as they were.
 - `npm run preview:web`: serves `out/web/` with the same proxy, for a local check.
 
 The build config is `vite.web.config.ts`. It reuses the renderer's aliases and
@@ -109,7 +111,50 @@ rewrites each backend URL to the page's own origin:
 
 Any other host is refused before a request leaves. Dev and preview: the Vite
 proxy in `vite.web.config.ts`. **A deployment must run the same reverse
-proxy** (M22c), or the backend's operator must allow our origin.
+proxy**, or the backend's operator must allow our origin.
+
+M22c: `VITE_IDB_PROXY` sets the prefix at build time.
+
+| `VITE_IDB_PROXY` | Backend calls go to | Local sign-up and username search |
+| --- | --- | --- |
+| unset | `/idb/<profile>/*` on the page's origin (dev, preview) | work through the Vite proxy |
+| a URL, e.g. `https://idb.example.org` | `<URL>/<profile>/*` | work, if that proxy answers with CORS for the page |
+| `off` | nowhere | show "Not available on this site: use the desktop app or sign in with your phone." (`NO_IDENTITY_BACKEND`) |
+
+The web `identity.backendFetch` is that fetch, or `null` for `off`. The
+username search (`Search.tsx`) uses it too; before M22c it called the backend
+directly, which CORS refuses even in dev.
+
+## Hosting: GitHub Pages (M22c)
+
+`.github/workflows/pages.yml` builds on every push to `main` and by hand
+(`workflow_dispatch`): Node 24, `npm ci` (its `prepare` runs `papi generate`
+from the committed `.papi/metadata`, no chain connection), then
+`PCD_WEB_BASE=/polkadot-chat-desktop/ VITE_IDB_PROXY=off npm run build:web`,
+`actions/upload-pages-artifact` and `actions/deploy-pages`. The site is
+`https://shawntabrizi.github.io/polkadot-chat-desktop/`.
+
+- **Base.** An absolute base, so assets, the proof worker and the wasm load
+  from `/polkadot-chat-desktop/assets/` whatever the page URL is. The logo uses
+  `import.meta.env.BASE_URL`.
+- **Routing.** None: the renderer has no path routes (one `index.html`; state
+  lives in the page and IndexedDB). So no `404.html` fallback and no hash
+  routing. An Actions deploy does not run Jekyll, so no `.nojekyll`.
+- **No proxy.** Pages serves files only, and no identity backend sends CORS
+  headers for `https://shawntabrizi.github.io` (checked 2026-09-28).
+
+On Pages:
+
+| Works | Does not work |
+| --- | --- |
+| The phone QR sign-in (M10a) and chat after it: Statement Store and People chain over WebSocket (QR checked in a local Pages-like boot; a real scan not tested) | Local sign-up (`identity.available`, `identity.create`) |
+| Contact lookup and exact-name reads on the People chain (`lookup.ts`, `Resources.UsernameOwnerOf`): no backend | Username search in the left pane (a backend endpoint): shows the text above |
+| Chain services, Bulletin, HOP: as in the member table | Anything already unavailable on the web (Assistant, agent, profiles) |
+
+The exact-name resolver (`createUsernameResolver`) needs no backend, but
+today only the demo bots use it; the search pane does not fall back to it.
+
+To add a proxy later: build with `VITE_IDB_PROXY=<proxy URL>`. No code change.
 
 ## Registration proof in the browser
 
