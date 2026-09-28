@@ -260,3 +260,10 @@ Write the question, what you did meanwhile, and the date.
 ## Carry items (2026-09-25)
 
 - **Deletion notice to one device.** The brief asks to send "I deleted a message" to the device without kind 21 only. The SDK session wraps each batch for every device of the contact, so the text goes to all of them (which is true for each: the 0013 intersection means none got the deletion). Is that acceptable, or do you want a per-device send (an SDK ask)?
+
+## M22a (2026-09-28)
+
+- **Passphrase moment.** The web asks for a passphrase when "Get username" is pressed. M10a's paired identity needs one too. Keep it per account at sign-up or pairing, or one browser passphrase at first start?
+- **Restore on the web.** `profiles.restore` is unavailable (it is a new-profile flow). Should the web sign-up screen offer "Restore from recovery phrase" into this browser?
+- **Assistant on the web.** Unavailable. If wanted, it needs an LLM proxy that allows our origin and a key policy for the browser.
+- **Bulletin mirror and gateway CORS** from a browser are not verified; bitswap over the chain RPC does not need it.

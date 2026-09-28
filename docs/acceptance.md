@@ -4450,3 +4450,57 @@ GROUP2B_OK at=109.8s
 ```
 
 Not run: `e2e:dao` (`DAO_E2E_PENDING` stays), `e2e:caps`.
+
+## M22a — Web build and platform layer (2026-09-28)
+
+`npm run check`:
+
+```
+ Test Files  115 passed (115)
+      Tests  1015 passed (1015)
+check:tokens: clean (226 files)
+```
+
+(Before M22a: 108 files, 982 tests.)
+
+`npm run build` (desktop), then the headless smoke with a throwaway profile (`PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) electron out/main/index.js --smoke`):
+
+```
+out/main/index.js       274.65 kB
+out/preload/index.js  8.77 kB
+out/renderer/assets/index-BDVB_ePi.css    110.25 kB
+out/renderer/assets/index-Co4h7sO7.js   3,276.55 kB
+SMOKE_OK
+```
+
+`npm run build:web`:
+
+```
+out/web/index.html                                                     0.93 kB
+out/web/assets/litePerson.worker-Dh6lFlGj.js                           1.56 kB
+out/web/assets/summit-bandersnatch-cli-07yQI_CY.wasm               5,104.81 kB
+out/web/assets/index-K3VywzFl.css                                     93.58 kB
+out/web/assets/database-C3oIp150.js                                    1.80 kB
+out/web/assets/descriptors-CVSkr-Ss-BAi0B6xs.js                       75.97 kB
+out/web/assets/metadataTypes-Cn-QGxWu-D4YRcC15.js                    234.02 kB
+out/web/assets/bulletinDevnet_metadata-DhVbC0FQ-DF_au-Db.js          255.87 kB
+out/web/assets/productsDevnetPeople_metadata-Bj4PrcP7-DGQ5CWv6.js    699.50 kB
+out/web/assets/paseoPeopleNext_metadata-BGNZi6lr-OwY_Wvzc.js         703.41 kB
+out/web/assets/index-CiCX-9Ff.js                                     720.37 kB
+out/web/assets/assetHubPaseo_metadata-BfC2OfDV-CMU-iCyE.js           896.49 kB
+out/web/assets/main-DZZCRxKY.js                                    1,008.07 kB
+✓ built in 451ms
+```
+
+Headless boot (no Playwright/Puppeteer installed; a throwaway Electron script loaded the page in a hidden window with a temp profile), against `vite preview`:
+
+```
+RESULT {"signUp":true,"platform":"web","title":"Polkadot Chat","availability":"It's yours!"}
+CONSOLE ["[warning] Electron Security Warning (Insecure Content-Security-Policy) …"]
+```
+
+The only console line is the Electron harness's own CSP warning; the page logged no error. "It's yours!" is the backend's availability answer through `/idb/devnet`. `curl http://localhost:4173/idb/devnet/api/v1/attester` and (dev server) `/idb/paseo/api/v1/attester` both returned 200 with an attester.
+
+Proof in the browser (dev server, the same harness imports `/litePerson.ts` and runs the Web Worker): the `memberKey` and `proofOfOwnership` equal node:wasi's for the same input (`0x4798a99f…`, `0xb617d6e6…`). `src/web/wasi.spec.ts` checks the same under vitest.
+
+Not run: a real web sign-up (it claims a devnet username; not asked), chain actions, attachments and HOP from the browser (they need a signed-up identity), the unlock screen in a real browser (covered by `identity.spec.ts`).
