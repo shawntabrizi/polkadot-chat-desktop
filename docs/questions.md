@@ -294,3 +294,4 @@ For the owner:
 - **Sign out still does not tell the phone** (M10a question). The phone keeps the device until removed there.
 - **Group posting set.** Our v2 group posting set is still `[this device]`; the phone posts group carriers as the identity account. Add the phone's account to our posting set (0011 multi-device) in a groups phase?
 - **2-statement budget with chats.** Any chat plus sync exceeds 2 live statements; the store then evicts this device's oldest statement on each send. The sync rules avoid evicting an undelivered send, but chat itself already churns. Is a larger linked-device allowance planned?
+- **Composer at 360 px.** In the one-pane layout at 360 px the message field is about 120 px wide next to +, Attach, Voice and Send, so "Write a message…" takes two lines (`docs/screenshots/narrow-room-360-*.png`). Fold + and Attach into one menu below `md`, or leave it (phones use the mobile app)?

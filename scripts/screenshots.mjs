@@ -133,6 +133,13 @@
 //   room-own-markdown own markdown (fixture): a peer's message with bold,
 //                   inline code, a fenced block and a link, and the same
 //                   text sent by us, in the inverted bubble
+//   narrow-room-360, narrow-room-720, narrow-room-1280  a room (fixture) with
+//                   short and long own and peer messages at 360, 720 and
+//                   1280 px wide. Below 768 px the room fills the window
+//                   with a back control. The shot fails when a bubble
+//                   collapses: a long bubble narrower than 3/5 of the flow,
+//                   a short one or a time line on two lines, or a word
+//                   broken inside (docs/decisions.md "Narrow window")
 //   settings-storage  M15c Settings › Storage: the Bulletin authorization
 //                   left (live read on devnet), uploads today (fixture count)
 //                   against the daily share, local copies, Free space
@@ -205,6 +212,7 @@ const WORKER_SHOTS = {
     'group-invite', 'group-roles', 'room-pinned', 'room-dao', 'group-rename', 'group-picker-gated',
     'settings-agent', 'demo-onboarding', 'settings-demo',
     'room-attachment', 'composer-attach', 'room-file', 'room-album', 'room-voice', 'room-video', 'room-hop-image', 'room-hop-fetching-chain-mocked', 'room-own-markdown', 'settings-storage',
+    'narrow-room-360', 'narrow-room-720', 'narrow-room-1280',
     'settings-profiles', 'settings-security',
   ],
   flip: ['faucet', 'room-flip', 'room-flip-done'],
@@ -1164,6 +1172,21 @@ const ownMarkdownFixture = () => ({
   ],
 });
 
+// Narrow window: short and long messages both ways; "messages" and "messaging" are the words the owner saw broken.
+const INES = { account: account('c9'), username: 'ineswalker.58', at: Date.now() - 15 * 60_000 };
+const NARROW_MESSAGES = [
+  ['fixture-ines-1', 'incoming', 'Hi! Are you around?'],
+  ['fixture-ines-2', 'outgoing', 'Yes'],
+  ['fixture-ines-3', 'incoming', 'Long messages and short messages should both wrap between words; messaging in a narrow window must stay readable.'],
+  ['fixture-ines-4', 'outgoing', 'Agreed. A bubble grows with its text up to four fifths of the column, and the time stays on one line.'],
+  ['fixture-ines-5', 'outgoing', 'Thanks'],
+];
+const narrowFixture = () => ({
+  contacts: [contactRow(INES)],
+  rooms: [roomRow(INES, 'Thanks', INES.at + 5 * 60_000)],
+  messages: NARROW_MESSAGES.map(([id, direction, text], index) => messageRow(id, INES, INES.at + index * 60_000, direction, { type: 'text', text })),
+});
+
 /** The intent of the fixture tx button: 0.01 PAS from `selfHex` to itself, with call data the app builds. */
 /** The Meter's "Top up 1 PAS" as it offered it 3 h ago, expired 2 h ago. Never pressed (disabled), so the call data is a placeholder. */
 const expiredTopUpIntent = async () => {
@@ -1245,6 +1268,7 @@ const mainWorker = async () => {
     await writeRows(app, await hopFixture());
     await writeRows(app, await hopChainFixture());
     await writeRows(app, ownMarkdownFixture());
+    await writeRows(app, narrowFixture());
     await recordFixtureVoice(app, voiceRows);
     await recordFixtureVideo(app, videoRows);
     writeFileSync(join(profile, 'pick.png'), pick);
@@ -1252,6 +1276,7 @@ const mainWorker = async () => {
     log('fixture written');
     await mainShots(app, log, pay);
     await attachmentShots(app, join(profile, 'pick.png'));
+    await narrowShots(app, log);
     if (wanted('settings-agent')) await agentShots(app, log, profile);
     await app.shot('settings-profiles', async () => {
       addFixtureProfiles(profile);
@@ -1276,6 +1301,67 @@ const mainWorker = async () => {
     await app?.quit();
     if (profile) rmSync(profile, { recursive: true, force: true });
   }
+};
+
+/**
+ * Narrow window (owner report 2026-09-28): the room at 360, 720 and 1280 px.
+ * Each shot measures the bubbles first and fails on a collapse, so a
+ * regression is caught even when nobody looks at the picture.
+ */
+const narrowShots = async (app, log) => {
+  const setWidth = width => app.send('Emulation.setDeviceMetricsOverride', { width, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
+  const measure = `(() => {
+    const flow = document.querySelector('[data-testid=messages]');
+    const column = flow.clientWidth;
+    return ${JSON.stringify(NARROW_MESSAGES)}.map(([id, , text]) => {
+      const band = document.querySelector('[data-message-id="' + id + '"]');
+      const row = band.firstElementChild;
+      const bubble = band.querySelector('[data-testid=bubble]');
+      const wrapper = bubble.parentElement;
+      const body = bubble.querySelector('[data-testid=markdown]');
+      const time = bubble.lastElementChild;
+      const lineHeight = parseFloat(getComputedStyle(time).lineHeight);
+      const tops = range => new Set([...range.getClientRects()].map(r => Math.round(r.top))).size;
+      const node = document.createTreeWalker(body, NodeFilter.SHOW_TEXT).nextNode();
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const lines = tops(range);
+      // A word broken inside spans two lines: its own range has two tops.
+      let brokenWord = false;
+      for (const match of node.textContent.matchAll(/\\S+/g)) {
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        if (tops(range) > 1) brokenWord = true;
+      }
+      return { id, column, row: row.getBoundingClientRect().width, wrapper: wrapper.getBoundingClientRect().width,
+        bubble: bubble.getBoundingClientRect().width, body: body.getBoundingClientRect().width,
+        timeLines: Math.round(time.getBoundingClientRect().height / lineHeight), lines, long: text.length > 40, brokenWord };
+    });
+  })()`;
+  const check = rows => {
+    for (const r of rows) {
+      if (r.timeLines > 1) throw new Error(`${r.id}: the time wraps (${r.timeLines} lines)`);
+      if (!r.long && r.lines > 1) throw new Error(`${r.id}: a short message wraps (${r.lines} lines, bubble ${r.bubble}px)`);
+      if (r.long && r.bubble < Math.min(520, 0.8 * r.column) * 0.75) throw new Error(`${r.id}: the bubble collapsed (${r.bubble}px of a ${r.column}px flow)`);
+      if (r.brokenWord) throw new Error(`${r.id}: a word breaks inside`);
+    }
+  };
+  for (const width of [360, 720, 1280]) {
+    await app.shot(`narrow-room-${width}`, async () => {
+      await setWidth(width);
+      if ((await app.evaluate(`document.querySelector('[data-testid=room-title]')?.textContent`)) !== INES.username) {
+        // Narrow: the list shows only with no room open.
+        await app.esc();
+        await openRow(app, INES.username);
+      }
+      await app.evaluate(`document.querySelector('[data-message-id="fixture-ines-5"]')?.scrollIntoView({ block: 'end' }); true`);
+      await sleep(300);
+      const rows = await app.evaluate(measure);
+      log(`narrow ${width}:`, JSON.stringify(rows));
+      check(rows);
+    });
+  }
+  await setWidth(WIDTH);
 };
 
 /**

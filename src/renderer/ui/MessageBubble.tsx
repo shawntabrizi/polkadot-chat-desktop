@@ -300,10 +300,16 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
   const toolbar = actions ? (
     <div
       className={cn(
-        'flex shrink-0 items-center gap-0.5 rounded-full bg-surface-container p-1 shadow-2 transition-opacity',
-        'opacity-0 group-hover/message:opacity-100 focus-within:opacity-100',
-        menuOpen && 'opacity-100',
+        // Out of the flow (owner report 2026-09-28): in the row it took 276 px
+        // beside every bubble, and in a narrow room the bubble shrank to what
+        // was left. It floats over the bubble's top edge instead; while hidden
+        // it lets the pointer through to the message above.
+        'absolute -top-7 z-10 flex items-center gap-0.5 rounded-full bg-surface-container p-1 shadow-2 transition-opacity',
+        own ? 'end-0' : 'start-0',
+        'pointer-events-none opacity-0 group-hover/message:pointer-events-auto group-hover/message:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100',
+        menuOpen && 'pointer-events-auto opacity-100',
       )}
+      data-testid="message-toolbar"
     >
       {actions.react
         ? QUICK_REACTIONS.map(emoji => (
@@ -367,7 +373,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
 
   return (
     <div
-      className={cn('group/message flex items-center gap-2', own ? 'justify-end' : 'justify-start', first ? 'mt-2' : 'mt-0.5')}
+      className={cn('group/message relative flex items-center', own ? 'justify-end' : 'justify-start', first ? 'mt-2' : 'mt-0.5')}
       data-testid={`message-${row.direction}`}
     >
       {own ? toolbar : null}
@@ -413,7 +419,7 @@ const Bubble = ({ row, quote, first, last, thinking = false, live = false, delet
           {deleted || deleting ? null : (actions?.status ?? null)}
           {keyboardSlot}
           {live ? null : (
-            <div className={cn('flex items-center justify-end gap-1 text-caption', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')}>
+            <div className={cn('flex items-center justify-end gap-1 text-caption whitespace-nowrap', own ? 'text-fg-secondary-inverted' : 'text-fg-tertiary')} data-testid="message-time">
               {row.editedAt && !deleted ? <span>(edited)</span> : null}
               <span>{formatClock(row.timestamp)}</span>
               {own && !deleted ? <StatusIcon status={row.status} seenAt={row.seenAt} /> : null}

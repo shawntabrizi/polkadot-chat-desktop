@@ -4,8 +4,11 @@
 // panes, never in a modal (SKILL.md §10 "Avoid modals"). The keyboard shortcuts,
 // the window title, the dock badge and the notifications live here, next
 // to the selection they read and change (M6 steps 4, 5, 7).
+// Below 768 px (`md`) one pane shows at a time: the list, or the open view
+// with a back control (owner report 2026-09-28: side by side, the list took
+// 320 px of a 720 px window).
 
-import { MessagesSquare, Plus, Settings as SettingsIcon } from 'lucide-react';
+import { ArrowLeft, MessagesSquare, Plus, Settings as SettingsIcon } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -119,6 +122,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const [search, setSearch] = useState('');
   const [adding, setAdding] = useState(false);
   const [searchFocus, setSearchFocus] = useState(0);
+  const listPane = useRef<HTMLElement>(null);
   const pendingIncoming = usePendingIncoming();
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
   const blockedRows = useLiveQuery(() => db.blocked.toArray(), []);
@@ -281,6 +285,15 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   const chainApi = window.desktop?.chain;
   const drip = devnetAssetHub && chainApi ? () => chainApi.faucetDrip(devnetAssetHub) : null;
 
+  // Narrow window: anything open (a room, Settings, a request) replaces the list.
+  const paneOpen = selection.kind !== 'none';
+  const backToList = (keyboard: boolean) => {
+    setSelection({ kind: 'none' });
+    // The back button unmounts with its pane: a keyboard press moves focus to
+    // the list (a click leaves it, so no ring shows around the whole list).
+    if (keyboard) requestAnimationFrame(() => listPane.current?.focus());
+  };
+
   const listSelection: ChatSelection =
     selection.kind === 'room' || selection.kind === 'outgoing' ? selection : { kind: 'other' };
 
@@ -427,7 +440,12 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   return (
     <ChatActionsProvider value={chatActions}>
       <div className="flex h-screen gap-2 bg-surface-main p-2">
-        <aside className="flex w-80 shrink-0 flex-col rounded-container bg-surface-container p-2 shadow-1" aria-label="Chats">
+        <aside
+          ref={listPane}
+          tabIndex={-1}
+          className={cn('flex w-full shrink-0 flex-col rounded-container bg-surface-container p-2 shadow-1 md:w-80', paneOpen && 'max-md:hidden')}
+          aria-label="Chats"
+        >
           {left === 'requests' ? (
             <RequestsPanel
               selectedRequestId={selection.kind === 'incoming' ? selection.requestId : null}
@@ -518,34 +536,41 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
             </div>
           </section>
         </aside>
-        {selection.kind === 'settings' ? (
-          <main className="min-w-0 flex-1">
-            <Settings
-              username={username}
-              identity={identity}
-              profileId={profileId}
-              onReset={onReset}
-              assistantApi={assistantApi}
-              submissions={runtime?.manager.submissions ?? null}
-              deviceSync={runtime?.manager.deviceSync ?? null}
-              demoRuntime={runtime}
-            />
-          </main>
-        ) : selection.kind === 'pocket' ? (
-          <main className="min-w-0 flex-1">
-            <Pocket
-              username={username}
-              address={toSs58(identity.identityAccountId)}
-              profileId={profileId}
-              onGetFunds={() => {
-                setLeft('chats');
-                setSelection({ kind: 'room', peer: FAUCET_PEER });
-              }}
-            />
-          </main>
-        ) : (
-          <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-container bg-surface-container shadow-1">{right}</main>
-        )}
+        <div className={cn('flex min-w-0 flex-1 flex-col gap-2', !paneOpen && 'max-md:hidden')}>
+          <div className="flex shrink-0 md:hidden">
+            <Button variant="ghost" size="icon" className="rounded-full font-normal" aria-label="Back to chats" onClick={event => backToList(event.detail === 0)} data-testid="back-to-chats">
+              <ArrowLeft className="size-5" />
+            </Button>
+          </div>
+          {selection.kind === 'settings' ? (
+            <main className="min-h-0 min-w-0 flex-1">
+              <Settings
+                username={username}
+                identity={identity}
+                profileId={profileId}
+                onReset={onReset}
+                assistantApi={assistantApi}
+                submissions={runtime?.manager.submissions ?? null}
+                deviceSync={runtime?.manager.deviceSync ?? null}
+                demoRuntime={runtime}
+              />
+            </main>
+          ) : selection.kind === 'pocket' ? (
+            <main className="min-h-0 min-w-0 flex-1">
+              <Pocket
+                username={username}
+                address={toSs58(identity.identityAccountId)}
+                profileId={profileId}
+                onGetFunds={() => {
+                  setLeft('chats');
+                  setSelection({ kind: 'room', peer: FAUCET_PEER });
+                }}
+              />
+            </main>
+          ) : (
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-container bg-surface-container shadow-1">{right}</main>
+          )}
+        </div>
       </div>
     </ChatActionsProvider>
   );
