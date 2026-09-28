@@ -66,6 +66,16 @@ export type SettingKey =
   | 'chat.explorer'
   /** "Tell phone peers about deletions" (2026-09-25): `on` or `off` (default). */
   | 'chat.tellPhonesDeletions'
+  /** M22b device sync with the phone: the last acknowledged `timePoint` we sent (ms, decimal). */
+  | 'deviceSync.outgoingUpdateTime'
+  /** M22b: the last `SyncUpdate.id` we used (u32, decimal); ids only grow. */
+  | 'deviceSync.updateId'
+  /** M22b: the offerId of the last attempt both ends agreed on (restart recovery, `reconnected`). */
+  | 'deviceSync.lastOfferId'
+  /** M22b: when an update last went either way (ms, decimal). */
+  | 'deviceSync.lastSyncAt'
+  /** M22b: the phone's `Devices` entity as JSON (0x-hex keys, status, lastUpdate). */
+  | 'deviceSync.devices'
   /** JSON: the engine session of the Assistant's last reply (assistant.ts). */
   | 'assistant.session'
   /** `seen` once the first attachment went out: its notice (spec 0012 review) shows once. */
@@ -221,6 +231,8 @@ export type MessageRow = {
   deletedHereOnly?: true;
   /** Own `failed` rows only: why the message did not go out (for example `AccountFull`). Not indexed, so no schema version. */
   failure?: string;
+  /** M22b: the row came from the phone over device sync, so it is not sent back to it. Not indexed, so no schema version. */
+  synced?: true;
 };
 
 /**
