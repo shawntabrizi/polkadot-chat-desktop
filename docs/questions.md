@@ -267,3 +267,21 @@ Write the question, what you did meanwhile, and the date.
 - **Restore on the web.** `profiles.restore` is unavailable (it is a new-profile flow). Should the web sign-up screen offer "Restore from recovery phrase" into this browser?
 - **Assistant on the web.** Unavailable. If wanted, it needs an LLM proxy that allows our origin and a key policy for the browser.
 - **Bulletin mirror and gateway CORS** from a browser are not verified; bitswap over the chain RPC does not need it.
+
+## M10a (2026-09-28)
+
+What M22b must pick up (out of scope here):
+
+- **Nothing of the identity's past shows.** The chat list starts empty: contacts, chats and groups live on the phone, and device sync (the Statement Store session with the phone, WebRTC, `SyncMessage`) is M22b. The phone's own initial sync is still a stub.
+- **Fan-out.** What this device sends goes to the peer's devices only; the phone does not see it. Messages that peers encrypt only to the phone's device (they do not know ours yet) are not read here.
+- **`DeviceAdded` / `DeviceRemoved` (kind 17).** The phone broadcasts `DeviceAdded` for this device to its multi-device contacts; we neither send nor process these. A `DeviceRemoved` for our own device (the person removed it on the phone) should sign this device out.
+- **The phone as one of our devices.** Kept but unused: `peerDeviceEncPubKey` and `peerStatementAccountId` of the identity row (the phone), `ssoEncPubKey`, `rootEntropySource`, `rootAccountId` (product accounts, RFC-0007).
+
+For the owner:
+
+- **Real scan (owner step).** Needs your phone: run the app with a fresh profile (`PCD_USER_DATA_DIR=$(mktemp -d) npm run dev`), scan the first-run QR in the Polkadot app (Settings › Linked devices › Add device), approve. Expected: "Your phone approved this device…", then the chat list as your identity. Please report: the phone's network (the QR names none; the first-run select defaults to Devnet), whether the reconnect banner shows (the allowance read), and whether a text to a contact reaches them.
+- **Which network is the Android build on?** The first run defaults to Devnet like sign-up. If the phone app is on Paseo People, should the first run default to Paseo, or try both?
+- **Username refresh.** The username is read once at sign-in; when the read fails it shows a short account until the next sign-in. Read it again at each start?
+- **QR density.** The offer carries the whole user agent as `PlatformVersion` (~150 characters), so the code is dense at 232 px. Send the app version or the OS version instead?
+- **A cancelled web passphrase** keeps nothing, but the phone has already allocated a slot and lists the device. Remove the device from the phone by hand, or ask for the passphrase before the QR is shown?
+- **Sign out does not tell the phone.** The device stays in the phone's Linked devices until removed there (the allowance lapses when the phone stops renewing). A `DeviceRemoved` from our side is M22b; acceptable until then?

@@ -4504,3 +4504,70 @@ The only console line is the Electron harness's own CSP warning; the page logged
 Proof in the browser (dev server, the same harness imports `/litePerson.ts` and runs the Web Worker): the `memberKey` and `proofOfOwnership` equal node:wasi's for the same input (`0x4798a99f…`, `0xb617d6e6…`). `src/web/wasi.spec.ts` checks the same under vitest.
 
 Not run: a real web sign-up (it claims a devnet username; not asked), chain actions, attachments and HOP from the browser (they need a signed-up identity), the unlock screen in a real browser (covered by `identity.spec.ts`).
+
+## M10a — Sign in with Polkadot app (2026-09-28)
+
+`npm run check`:
+
+```
+ Test Files  119 passed (119)
+      Tests  1048 passed (1048)
+check:tokens: clean (234 files)
+```
+
+(Before M10a: 115 files, 1015 tests, per M22a above.) New specs: `main/identity/pairedStore.spec.ts` (7), `domain/identity/pairedIdentity.spec.ts` (6), `domain/pairing/signIn.spec.ts` (7), `domain/chat/allowance.spec.ts` (3), plus phone sign-in cases in `web/identity.spec.ts` (6), `submissions.spec.ts` (2) and `manager.messaging.spec.ts` (2).
+
+`npm run build`:
+
+```
+out/main/index.js       282.73 kB
+out/preload/index.js  9.16 kB
+out/renderer/assets/index-Dj4-1FFD.css    110.28 kB
+out/renderer/assets/index-CR0RejX2.js   3,310.94 kB
+```
+
+Headless smoke with a throwaway profile (`PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) electron out/main/index.js --smoke`): `SMOKE_OK`.
+
+`npm run build:web`:
+
+```
+out/web/index.html                                                     0.93 kB │ gzip:     0.53 kB
+out/web/assets/index-N3LwX6Bt.css                                     93.59 kB │ gzip:    13.63 kB
+out/web/assets/index-CSn4h3O1.js                                     724.08 kB │ gzip:   249.62 kB
+out/web/assets/main-euXrkd4L.js                                    1,023.55 kB │ gzip:   363.55 kB
+✓ built in 450ms
+```
+
+`npm run e2e:pair` (the desktop half; the script plays the phone on an in-memory Statement Store):
+
+```
+QR_SHOWN polkadotapp://pair?handshake=017a8093170… phase=waiting
+PENDING phase=allocating
+SUCCESS phases=waiting>allocating>saving>done
+SAVED alicephone.07 0x01010101… paired=true
+SEEDED device=0x7a809317… identity=0x01010101… phone=0xe66445fe…
+CHAT_READY as=alicephone.07
+NO_ALLOWANCE banner=on
+SIGNER_IS_DEVICE yes statements=1
+INCOMING from=pcdpeer.47 welcome="hello phone identity"
+PAIR_OK
+```
+
+Screenshots (`PCD_HEADLESS=1 node scripts/screenshots.mjs --only first-run,signup`, throwaway profile, a live V2 offer on devnet; nothing submitted): `SCREENSHOTS_OK in 8.7 s`. Saved as `docs/screenshots/first-run-day.png` and `first-run-night.png`; checked by eye in both themes (QR, steps, "Waiting for your phone.", Network, "Create a local account instead"). The `signup` shot now presses "Create a local account instead" first.
+
+Headless web boot (the M22a harness: a throwaway Electron script, hidden window, temp profile) against `vite preview` of `out/web`:
+
+```
+RESULT {"firstRun":true,"phase":"waiting","qr":true,"payload":"polkadotapp://pair?handshake=014","platform":"web","status":"Waiting for your phone.","signUp":true,"back":true}
+CONSOLE ["[warning] %cElectron Security Warning (Insecure Content-Security-Policy) …"]
+```
+
+(`signUp`: "Create a local account instead" opened the sign-up; `back`: "Sign in with your phone instead" returned to the first run.)
+
+Not run:
+
+- **The real scan** with the Polkadot app: needs the owner's phone (docs/questions.md M10a has the steps).
+- **An Electron UI run of the whole flow**: a real node refuses the helper's zero proof, and a real signer would need a test identity's allowance slot (docs/decisions.md M10a "e2e"). The Success → chat path runs in `e2e:pair` and the specs.
+- **A real allowance read for a phone-added device**: no such device exists in the test set. The key and the call are pinned by `allowance.spec.ts`.
+- **The web passphrase screen after a pairing** in a browser: covered by `web/identity.spec.ts`.
+- `e2e:profiles` (claims devnet usernames): only its first-run wait was changed.
