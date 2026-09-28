@@ -5,6 +5,8 @@
  * main/identity/litePerson.ts for web/litePerson.ts). What differs is the
  * store: the mnemonic and the at-rest key are sealed under a passphrase key
  * (vault.ts) in IndexedDB (database.ts), and open only after `unlock`.
+ * M10a: a phone sign-in is kept the same way (its keys in place of the
+ * mnemonic), under a passphrase asked when the pairing completes.
  */
 
 import {
@@ -12,17 +14,20 @@ import {
   type CreateIdentityResponse,
   type DesktopIdentityApi,
   type IdentitySummary,
+  type PairedIdentity,
+  PHONE_SIGNED_IN,
   type RendererSecrets,
   type UsernameAvailability,
 } from '../shared/desktop-api';
 import { type NetworkProfileId, isNetworkProfileId } from '../shared/network';
+import { decodePairedSecrets, encodePairedSecrets, pairedIdentityProblem, pairedPublicOf, pairedSummaryOf } from '../shared/pairedIdentity';
 
 import { deriveIdentityKeys } from '../main/identity/keys';
 import { revealRecoveryPhrase } from '../main/identity/recovery';
 import { checkAvailability as desktopCheckAvailability, createIdentity as desktopCreateIdentity } from '../main/identity/service';
 import { type ClipboardLike, createSecretClipboard } from '../main/secretClipboard';
 
-import type { WebDatabase, WebIdentityRecord } from './database';
+import type { WebDatabase, WebIdentityRecord, WebPairedRecord } from './database';
 import { type VaultParams, deriveVaultKey, newVaultParams, openSecret, passphraseProblem, sealSecret } from './vault';
 
 // The desktop's input rules (main/ipc.ts).
@@ -33,14 +38,19 @@ export const RESET_GRACE_MS = 10_000;
 
 const MNEMONIC_AAD = 'identity.mnemonic';
 const AT_REST_AAD = 'identity.atRestKey';
+const PAIRED_AAD = 'paired.secrets';
+const PAIRED_AT_REST_AAD = 'paired.atRestKey';
 
-/** Sealed secrets opened for this page session. Never written anywhere. */
-export type UnlockedIdentity = { mnemonic: string; atRestKey: Uint8Array };
+/** Sealed secrets opened for this page session. Never written anywhere. A phone sign-in has `paired` and no mnemonic. */
+export type UnlockedIdentity = { mnemonic: string | null; atRestKey: Uint8Array; paired: PairedIdentity | null };
+
+/** What the new passphrase protects: the copy on its screen differs. */
+export type PassphrasePurpose = 'signUp' | 'paired';
 
 export type WebIdentityDeps = {
   db: WebDatabase;
-  /** Asks the person for a new passphrase (sign-up); null when they cancel. */
-  askNewPassphrase: () => Promise<string | null>;
+  /** Asks the person for a new passphrase (sign-up, or a phone sign-in); null when they cancel. */
+  askNewPassphrase: (purpose: PassphrasePurpose) => Promise<string | null>;
   backendFetch: typeof fetch;
   clipboard: ClipboardLike;
   createIdentity?: typeof desktopCreateIdentity;
@@ -57,7 +67,7 @@ export type WebIdentityApi = DesktopIdentityApi & {
   forget: () => Promise<void>;
   /** The at-rest key of this session (DesktopStorageApi.atRestKey). */
   atRestKey: () => Promise<Uint8Array>;
-  /** The mnemonic of this session, for the chain services; throws while locked. */
+  /** The mnemonic of this session, for the chain services; throws while locked, and `PHONE_SIGNED_IN` for a phone sign-in. */
   mnemonic: () => string;
   /**
    * At page start: drops a backup a reset left. Unlike main/ipc.ts, it is not
@@ -87,15 +97,21 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
   const cleared = new Set<() => void>();
   const secretClipboard = createSecretClipboard(deps.clipboard, () => cleared.forEach(listener => listener()));
 
-  const load = () => db.records.get('identity');
+  const load = async () => (await db.records.get('identity')) as WebIdentityRecord | undefined;
+  const loadPaired = async () => (await db.records.get('paired')) as WebPairedRecord | undefined;
   const session = (): UnlockedIdentity => {
     if (!unlocked) throw new Error('Unlock this account first.');
     return unlocked;
   };
+  const seedSession = (): UnlockedIdentity & { mnemonic: string } => {
+    const current = session();
+    if (current.mnemonic === null) throw new Error(PHONE_SIGNED_IN);
+    return { ...current, mnemonic: current.mnemonic };
+  };
 
   const restore = async (): Promise<boolean> =>
     db.transaction('rw', db.records, async () => {
-      const backup = await db.records.get('identity.bak');
+      const backup = (await db.records.get('identity.bak')) as WebIdentityRecord | undefined;
       if (!backup || (await load())) return false;
       await db.records.put({ ...backup, name: 'identity' });
       await db.records.delete('identity.bak');
@@ -105,7 +121,9 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
   return {
     get: async () => {
       const record = await load();
-      return record ? summaryOf(record) : null;
+      if (record) return summaryOf(record);
+      const paired = await loadPaired();
+      return paired ? pairedSummaryOf(paired) : null;
     },
 
     available: (username: string, profile: NetworkProfileId): Promise<UsernameAvailability> => {
@@ -118,10 +136,11 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
       const request = parseCreateRequest(value);
       if (creating) throw new Error('A sign-up is already running.');
       if (await load()) throw new Error('This browser already has an identity.');
+      if (await loadPaired()) throw new Error('This browser is signed in with a phone. Sign out first.');
       creating = true;
       try {
         // Asked first: the mnemonic must be sealed the moment the backend binds the name to it.
-        const passphrase = await deps.askNewPassphrase();
+        const passphrase = await deps.askNewPassphrase('signUp');
         if (passphrase === null) throw new Error('A passphrase is needed to keep the account in this browser.');
         const problem = passphraseProblem(passphrase);
         if (problem) throw new Error(problem);
@@ -148,7 +167,7 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
                 mnemonic: await sealSecret(key, new TextEncoder().encode(identity.mnemonic), MNEMONIC_AAD),
                 atRestKey: sealedAtRest,
               });
-              unlocked = { mnemonic: identity.mnemonic, atRestKey };
+              unlocked = { mnemonic: identity.mnemonic, atRestKey, paired: null };
             },
           },
         });
@@ -157,15 +176,58 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
       }
     },
 
-    locked: async () => unlocked === null && (await load()) !== undefined,
+    locked: async () => unlocked === null && ((await load()) !== undefined || (await loadPaired()) !== undefined),
 
     unlock: async (passphrase: string) => {
       const record = await load();
-      if (!record) throw new Error('This browser has no identity.');
+      if (!record) {
+        const paired = await loadPaired();
+        if (!paired) throw new Error('This browser has no identity.');
+        const key = await deriveVaultKey(passphrase, paired.vault);
+        const text = new TextDecoder().decode(await openSecret(key, paired.secrets, PAIRED_AAD));
+        const atRestKey = await openSecret(key, paired.atRestKey, PAIRED_AT_REST_AAD);
+        unlocked = { mnemonic: null, atRestKey, paired: decodePairedSecrets(text, paired) };
+        return;
+      }
       const key = await deriveVaultKey(passphrase, record.vault);
       const mnemonic = new TextDecoder().decode(await openSecret(key, record.mnemonic, MNEMONIC_AAD));
       const atRestKey = await openSecret(key, record.atRestKey, AT_REST_AAD);
-      unlocked = { mnemonic, atRestKey };
+      unlocked = { mnemonic, atRestKey, paired: null };
+    },
+
+    savePaired: async (identity: PairedIdentity) => {
+      if (creating || (await load())) throw new Error('This browser already has an identity.');
+      if (await loadPaired()) throw new Error('This browser is already signed in with a phone.');
+      const problem = pairedIdentityProblem(identity);
+      if (problem) throw new Error(problem);
+      // Conformance with sign-up (docs/decisions.md M10a): nothing secret is kept without a passphrase.
+      const passphrase = await deps.askNewPassphrase('paired');
+      if (passphrase === null) throw new Error('A passphrase is needed to keep the sign-in in this browser.');
+      const weak = passphraseProblem(passphrase);
+      if (weak) throw new Error(weak);
+      const vault = (deps.vaultParams ?? newVaultParams)();
+      const key = await deriveVaultKey(passphrase, vault);
+      const atRestKey = crypto.getRandomValues(new Uint8Array(32));
+      await db.records.put({
+        name: 'paired',
+        ...pairedPublicOf(identity),
+        vault,
+        secrets: await sealSecret(key, new TextEncoder().encode(encodePairedSecrets(identity)), PAIRED_AAD),
+        atRestKey: await sealSecret(key, atRestKey, PAIRED_AT_REST_AAD),
+      });
+      unlocked = { mnemonic: null, atRestKey, paired: identity };
+    },
+
+    pairedSecrets: async () => {
+      if (!(await loadPaired())) throw new Error('This browser is not signed in with a phone.');
+      const paired = session().paired;
+      if (!paired) throw new Error('This browser is not signed in with a phone.');
+      return paired;
+    },
+
+    forgetPaired: async () => {
+      await db.records.delete('paired');
+      unlocked = null;
     },
 
     forget: async () => {
@@ -175,11 +237,11 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
 
     atRestKey: async () => new Uint8Array(session().atRestKey),
 
-    mnemonic: () => session().mnemonic,
+    mnemonic: () => seedSession().mnemonic,
 
     secretsForRenderer: async (): Promise<RendererSecrets> => {
-      if (!(await load())) throw new Error('This browser has no identity yet.');
-      const keys = deriveIdentityKeys(session().mnemonic);
+      if (!(await load())) throw new Error((await loadPaired()) ? PHONE_SIGNED_IN : 'This browser has no identity yet.');
+      const keys = deriveIdentityKeys(seedSession().mnemonic);
       return { statementSeed: keys.walletSecret64, chatPrivateKey: keys.chatPrivateKey, deviceEncryptionPrivateKey: keys.deviceEncryptionPrivateKey };
     },
 
@@ -212,7 +274,8 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
 
     recoveryPhrase: async (confirm: string) => {
       const record = await load();
-      return revealRecoveryPhrase(confirm, record ? { ...summaryOf(record), mnemonic: session().mnemonic } : null);
+      if (!record && (await loadPaired())) throw new Error(PHONE_SIGNED_IN);
+      return revealRecoveryPhrase(confirm, record ? { ...summaryOf(record), mnemonic: seedSession().mnemonic } : null);
     },
 
     copySecret: async (secret: string) => {

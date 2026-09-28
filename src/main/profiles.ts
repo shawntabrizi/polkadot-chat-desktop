@@ -18,6 +18,7 @@ import { join } from 'node:path';
 
 import { type NetworkProfileId, isNetworkProfileId } from '../shared/network';
 import type { ProfileRow } from '../shared/desktop-api';
+import { pairedDisplayName } from '../shared/pairedIdentity';
 
 export type ProfileEntry = {
   /** The directory name under `profiles/`; never changes. */
@@ -186,9 +187,11 @@ export const ensureLayout = (root: string, now: number = Date.now()): LayoutResu
  */
 export const identityDisplay = (dir: string): Pick<ProfileEntry, 'username' | 'network' | 'accountHex'> => {
   try {
-    const raw = JSON.parse(readFileSync(join(dir, 'identity.json'), 'utf8')) as { username?: unknown; profile?: unknown; accountHex?: unknown };
+    // M10a: a phone sign-in keeps its public fields in its own file (identity/pairedStore.ts).
+    const file = existsSync(join(dir, 'identity.json')) ? 'identity.json' : 'paired-identity.json';
+    const raw = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { username?: unknown; profile?: unknown; accountHex?: unknown };
     return {
-      username: typeof raw.username === 'string' ? raw.username : null,
+      username: typeof raw.username === 'string' ? raw.username : typeof raw.accountHex === 'string' ? pairedDisplayName({ username: null, accountHex: raw.accountHex }) : null,
       network: isNetworkProfileId(raw.profile) ? raw.profile : null,
       accountHex: typeof raw.accountHex === 'string' ? raw.accountHex : null,
     };

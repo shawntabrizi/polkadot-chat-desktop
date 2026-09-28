@@ -2,6 +2,8 @@
  * M22a: the web build's passphrase screens, in the sign-up card's style
  * (renderer/ui/SignUp.tsx). `create`: choose one at sign-up, typed twice.
  * `unlock`: open the saved account at page start, or forget it.
+ * M10a: the same screens for a phone sign-in (`paired`), with its own
+ * backup line: the phone, not a recovery phrase.
  */
 
 import { useState } from 'react';
@@ -15,8 +17,8 @@ import { MIN_PASSPHRASE_LENGTH, passphraseProblem } from '../vault';
 const inputClass = 'h-11 rounded-nested text-body-l md:text-body-l';
 
 type Props =
-  | { mode: 'create'; onDone: (passphrase: string | null) => void }
-  | { mode: 'unlock'; username: string; onUnlock: (passphrase: string) => Promise<void>; onForget: () => Promise<void> };
+  | { mode: 'create'; paired?: boolean; onDone: (passphrase: string | null) => void }
+  | { mode: 'unlock'; paired?: boolean; username: string; onUnlock: (passphrase: string) => Promise<void>; onForget: () => Promise<void> };
 
 export const PassphraseCard = (props: Props) => {
   const [passphrase, setPassphrase] = useState('');
@@ -55,7 +57,9 @@ export const PassphraseCard = (props: Props) => {
             <h1 className="text-heading-l text-fg-primary">{props.mode === 'create' ? 'Protect this account' : `Unlock ${props.username}`}</h1>
             <p className="text-body-m text-fg-secondary">
               {props.mode === 'create'
-                ? `Choose a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. It encrypts your keys in this browser. It cannot be recovered; the recovery phrase in Settings is the backup.`
+                ? `Choose a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters. It encrypts your keys in this browser. ${
+                    props.paired ? 'It cannot be recovered; if you forget it, sign in with your phone again.' : 'It cannot be recovered; the recovery phrase in Settings is the backup.'
+                  }`
                 : 'Enter the passphrase that encrypts your keys in this browser.'}
             </p>
           </div>
@@ -101,7 +105,11 @@ export const PassphraseCard = (props: Props) => {
             </Button>
           ) : confirmForget ? (
             <div className="flex flex-col gap-2 rounded-nested bg-surface-nested p-3">
-              <p className="text-body-s text-fg-warning">This deletes the account from this browser. Without the recovery phrase it is gone for good.</p>
+              <p className="text-body-s text-fg-warning">
+                {props.paired
+                  ? 'This signs you out of this browser and deletes its chats. You can sign in with your phone again.'
+                  : 'This deletes the account from this browser. Without the recovery phrase it is gone for good.'}
+              </p>
               <div className="flex gap-2">
                 <Button type="button" variant="secondary" className="rounded-medium text-label-m" onClick={() => void props.onForget()} data-testid="web-forget-confirm">
                   Delete from this browser

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deriveIdentityKeys, generateMnemonic } from '../main/identity/keys';
 import type { createIdentity as desktopCreateIdentity } from '../main/identity/service';
 
+import type { PairedIdentity } from '../shared/desktop-api';
+import { PHONE_SIGNED_IN } from '../shared/desktop-api';
+
 import { webDatabase } from './database';
 import { RESET_GRACE_MS, type WebIdentityDeps, createWebIdentity } from './identity';
 import { WRONG_PASSPHRASE, newVaultParams } from './vault';
@@ -113,5 +116,80 @@ describe('web identity', () => {
     await api.forget();
     expect(await api.get()).toBeNull();
     expect(await webDatabase().records.count()).toBe(0);
+  });
+});
+
+// M10a: a phone sign-in holds the identity chat key and the device key the
+// phone gave an allowance to. They get the same protection as a mnemonic, and
+// every member that needs a seed says why it cannot run, instead of failing.
+const filled = (length: number, value: number) => new Uint8Array(length).fill(value);
+const paired: PairedIdentity = {
+  profile: 'devnet',
+  username: 'alicephone.07',
+  pairedAt: 1_790_000_000_000,
+  identityAccountId: filled(32, 1),
+  rootAccountId: filled(32, 2),
+  identityChatPrivateKey: filled(32, 3),
+  phoneDeviceEncPubKey: filled(32, 4),
+  phoneStatementAccountId: filled(32, 5),
+  ssoEncPubKey: filled(32, 6),
+  rootEntropySource: filled(32, 7),
+  deviceStatementSeed: filled(64, 8),
+  deviceEncryptionPrivateKey: filled(32, 9),
+};
+
+describe('web phone sign-in', () => {
+  it('asks for a passphrase for the phone sign-in and keeps no key in clear', async () => {
+    const ask = vi.fn(async () => PASSPHRASE);
+    const api = createWebIdentity(deps({ askNewPassphrase: ask }));
+    await api.savePaired(paired);
+    expect(ask).toHaveBeenCalledWith('paired');
+    const record = await webDatabase().records.get('paired');
+    expect(record).toMatchObject({ username: 'alicephone.07', profile: 'devnet', accountHex: `0x${'01'.repeat(32)}` });
+    const stored = JSON.stringify(record, (_key, value: unknown) => (value instanceof Uint8Array ? Array.from(value).join(',') : value));
+    expect(stored).not.toContain(Array.from(filled(32, 3)).join(','));
+    expect(stored).not.toContain('0x' + '03'.repeat(32));
+    expect(await api.get()).toEqual({ username: 'alicephone.07', accountHex: `0x${'01'.repeat(32)}`, profile: 'devnet', paired: true });
+    expect(await api.pairedSecrets()).toEqual(paired);
+  });
+
+  it('keeps nothing when the passphrase is cancelled', async () => {
+    const api = createWebIdentity(deps({ askNewPassphrase: async () => null }));
+    await expect(api.savePaired(paired)).rejects.toThrow('A passphrase is needed');
+    expect(await api.get()).toBeNull();
+  });
+
+  it('after a reload opens the phone sign-in only with the passphrase', async () => {
+    await createWebIdentity(deps()).savePaired(paired);
+    const reloaded = createWebIdentity(deps());
+    expect(await reloaded.locked()).toBe(true);
+    await expect(reloaded.pairedSecrets()).rejects.toThrow('Unlock this account first.');
+    await expect(reloaded.unlock('wrong passphrase')).rejects.toThrow(WRONG_PASSPHRASE);
+    await reloaded.unlock(PASSPHRASE);
+    expect(await reloaded.pairedSecrets()).toEqual(paired);
+    expect((await reloaded.atRestKey()).length).toBe(32);
+  });
+
+  it('refuses seed members with the phone text, and a second identity', async () => {
+    const api = createWebIdentity(deps());
+    await api.savePaired(paired);
+    expect(() => api.mnemonic()).toThrow(PHONE_SIGNED_IN);
+    await expect(api.secretsForRenderer()).rejects.toThrow(PHONE_SIGNED_IN);
+    await expect(api.recoveryPhrase('reveal')).rejects.toThrow(PHONE_SIGNED_IN);
+    await expect(api.create({ username: 'webtester', digits: null, profile: 'devnet' })).rejects.toThrow('Sign out first');
+    expect(fakeCreate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a phone sign-in over a local account', async () => {
+    const api = await signUp();
+    await expect(api.savePaired(paired)).rejects.toThrow('already has an identity');
+  });
+
+  it('sign out forgets the phone sign-in', async () => {
+    const api = createWebIdentity(deps());
+    await api.savePaired(paired);
+    await api.forgetPaired();
+    expect(await api.get()).toBeNull();
+    await expect(api.pairedSecrets()).rejects.toThrow('not signed in with a phone');
   });
 });

@@ -3,7 +3,8 @@
  * `<userData>` (docs/web.md "What is stored where"). Its own IndexedDB
  * database, apart from the renderer's chat database.
  * - `records`: the identity (public fields in clear, the mnemonic sealed
- *   under the passphrase key), its reset backup, the sealed at-rest key.
+ *   under the passphrase key), its reset backup, the sealed at-rest key;
+ *   or (M10a) a phone sign-in, its keys sealed the same way.
  * - `metadata`: public runtime metadata by code hash.
  */
 
@@ -12,6 +13,7 @@ import Dexie, { type Table } from 'dexie';
 import type { SealedSecret, VaultParams } from './vault';
 
 import type { NetworkProfileId } from '../shared/network';
+import type { PairedPublic } from '../shared/pairedIdentity';
 
 /** The identity as this browser keeps it: never the mnemonic in clear. */
 export type WebIdentityRecord = {
@@ -25,10 +27,22 @@ export type WebIdentityRecord = {
   atRestKey: SealedSecret;
 };
 
+/**
+ * M10a: a phone sign-in as this browser keeps it. The public part in clear,
+ * the keys (shared/pairedIdentity.ts `encodePairedSecrets`) sealed under the
+ * passphrase key like the mnemonic of a local account.
+ */
+export type WebPairedRecord = PairedPublic & {
+  name: 'paired';
+  vault: VaultParams;
+  secrets: SealedSecret;
+  atRestKey: SealedSecret;
+};
+
 export type MetadataRow = { codeHash: string; bytes: Uint8Array };
 
 export type WebDatabase = Dexie & {
-  records: Table<WebIdentityRecord, WebIdentityRecord['name']>;
+  records: Table<WebIdentityRecord | WebPairedRecord, (WebIdentityRecord | WebPairedRecord)['name']>;
   metadata: Table<MetadataRow, string>;
 };
 

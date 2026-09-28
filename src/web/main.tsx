@@ -13,11 +13,11 @@ import './index.css';
 import { createBackendFetch } from './backend';
 import { webDatabase } from './database';
 import { createWebDesktop } from './desktop';
-import { createWebIdentity } from './identity';
+import { type PassphrasePurpose, createWebIdentity } from './identity';
 import { PassphraseCard } from './ui/PassphraseCard';
 
 /** A passphrase screen above the page (the renderer keeps running under it). */
-const askNewPassphrase = (): Promise<string | null> =>
+const askNewPassphrase = (purpose: PassphrasePurpose): Promise<string | null> =>
   new Promise(resolve => {
     const host = document.createElement('div');
     document.body.append(host);
@@ -26,6 +26,7 @@ const askNewPassphrase = (): Promise<string | null> =>
       <StrictMode>
         <PassphraseCard
           mode="create"
+          paired={purpose === 'paired'}
           onDone={passphrase => {
             root.unmount();
             host.remove();
@@ -68,6 +69,7 @@ const unlockThenBoot = async (): Promise<void> => {
       <StrictMode>
         <PassphraseCard
           mode="unlock"
+          paired={summary.paired === true}
           username={summary.username}
           onUnlock={async passphrase => {
             await identity.unlock(passphrase);

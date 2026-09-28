@@ -15,6 +15,9 @@ export const IPC = {
   identityReset: 'identity:reset',
   identityResetUndo: 'identity:resetUndo',
   identityRecoveryPhrase: 'identity:recoveryPhrase',
+  identitySavePaired: 'identity:savePaired',
+  identityPairedSecrets: 'identity:pairedSecrets',
+  identityForgetPaired: 'identity:forgetPaired',
   clipboardCopySecret: 'clipboard:copySecret',
   clipboardSecretCleared: 'clipboard:secretCleared',
   chainMetadataGet: 'chain:metadataGet',
@@ -85,8 +88,47 @@ export type AssistantEngineId = 'proxy' | 'claude' | 'codex' | 'opencode';
 /** Tool capabilities of a CLI engine (main/assistant/toolPolicy.ts). The UI offers the first four. */
 export type AssistantTool = 'read' | 'write' | 'bash' | 'web' | 'subagents';
 
-/** The public part of the identity saved on this machine. */
-export type IdentitySummary = { username: string; accountHex: string; profile: NetworkProfileId };
+/**
+ * The public part of the identity saved on this machine. `paired` (M10a):
+ * signed in with the Polkadot app on a phone, so this machine holds no seed.
+ */
+export type IdentitySummary = { username: string; accountHex: string; profile: NetworkProfileId; paired?: true };
+
+/**
+ * M10a: what a member that needs the identity's seed rejects with when the
+ * identity came from the phone (docs/decisions.md M10a); the UI shows it as is.
+ */
+export const PHONE_SIGNED_IN = 'Not available when signed in with your phone.';
+
+/**
+ * M10a "Sign in with Polkadot app": the phone's V2 handshake `Success`, plus
+ * this device's own keys that the offer (the QR) carried. Kept sealed by
+ * main (safeStorage) or, on the web, under the passphrase key. No seed: the
+ * phone keeps it.
+ */
+export type PairedIdentity = {
+  profile: NetworkProfileId;
+  /** The identity's username on the People chain; null when the read failed at sign-in. */
+  username: string | null;
+  pairedAt: number;
+  /** 32 bytes each. */
+  identityAccountId: Uint8Array;
+  rootAccountId: Uint8Array;
+  /** X25519: reads what peers address to the identity. */
+  identityChatPrivateKey: Uint8Array;
+  /** The phone's device encryption key (X25519 public). */
+  phoneDeviceEncPubKey: Uint8Array;
+  /** The phone's statement account: the signer of its answer; null when the answer had no known proof. */
+  phoneStatementAccountId: Uint8Array | null;
+  /** `papp_encr_pub` (X25519 public). */
+  ssoEncPubKey: Uint8Array;
+  /** RFC-0007 layer-1 product entropy source. */
+  rootEntropySource: Uint8Array;
+  /** 64-byte sr25519 secret of this device's statement account (the one the phone gave an allowance). */
+  deviceStatementSeed: Uint8Array;
+  /** This device's X25519 private key, the one in the offer. */
+  deviceEncryptionPrivateKey: Uint8Array;
+};
 
 /** The backend's answer for one name (letters only, no number). */
 export type UsernameAvailability = {
@@ -154,6 +196,16 @@ export type DesktopIdentityApi = {
   onSecretCleared: (listener: () => void) => () => void;
   /** Progress lines of a running `create`. Returns the unsubscribe function. */
   onProgress: (listener: (line: string) => void) => () => void;
+  /**
+   * M10a: keeps the identity the phone handed over. Refused when this
+   * machine already has an identity. On the web it asks for a new
+   * passphrase first, as `create` does.
+   */
+  savePaired: (identity: PairedIdentity) => Promise<void>;
+  /** M10a: the saved paired identity, for the renderer to seed Dexie. Rejects when there is none. */
+  pairedSecrets: () => Promise<PairedIdentity>;
+  /** M10a "Sign out": forgets the paired identity on this machine. The phone revokes by not renewing the allowance. */
+  forgetPaired: () => Promise<void>;
 };
 
 /**

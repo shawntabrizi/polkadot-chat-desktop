@@ -27,7 +27,7 @@ plugins. It also does two things:
   UI shows that text: Settings › Assistant, Agent and Profiles, and the
   Assistant room.
 
-Totals: 73 members. 45 ported, 2 proxied, 26 unavailable.
+Totals: 76 members. 48 ported, 2 proxied, 26 unavailable.
 
 ## Members
 
@@ -46,6 +46,9 @@ Totals: 73 members. 45 ported, 2 proxied, 26 unavailable.
 | `identity.copySecret` | ported | `secretClipboard.ts` rule with `navigator.clipboard`. The clear after 60 s needs clipboard-read permission; without it the phrase stays and no "cleared" hint shows. |
 | `identity.onSecretCleared` | ported | As above. |
 | `identity.onProgress` | ported | Sign-up progress lines. |
+| `identity.savePaired` | ported | M10a phone sign-in: asks for a new passphrase (as sign-up), then seals the keys in the `paired` row. |
+| `identity.pairedSecrets` | ported | The unlocked phone sign-in, for the renderer's Dexie seeding. |
+| `identity.forgetPaired` | ported | Sign out: deletes the `paired` row. |
 | `chain.getMetadata` / `setMetadata` | ported | IndexedDB, by code hash. |
 | `chain.dryRun` / `sign` / `watch` / `track` / `onTxStatus` | ported | `assetHub.ts` `createTxService` over polkadot-api in the page. |
 | `chain.contractRead` / `balance` / `onBestBlock` | ported | Same service. |
@@ -77,6 +80,7 @@ All in this browser, per origin.
 | Store | What | Protection |
 | --- | --- | --- |
 | IndexedDB `polkadot-chat-web-platform`, table `records`, row `identity` | username, account id, network (clear); the mnemonic and the at-rest key (sealed); the salt and the PBKDF2 iteration count | AES-256-GCM under a key from PBKDF2-SHA256 (600,000 iterations, 16-byte random salt) of the passphrase. Each value has its own IV and its field name as AAD. |
+| same, row `paired` (M10a) | a phone sign-in: username, account id, network, pairing time (clear); the identity chat key, this device's statement and encryption keys, the phone's keys, root account and entropy, and the at-rest key (sealed) | as the `identity` row. A browser holds one of the two rows, never both. |
 | same, row `identity.bak` | the same record during the 10 s reset Undo | as above; dropped at the next page start |
 | same, table `metadata` | public runtime metadata by code hash | none needed |
 | IndexedDB `polkadot-chat-web` | the renderer's chat database (as on the desktop) | as on the desktop: the `keys` table is sealed with the at-rest key |

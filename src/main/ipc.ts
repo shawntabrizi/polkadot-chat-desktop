@@ -32,6 +32,8 @@ import {
   type HopSendResult,
   IPC,
   type IdentitySummary,
+  type PairedIdentity,
+  PHONE_SIGNED_IN,
   type NotifyRequest,
   type RendererSecrets,
   type TxDryRun,
@@ -56,7 +58,9 @@ import { deriveIdentityKeys } from './identity/keys';
 import { revealRecoveryPhrase } from './identity/recovery';
 import { createSecretClipboard } from './secretClipboard';
 import { checkAvailability, createIdentity } from './identity/service';
-import { dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
+import { type StoredIdentity, dropIdentityBackup, loadIdentity, restoreIdentity, saveIdentity, stashIdentity } from './identity/store';
+import { forgetPaired, loadPaired, loadPairedPublic, savePaired } from './identity/pairedStore';
+import { pairedSummaryOf } from '../shared/pairedIdentity';
 import { createDemoManifestSource } from './demoManifest';
 import { createDiagnostics } from './diagnostics';
 import { readMetadata, writeMetadata } from './metadataCache';
@@ -99,6 +103,18 @@ const GENESIS = /^0x[0-9a-fA-F]{64}$/;
 const ACCOUNT = /^0x[0-9a-fA-F]{64}$/;
 
 /**
+ * M10a: the identity with its mnemonic, for everything that signs with the
+ * seed. A phone sign-in has none: those members reject with the words the
+ * UI shows (`PHONE_SIGNED_IN`), not with "no identity".
+ */
+const seedIdentity = (): StoredIdentity => {
+  const identity = loadIdentity();
+  if (identity) return identity;
+  if (loadPairedPublic()) throw new Error(PHONE_SIGNED_IN);
+  throw new Error('This computer has no identity yet.');
+};
+
+/**
  * Spec 0007: one Asset Hub connection and signing service for the identity
  * on this computer, opened on first use. A failed open is not kept, so the
  * next press tries again. The service holds the wallet key's sign function,
@@ -116,8 +132,12 @@ const sendTxStatus = (getWindow: () => BrowserWindow | null, event: TxStatusEven
   if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainTxStatus, event);
 };
 const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService> => {
-  const identity = loadIdentity();
-  if (!identity) return Promise.reject(new Error('This computer has no identity yet.'));
+  let identity: StoredIdentity;
+  try {
+    identity = seedIdentity();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const key = `${identity.profile}:${identity.accountHex}`;
   if (txService?.key === key) return txService.service;
   void txService?.service.then(old => old.dispose(), () => undefined);
@@ -150,8 +170,12 @@ const txServiceFor = (getWindow: () => BrowserWindow | null): Promise<TxService>
  */
 let bulletin: { key: string; service: Promise<BulletinService>; chain: Promise<BulletinChain> } | null = null;
 const bulletinFor = (onTransaction: () => void): Promise<BulletinService> => {
-  const identity = loadIdentity();
-  if (!identity) return Promise.reject(new Error('This computer has no identity yet.'));
+  let identity: StoredIdentity;
+  try {
+    identity = seedIdentity();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const key = `${identity.profile}:${identity.accountHex}`;
   if (bulletin?.key === key) return bulletin.service;
   void bulletin?.chain.then(old => old.destroy(), () => undefined);
@@ -294,7 +318,26 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     const identity = loadIdentity();
     // M18: the picker lists this profile by its identity; the page reads this at every start.
     profileIdentityChanged();
-    return identity ? { username: identity.username, accountHex: identity.accountHex, profile: identity.profile } : null;
+    if (identity) return { username: identity.username, accountHex: identity.accountHex, profile: identity.profile };
+    const paired = loadPairedPublic();
+    return paired ? pairedSummaryOf(paired) : null;
+  });
+
+  // M10a: the phone's sign-in. One identity per profile, as sign-up.
+  ipcMain.handle(IPC.identitySavePaired, (_event, value: unknown): void => {
+    if (creating || loadIdentity()) throw new Error('This computer already has an identity.');
+    if (loadPairedPublic()) throw new Error('This computer is already signed in with a phone.');
+    savePaired(value as PairedIdentity);
+    profileIdentityChanged();
+  });
+  ipcMain.handle(IPC.identityPairedSecrets, (): PairedIdentity => {
+    const paired = loadPaired();
+    if (!paired) throw new Error('This computer is not signed in with a phone.');
+    return paired;
+  });
+  ipcMain.handle(IPC.identityForgetPaired, (): void => {
+    forgetPaired();
+    profileIdentityChanged();
   });
 
   ipcMain.handle(IPC.identityAvailable, (_event, username: unknown, profile: unknown): Promise<UsernameAvailability> => {
@@ -306,6 +349,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   ipcMain.handle(IPC.identityCreate, async (event, value: unknown): Promise<CreateIdentityResponse> => {
     const request = parseCreateRequest(value);
     if (creating) throw new Error('A sign-up is already running.');
+    if (loadPairedPublic()) throw new Error('This computer is signed in with a phone. Sign out first.');
     creating = true;
     try {
       const created = await createIdentity({
@@ -340,7 +384,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   });
 
   // M19: the one channel that hands the mnemonic to the page, behind the typed word.
-  ipcMain.handle(IPC.identityRecoveryPhrase, (_event, confirm: unknown): string => revealRecoveryPhrase(confirm, loadIdentity()));
+  ipcMain.handle(IPC.identityRecoveryPhrase, (_event, confirm: unknown): string => revealRecoveryPhrase(confirm, seedIdentity()));
   // The copied phrase leaves the clipboard after 60 s if nothing else was copied (secretClipboard.ts).
   const secretClipboard = createSecretClipboard(clipboard, () => {
     const win = getWindow();
@@ -406,9 +450,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   // The embedded Faucet: devnet Asset Hub only (the guard is checked before anything opens).
   ipcMain.handle(IPC.faucetDrip, async (_event, chainId: unknown): Promise<FaucetDrip> => {
     const allowed = assertDevnetChain(chainId);
-    const identity = loadIdentity();
-    if (!identity) throw new Error('This computer has no identity yet.');
-    const to = deriveIdentityKeys(identity.mnemonic).accountId;
+    const to = deriveIdentityKeys(seedIdentity().mnemonic).accountId;
     return dripDevnet(await assetHubFor(getWindow), allowed, to, event => sendTxStatus(getWindow, event));
   });
 
@@ -643,9 +685,7 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
   // the statement account; the device has its own encryption key). It sends
   // derived keys, never the mnemonic.
   ipcMain.handle(IPC.identitySecretsForRenderer, (): RendererSecrets => {
-    const identity = loadIdentity();
-    if (!identity) throw new Error('This computer has no identity yet.');
-    const keys = deriveIdentityKeys(identity.mnemonic);
+    const keys = deriveIdentityKeys(seedIdentity().mnemonic);
     return {
       statementSeed: keys.walletSecret64,
       chatPrivateKey: keys.chatPrivateKey,
