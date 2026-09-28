@@ -9,6 +9,7 @@ import { NETWORK_PROFILES, type NetworkProfileId } from '../../shared/network';
 
 import { withPeopleDirectory } from './directory';
 import { bytesToHex, deriveIdentityKeys, generateMnemonic } from './keys';
+import { runLitePerson } from './litePerson';
 import {
   type BackendError,
   type UsernameAvailability,
@@ -86,6 +87,7 @@ export async function createIdentity({
       digits,
       backendUrl: network.identityBackend,
       identityToken: session?.token ?? null,
+      litePerson: runLitePerson,
     });
     claimed = result.username;
   } catch (error) {

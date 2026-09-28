@@ -31,6 +31,7 @@ import { gcm } from '@noble/ciphers/aes.js';
 import { randomBytes } from '@noble/ciphers/utils.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { blake2b } from '@noble/hashes/blake2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { getPublicKey, secretFromSeed, sign } from '@scure/sr25519';
 
 import { HOP_MAX_FILE_BYTES, type HopAckResult, type HopCipher, type HopFetchResult, type HopLayout, type HopSendResult } from '../../shared/desktop-api';
@@ -74,11 +75,12 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   }
   return out;
 };
-const toHex = (bytes: Uint8Array): string => `0x${Buffer.from(bytes).toString('hex')}`;
+// No Buffer: the web build (docs/web.md) reuses this module in the browser.
+const toHex = (bytes: Uint8Array): string => `0x${bytesToHex(bytes)}`;
 const fromHex = (hex: string): Uint8Array => {
   const clean = hex.replace(/^0x/i, '');
   if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) throw new HopFailure('damaged', 'The node sent bytes that are not hex.');
-  return Uint8Array.from(Buffer.from(clean, 'hex'));
+  return hexToBytes(clean);
 };
 const equal = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((byte, i) => byte === b[i]);
 
@@ -261,7 +263,7 @@ export const openHopRpc = (url: string, { connectTimeoutMs = HOP_CONNECT_TIMEOUT
       }
       let message: { id?: number; result?: unknown; error?: { code?: number; message?: string } };
       try {
-        message = JSON.parse(typeof data === 'string' ? data : Buffer.from(data as ArrayBuffer).toString('utf8'));
+        message = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
       } catch {
         return;
       }

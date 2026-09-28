@@ -15,6 +15,7 @@
  */
 
 import { blake2b } from '@noble/hashes/blake2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { Observable, Subscription } from 'rxjs';
 
 import type { TxStatusEvent } from '../../shared/desktop-api';
@@ -42,9 +43,8 @@ export type TxTracker = {
 
 type Entry = { block: number | null; since: number; checking: boolean };
 
-const hexBytes = (hex: string): Uint8Array => Uint8Array.from(Buffer.from(hex.replace(/^0x/, ''), 'hex'));
 /** The extrinsic hash: blake2b-256 of the encoded extrinsic, as the chain and wallets compute it. */
-export const extrinsicHash = (extrinsicHex: string): string => `0x${Buffer.from(blake2b(hexBytes(extrinsicHex), { dkLen: 32 })).toString('hex')}`;
+export const extrinsicHash = (extrinsicHex: string): string => `0x${bytesToHex(blake2b(hexToBytes(extrinsicHex.replace(/^0x/, '')), { dkLen: 32 }))}`;
 
 export const createTxTracker = (chain: TrackerChain, emit: (event: TxStatusEvent) => void, now: () => number = Date.now): TxTracker => {
   const entries = new Map<string, Entry>();

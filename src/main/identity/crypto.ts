@@ -5,10 +5,11 @@
 // deriveSr25519PairFromSeed, deriveX25519PrivateKey,
 // x25519PublicKeyFromPrivateKey, encodeAccountEcdhKey and their private
 // helpers), TypeScript types, `encodeAccountEcdhKey` takes a plain 32-byte key
-// (the `{ kind }` forms are for peers' keys, which this app does not encode).
+// (the `{ kind }` forms are for peers' keys, which this app does not encode);
+// the X25519 public key comes from @noble/curves instead of node:crypto (same
+// RFC 7748 result, keys.spec.ts checks it), so the web build can import this.
 
-import crypto from 'node:crypto';
-
+import { x25519 } from '@noble/curves/ed25519.js';
 import { blake2b } from '@noble/hashes/blake2.js';
 import { sr25519, sr25519Derive } from '@polkadot-labs/hdkd-helpers';
 
@@ -155,22 +156,11 @@ function scaleEncodeBytes(bytes: Uint8Array): Uint8Array {
   return concatBytes(scaleCompactEncodeLength(bytes.length), bytes);
 }
 
-const X25519_PRIVATE_KEY_DER_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
-
 function requireX25519Key(key: Uint8Array, label: string): Uint8Array {
   if (!(key instanceof Uint8Array) || key.length !== 32) {
     throw new Error(`${label} must be 32 bytes`);
   }
   return key;
-}
-
-function x25519PrivateKeyObject(privateKey: Uint8Array): crypto.KeyObject {
-  requireX25519Key(privateKey, 'X25519 private key');
-  return crypto.createPrivateKey({
-    key: Buffer.concat([X25519_PRIVATE_KEY_DER_PREFIX, Buffer.from(privateKey)]),
-    format: 'der',
-    type: 'pkcs8',
-  });
 }
 
 export function deriveX25519PrivateKey(rootSeed: Uint8Array): Uint8Array {
@@ -186,8 +176,7 @@ export function deriveX25519PrivateKey(rootSeed: Uint8Array): Uint8Array {
 }
 
 export function x25519PublicKeyFromPrivateKey(privateKey: Uint8Array): Uint8Array {
-  const der = crypto.createPublicKey(x25519PrivateKeyObject(privateKey)).export({ format: 'der', type: 'spki' });
-  return new Uint8Array(der.subarray(der.length - 32));
+  return x25519.getPublicKey(requireX25519Key(privateKey, 'X25519 private key'));
 }
 
 /** RFC-0004 container: `0x00 || x25519_pk || 32 zero bytes`. */

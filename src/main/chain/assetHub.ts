@@ -15,8 +15,6 @@
  * - `Revive.map_account` is prepended when the signer is not mapped yet.
  */
 
-import { randomUUID } from 'node:crypto';
-
 import { MultiAddress, assetHubPaseo } from '@polkadot-api/descriptors';
 import { AccountId, compact } from '@polkadot-api/substrate-bindings';
 import { ss58Address } from '@polkadot-labs/hdkd-helpers';
@@ -395,7 +393,8 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     if (!dry.value.execution_result.success) {
       return refusal(`The test run failed: ${dispatchErrorText(dry.value.execution_result.value.error as DispatchErrorLike)}.`, { ...base, fee: String(fee) });
     }
-    const id = randomUUID();
+    // The global Web Crypto (Node and browser alike), so the web build can reuse this module.
+    const id = globalThis.crypto.randomUUID();
     dryRuns.set(id, { intent, at: now() });
     return { id, ok: true, error: null, fee: String(fee), ...base };
   };

@@ -9,16 +9,11 @@
 // obtainAnonymousSession and checkUsernameAvailable (the mobile app's
 // availability call, see docs/milestones/M1.md step 10c). HTTP payloads of the
 // ported calls are unchanged.
-
-import { randomBytes } from 'node:crypto';
-import { closeSync, openSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+// M22a: no Node module here, so the web build reuses it. The wasm runner is
+// passed in (`litePerson`): node:wasi in ./litePerson.ts, a Web Worker on the web.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { mnemonicToMiniSecret, ss58Address } from '@polkadot-labs/hdkd-helpers';
-
-import { resourcePath } from '../resources';
 
 import { type Sr25519Pair, deriveSr25519PairFromSeed } from './crypto';
 import { bytesToHex, deriveIdentityKeys } from './keys';
@@ -66,50 +61,19 @@ const stringField = (value: unknown, key: string): string | null =>
 
 // ── Lite-person proof (bandersnatch ring-VRF, vendored WASI build) ────────
 
-type LitePersonOutput = { memberKey: string; proofOfOwnership: string };
+export type LitePersonOutput = { memberKey: string; proofOfOwnership: string };
 
-let wasmModule: WebAssembly.Module | null = null; // compiled once, instantiated per run (WASI starts are single-shot)
-let wasiWarningFiltered = false;
+/** `bandersnatch lite-person <entropyHex> <messageHex>`: the member key and the proof. */
+export type LitePersonRunner = (entropyHex: string, messageHex: string) => Promise<LitePersonOutput>;
 
-/**
- * Runs `bandersnatch lite-person <entropyHex> <messageHex>` from
- * `resources/summit-bandersnatch-cli.wasm` in-process through node:wasi.
- * The output is deterministic: identical bytes to the native binary.
- */
-export async function runLitePerson(entropyHex: string, messageHex: string): Promise<LitePersonOutput> {
-  // node:wasi emits an ExperimentalWarning on import; filter that one warning only.
-  if (!wasiWarningFiltered) {
-    wasiWarningFiltered = true;
-    const orig = process.emitWarning.bind(process);
-    process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
-      if (String(warning).includes('WASI')) return;
-      (orig as (warning: string | Error, ...rest: unknown[]) => void)(warning, ...rest);
-    }) as typeof process.emitWarning;
-  }
-  const { WASI } = await import('node:wasi');
-  wasmModule ??= await WebAssembly.compile(readFileSync(resourcePath('summit-bandersnatch-cli.wasm')));
-  const tmp = join(tmpdir(), `bandersnatch-${process.pid}-${Date.now()}.out`);
-  const fd = openSync(tmp, 'w+', 0o600); // not world-readable while the proof is written
-  try {
-    const wasi = new WASI({
-      version: 'preview1',
-      args: ['bandersnatch', 'lite-person', entropyHex, messageHex],
-      stdout: fd,
-      stderr: fd,
-    });
-    const instance = await WebAssembly.instantiate(wasmModule, wasi.getImportObject() as WebAssembly.Imports);
-    const code = wasi.start(instance);
-    const out = readFileSync(tmp, 'utf8').trim();
-    if (code !== 0) throw new Error(`identity proof helper failed (exit ${code}): ${out}`);
-    const parsed: unknown = JSON.parse(out);
-    const memberKey = stringField(parsed, 'memberKey');
-    const proofOfOwnership = stringField(parsed, 'proofOfOwnership');
-    if (memberKey == null || proofOfOwnership == null) throw new Error('identity proof helper returned an unexpected result');
-    return { memberKey, proofOfOwnership };
-  } finally {
-    closeSync(fd);
-    rmSync(tmp, { force: true });
-  }
+/** Reads the helper's stdout (JSON with `memberKey` and `proofOfOwnership`). */
+export function parseLitePersonOutput(code: number, out: string): LitePersonOutput {
+  if (code !== 0) throw new Error(`identity proof helper failed (exit ${code}): ${out}`);
+  const parsed: unknown = JSON.parse(out);
+  const memberKey = stringField(parsed, 'memberKey');
+  const proofOfOwnership = stringField(parsed, 'proofOfOwnership');
+  if (memberKey == null || proofOfOwnership == null) throw new Error('identity proof helper returned an unexpected result');
+  return { memberKey, proofOfOwnership };
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
@@ -134,7 +98,9 @@ async function jsonFetch(url: URL, options: RequestInit, fetchImpl: FetchImpl = 
 }
 
 const canonicalBackendUrl = (backendUrl: string): string => new URL(backendUrl).href;
-const base64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
+// atob/btoa, not Buffer: the same code runs in the browser. Inputs are short (keys, a challenge).
+const base64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
+const fromBase64 = (encoded: string): Uint8Array => Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
 
 // ── Auth session (Products Devnet: client-proof with the wallet key) ─────
 
@@ -152,7 +118,12 @@ function decodeChallenge(value: unknown): Uint8Array {
   if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     throw new Error('identity backend returned an invalid authentication challenge');
   }
-  const challenge = new Uint8Array(Buffer.from(encoded, 'base64'));
+  let challenge: Uint8Array;
+  try {
+    challenge = fromBase64(encoded);
+  } catch {
+    throw new Error('identity backend returned an invalid authentication challenge');
+  }
   if (challenge.length === 0 || base64(challenge) !== encoded) {
     throw new Error('identity backend returned an invalid authentication challenge');
   }
@@ -219,7 +190,7 @@ export async function obtainIdentitySession({
  * mnemonic. Both backends require a bearer for `usernames/available`.
  */
 export async function obtainAnonymousSession({ backendUrl, fetchImpl = fetch }: { backendUrl: string; fetchImpl?: FetchImpl }): Promise<{ token: string; refreshToken: string }> {
-  const client = deriveSr25519PairFromSeed(new Uint8Array(randomBytes(32)), '');
+  const client = deriveSr25519PairFromSeed(globalThis.crypto.getRandomValues(new Uint8Array(32)), '');
   return issueIdentitySession({ backendUrl, client, fetchImpl });
 }
 
@@ -228,7 +199,8 @@ export function jwtExpiresSoon(token: string, now = Date.now()): boolean {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) return false;
-    const payload: unknown = JSON.parse(Buffer.from(parts[1] ?? '', 'base64url').toString('utf8'));
+        const part = (parts[1] ?? '').replace(/-/g, '+').replace(/_/g, '/');
+    const payload: unknown = JSON.parse(new TextDecoder().decode(fromBase64(part.padEnd(Math.ceil(part.length / 4) * 4, '='))));
     return isRecord(payload) && typeof payload.exp === 'number' && payload.exp * 1000 <= now + 60_000;
   } catch {
     return false;
@@ -322,11 +294,13 @@ export async function registerIdentity({
   ss58Prefix = 42,
   identityToken = null,
   fetchImpl = fetch,
+  litePerson,
 }: {
   mnemonic: string;
   username: string;
   digits?: string | null;
   backendUrl: string;
+  litePerson: LitePersonRunner;
   ss58Prefix?: number;
   identityToken?: string | null;
   fetchImpl?: FetchImpl;
@@ -340,10 +314,10 @@ export async function registerIdentity({
   const attester = stringField(attesterData, 'attester');
   if (!attester) throw new Error('identity backend did not return an attester');
 
-  const memberOnly = await runLitePerson(bytesToHex(liteEntropy), bytesToHex(concatBytes(enc.encode(MSG_PREFIX), accountId, new Uint8Array(32))));
+  const memberOnly = await litePerson(bytesToHex(liteEntropy), bytesToHex(concatBytes(enc.encode(MSG_PREFIX), accountId, new Uint8Array(32))));
   const ringVrfKey = memberOnly.memberKey;
   const liteMessage = concatBytes(enc.encode(MSG_PREFIX), accountId, hexToBytes(ringVrfKey));
-  const litePerson = await runLitePerson(bytesToHex(liteEntropy), bytesToHex(liteMessage));
+  const proof = await litePerson(bytesToHex(liteEntropy), bytesToHex(liteMessage));
 
   const resourcesSig = concatBytes(accountId, hexToBytes(attester), identifierKey, scaleString(base), Uint8Array.of(0));
   const payload: Record<string, string> = {
@@ -351,7 +325,7 @@ export async function registerIdentity({
     username: base,
     candidateSignature: bytesToHex(sign(liteMessage)),
     ringVrfKey,
-    proofOfOwnership: litePerson.proofOfOwnership,
+    proofOfOwnership: proof.proofOfOwnership,
     consumerRegistrationSignature: bytesToHex(sign(resourcesSig)),
     identifierKey: bytesToHex(identifierKey),
   };
