@@ -1,0 +1,50 @@
+# M22c: the web build (docs/web.md) on GitHub Pages,
+# https://shawntabrizi.github.io/polkadot-chat-desktop/.
+# Pages has no reverse proxy, so the build has none (VITE_IDB_PROXY=off):
+# local sign-up and username search show "Not available on this site";
+# the phone sign-in works. Pages source: GitHub Actions (docs/web.md, Hosting).
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a running deploy finishes before the next starts.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      # `prepare` runs `papi generate` from the committed .papi/metadata (no chain connection).
+      - run: npm ci
+      - run: npm run build:web
+        env:
+          PCD_WEB_BASE: /polkadot-chat-desktop/
+          VITE_IDB_PROXY: 'off'
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: out/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
