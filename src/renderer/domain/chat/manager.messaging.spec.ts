@@ -896,3 +896,40 @@ describe('chat manager: capabilities (spec 0013, M20)', () => {
     expect(transport!.received.map(m => m.content.tag)).toEqual(['text', 'text']);
   }, 15_000);
 });
+
+// M10a: a phone sign-in learns at start whether the phone has given (or still
+// renews) this device's allowance, so the reconnect banner shows before the
+// person types a message that cannot go out. A local account reads nothing.
+describe('chat manager: allowance of a phone sign-in', () => {
+  it('marks no allowance from the start-up read, and clears it when a later read finds one', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    const bot = makePeer();
+    let allowed = false;
+    const reads: number[] = [];
+    manager = await createChatManager({
+      identity: web.identity,
+      deviceKeys: web.device,
+      statementStore: store,
+      lookup: lookupOf(bot),
+      readAllowance: async () => {
+        reads.push(Date.now());
+        return allowed;
+      },
+    });
+    await waitFor(() => manager!.accountSpace.snapshot().noAllowance);
+    expect(reads.length).toBe(1);
+    allowed = true;
+    // A statement the store accepts clears it too (the phone renewed): here, a request.
+    await manager.sendRequest({ accountId: bot.identity.identityAccountId, username: 'bot.01', chatPublicKey: bot.identity.identityChatPublicKey }, null);
+    await waitFor(() => !manager!.accountSpace.snapshot().noAllowance);
+  });
+
+  it('reads nothing for a local account', async () => {
+    const store = createInMemoryStatementStore();
+    const web = makePeer();
+    manager = await createChatManager({ identity: web.identity, deviceKeys: web.device, statementStore: store, lookup: lookupOf(makePeer()) });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(manager.accountSpace.snapshot().noAllowance).toBe(false);
+  });
+});

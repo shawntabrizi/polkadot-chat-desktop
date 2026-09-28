@@ -11,6 +11,13 @@
  *
  * This module holds the "account is full" state that the chat list banner
  * reads. The submission meter sets it and clears it (submissions.ts).
+ *
+ * M10a: it also holds "no allowance" (`noAllowance`). A device signed in
+ * with the phone has a Statement Store slot only while the phone renews it
+ * (a 1-day slot, renewed hourly); there is no self-service. The store's
+ * `noAllowance` refusal, or a start-up read that finds no allowance for the
+ * device's statement account (allowance.ts), sets it; any accepted
+ * statement or a later read that finds one clears it.
  */
 
 /** The chat list banner. */
@@ -18,6 +25,9 @@ export const ACCOUNT_FULL_BANNER = 'Your account’s space on the network is ful
 
 /** The reason on a message that did not go out. */
 export const ACCOUNT_FULL_REASON = 'Your account’s space on the network is full.';
+
+/** M10a: the chat list banner of a phone sign-in whose device has no allowance. */
+export const NO_ALLOWANCE_BANNER = 'Open the Polkadot app on your phone to reconnect this device.';
 
 /** The system row in the chat of the message that did not go out. */
 export const ACCOUNT_FULL_NOTICE = 'Your account’s space on the network is full. This message was not sent.';
@@ -37,7 +47,7 @@ export class AccountFullStop extends Error {
 
 export const isAccountFullStop = (error: unknown): error is AccountFullStop => error instanceof AccountFullStop;
 
-export type AccountSpaceState = { full: boolean; since: number | null };
+export type AccountSpaceState = { full: boolean; since: number | null; noAllowance: boolean };
 
 export type AccountSpace = {
   /** A stable object, replaced on each change (for `useSyncExternalStore`). */
@@ -47,9 +57,13 @@ export type AccountSpace = {
   markFull: (where: string) => void;
   /** A statement that the store refused before went in: space is free again. */
   markFreed: () => void;
+  /** M10a: the store refused for want of an allowance, or a read found none. */
+  markNoAllowance: () => void;
+  /** M10a: a statement went in, or a read found an allowance. */
+  markAllowed: () => void;
 };
 
-const EMPTY: AccountSpaceState = { full: false, since: null };
+const EMPTY: AccountSpaceState = { full: false, since: null, noAllowance: false };
 
 /** `log` gets one line in each session (app run), at the first refusal only. */
 export const createAccountSpace = (
@@ -74,10 +88,16 @@ export const createAccountSpace = (
         logged = true;
         log(`[chat] ACCOUNT_FULL the store refused a statement (${where}); no automatic retry until space frees`);
       }
-      if (!state.full) set({ full: true, since: now() });
+      if (!state.full) set({ ...state, full: true, since: now() });
     },
     markFreed: () => {
-      if (state.full) set(EMPTY);
+      if (state.full) set({ ...state, full: false, since: null });
+    },
+    markNoAllowance: () => {
+      if (!state.noAllowance) set({ ...state, noAllowance: true });
+    },
+    markAllowed: () => {
+      if (state.noAllowance) set({ ...state, noAllowance: false });
     },
   };
 };

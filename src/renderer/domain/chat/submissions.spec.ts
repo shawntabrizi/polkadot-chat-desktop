@@ -6,7 +6,7 @@
  * the merge of back-to-back session requests must really save a submission.
  */
 
-import { AccountFullError, createInMemoryStatementStore, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { AccountFullError, NoAllowanceError, createInMemoryStatementStore, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
 import { errAsync } from 'neverthrow';
 import { describe, expect, it } from 'vitest';
 
@@ -114,7 +114,7 @@ describe('AccountFull in the meter', () => {
 
     const second = await meter.store.submitStatement(statement(group, 2n));
     expect(second.isErr() && second.error instanceof AccountFullStop).toBe(true);
-    expect(space.snapshot()).toEqual({ full: true, since: 1_000 });
+    expect(space.snapshot()).toEqual({ full: true, since: 1_000, noAllowance: false });
 
     const held = await meter.store.submitStatement(statement(group, 3n));
     expect(held.isErr() && held.error instanceof AccountFullStop).toBe(true);
@@ -128,7 +128,7 @@ describe('AccountFull in the meter', () => {
     clock += ACCOUNT_FULL_HOLD_MS;
     const later = await meter.store.submitStatement(statement(group, 5n));
     expect(later.isOk()).toBe(true);
-    expect(space.snapshot()).toEqual({ full: false, since: null });
+    expect(space.snapshot()).toEqual({ full: false, since: null, noAllowance: false });
 
     // A second episode in the same session is not logged again.
     state.full = true;
@@ -136,5 +136,36 @@ describe('AccountFull in the meter', () => {
     await meter.store.submitStatement(statement(group, 7n));
     expect(space.snapshot().full).toBe(true);
     expect(lines).toHaveLength(1);
+  });
+});
+
+// M10a: a device signed in with the phone has an allowance only while the
+// phone renews it. The person must see "open the app on your phone" as soon
+// as the store says so, and the banner must go the moment a statement is
+// accepted again (the phone renewed), not stay until a restart.
+describe('no allowance in the meter', () => {
+  it('marks no allowance on the refusal and clears it on the next accepted statement', async () => {
+    const inner = createInMemoryStatementStore();
+    let refuse = true;
+    const store = { ...inner, submitStatement: (s: Signed) => (refuse ? errAsync(new NoAllowanceError()) : inner.submitStatement(s)) } as Store;
+    const space = createAccountSpace();
+    const meter = createSubmissionMeter(store, space);
+
+    const refused = await meter.store.submitStatement(statement(null, 1n));
+    expect(refused.isErr() && refused.error instanceof NoAllowanceError).toBe(true);
+    expect(space.snapshot()).toEqual({ full: false, since: null, noAllowance: true });
+
+    refuse = false;
+    const accepted = await meter.store.submitStatement(statement(null, 2n));
+    expect(accepted.isOk()).toBe(true);
+    expect(space.snapshot().noAllowance).toBe(false);
+  });
+
+  it('keeps "full" and "no allowance" apart', () => {
+    const space = createAccountSpace(() => 5, () => undefined);
+    space.markNoAllowance();
+    space.markFull('request');
+    space.markFreed();
+    expect(space.snapshot()).toEqual({ full: false, since: null, noAllowance: true });
   });
 });

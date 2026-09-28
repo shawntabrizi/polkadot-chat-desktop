@@ -11,6 +11,7 @@ import { type AssistantChat, createAssistantChat } from '../domain/assistant/ass
 import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
+import { readAllowance } from '../domain/chat/allowance';
 import { createAttachmentService } from '../domain/chat/attachments';
 import { migrateAttachmentKeys } from '../domain/chat/attachmentKeyStore';
 import { attachmentService, setAttachmentService } from '../domain/chat/attachmentRuntime';
@@ -125,6 +126,7 @@ export const App = () => {
   const deviceKeys = boot?.deviceKeys ?? null;
   const profileId = boot?.profileId ?? null;
   const username = boot?.username ?? null;
+  const paired = boot?.paired ?? false;
 
   // The Faucet (M10 step 6) is local, but its link carries this identity's address.
   useEffect(() => {
@@ -156,6 +158,8 @@ export const App = () => {
       lookup,
       onConnectionStatus: connection.onStatus,
       username,
+      // M10a: a phone sign-in's device has an allowance only while the phone renews it.
+      readAllowance: paired ? () => readAllowance(connection.lazyClient.getRequestFn(), deviceKeys.statementAccountPublicKey) : undefined,
     })
       .then(created => {
         if (!active) return created.dispose();
@@ -204,7 +208,7 @@ export const App = () => {
       setAttachmentService(null);
       setRuntime(null);
     };
-  }, [identity, deviceKeys, profileId, username]);
+  }, [identity, deviceKeys, profileId, username, paired]);
 
   const signedUp = (result: CreateIdentityResponse) => {
     // Confirmed = in a best block; finality is shown, not awaited (PLAN.md "Best block first").

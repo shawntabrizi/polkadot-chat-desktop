@@ -22,10 +22,12 @@
  *   push out the account's lowest statement). A second refusal on the same
  *   channel is final: it becomes `AccountFullStop`, the account is marked
  *   full, and for 500 ms more submissions on that channel do not reach the
- *   store (the SDK's own three quick retries end there).
+ *   store (the SDK's own three quick retries end there);
+ * - M10a: marks "no allowance" on the store's `noAllowance` refusal and
+ *   clears it on any accepted statement (accountSpace.ts).
  */
 
-import { AccountFullError, type StatementStoreAdapter, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
+import { AccountFullError, NoAllowanceError, type StatementStoreAdapter, createRequestChannel, createResponseChannel } from '@novasamatech/statement-store';
 import { ResultAsync, err, errAsync } from 'neverthrow';
 
 import { bytesToHex, hexToBytes } from '../../app/bytes';
@@ -111,8 +113,11 @@ export const createSubmissionMeter = (inner: StatementStoreAdapter, space: Accou
     const result = await Promise.resolve(inner.submitStatement(statement));
     if (result.isOk()) {
       if (refused.delete(key)) space.markFreed();
+      space.markAllowed();
       return result;
     }
+    // M10a: no allowance for this device (a phone sign-in the phone stopped renewing); the banner says what to do.
+    if (result.error instanceof NoAllowanceError) space.markNoAllowance();
     if (!(result.error instanceof AccountFullError)) return result;
     const entry = refused.get(key) ?? { count: 0, stoppedAt: null };
     entry.count += 1;

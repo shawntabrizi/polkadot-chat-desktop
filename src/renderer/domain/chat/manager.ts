@@ -114,6 +114,7 @@ import { createSessionRegistry } from './sessions';
 import { type TypingStore, createPendingSeen, createSeenSender, createTypingSender, createTypingStore } from './signals';
 import { type SubmissionMeter, createSubmissionMeter } from './submissions';
 import { ACCOUNT_FULL_NOTICE, ACCOUNT_FULL_REASON, type AccountSpace, isAccountFullStop } from './accountSpace';
+import { ALLOWANCE_RECHECK_MS } from './allowance';
 
 export type ChatManagerDeps = {
   identity: UserIdentity;
@@ -124,6 +125,12 @@ export type ChatManagerDeps = {
   onConnectionStatus?: (listener: (status: ConnectionStatus) => void) => VoidFunction;
   /** Our own username: the roster names us when we create a group (spec 0009). */
   username?: string;
+  /**
+   * M10a: reads whether this device's statement account has an allowance
+   * (allowance.ts). Given for a phone sign-in only: read at start and every
+   * `ALLOWANCE_RECHECK_MS`, so the reconnect banner shows before a send fails.
+   */
+  readAllowance?: () => Promise<boolean>;
 };
 
 /**
@@ -1249,6 +1256,22 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       ensureChannel(peer.accountId, peer.chatPublicKey);
   };
 
+  // M10a: the device's allowance, read before any send can fail on it. A failed read changes nothing.
+  const checkAllowance = () => {
+    const read = deps.readAllowance;
+    if (!read || disposed) return;
+    read().then(
+      allowed => {
+        if (disposed) return;
+        if (allowed) meter.space.markAllowed();
+        else meter.space.markNoAllowance();
+      },
+      (error: unknown) => console.warn('[chat] allowance read failed', error),
+    );
+  };
+  checkAllowance();
+  const allowanceTimer = deps.readAllowance ? setInterval(checkAllowance, ALLOWANCE_RECHECK_MS) : null;
+
   return {
     sendRequest: sendRequestTo,
 
@@ -1546,6 +1569,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
 
     dispose: () => {
       disposed = true;
+      if (allowanceTimer) clearInterval(allowanceTimer);
       referenceListeners.clear();
       typingSender.dispose();
       seenSender.dispose();
