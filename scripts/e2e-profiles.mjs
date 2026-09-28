@@ -70,7 +70,8 @@ try {
   // ── 1. Two sign-ups in two profiles at once ──
   const [a, b] = await Promise.all([open('a'), open('b')]);
   for (const [name, app] of [['a', a], ['b', b]]) {
-    if (!(await app.waitFor(exists('#signup-username'), 60_000))) fail(`profile ${name} did not show sign-up`);
+    // M10a: a new profile opens on the first-run screen (the phone's QR); sign-up is one press away.
+    if (!(await app.waitFor(exists('[data-testid=first-run], #signup-username'), 60_000))) fail(`profile ${name} did not show sign-up`);
   }
   log('both profiles show sign-up');
   const created = await Promise.all(

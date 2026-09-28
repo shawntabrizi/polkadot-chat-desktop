@@ -22,7 +22,7 @@
 //     shots, each in its own headless app with its own identity and profile:
 //
 //     worker  identity                          shots
-//     signup  a fresh profile                   signup
+//     signup  a fresh profile                   first-run, signup
 //     main    PCD_SCREENSHOT_IDENTITY (path,    everything else
 //             default .agent-runs/identity-pcde2e/identity.json)
 //     flip    PCD_SCREENSHOT_FLIP_IDENTITY      faucet, room-flip, room-flip-done
@@ -35,7 +35,9 @@
 //     profiles  fixture profiles (no identity)  profile-picker
 //
 // The shots (main worker unless named above):
-//   signup          the sign-up screen of a fresh profile, a username typed
+//   first-run       M10a the first-run screen of a fresh profile: the phone's
+//                   QR (a live V2 offer; nothing is submitted), the steps, "Waiting for your phone."
+//   signup          "Create a local account instead" pressed: the sign-up screen, a username typed
 //   profile-picker  (profiles) M18 picker: three profiles, one running elsewhere
 //   settings-profiles Settings › Profiles with two fixture profiles added
 //   settings-security M19 Settings › Security, the word typed, before Reveal
@@ -195,7 +197,7 @@ const DRAFT = 'Ask about the People chain later';
 const headlessEnv = process.argv.includes('--visible') ? {} : { PCD_HEADLESS: '1' };
 
 const WORKER_SHOTS = {
-  signup: ['signup'],
+  signup: ['first-run', 'signup'],
   main: [
     'chats', 'room', 'room-deleted', 'room-buttons', 'room-bot', 'room-seen', 'room-tx', 'room-tx-done', 'pocket', 'assistant',
     'search', 'search-jump', 'search-empty', 'search-no-results', 'search-bots', 'requests', 'settings', 'settings-diagnostics', 'keyboard',
@@ -1198,7 +1200,14 @@ const signupWorker = async () => {
   let app = null;
   try {
     app = await launch(profile, await portFor(0), log);
+    await app.shot('first-run', async () => {
+      if (!(await app.waitFor(`document.querySelector('[data-testid=pairing-status]')?.dataset.phase === 'waiting' && !!document.querySelector('[data-testid=pairing-qr] img')`, 30_000))) {
+        throw new Error('no first-run screen');
+      }
+    });
     await app.shot('signup', async () => {
+      if (!(await app.waitFor(app.exists('[data-testid=create-local]'), 30_000))) throw new Error('no first-run screen');
+      await app.click('[data-testid=create-local]');
       if (!(await app.waitFor(app.exists('#signup-username'), 30_000))) throw new Error('no sign-up screen');
       await app.type('#signup-username', 'polkadotfan');
       // The availability line answers from the identity backend.
