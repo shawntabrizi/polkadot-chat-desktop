@@ -16,6 +16,7 @@ import {
 } from '../app/chatPrefs';
 import { isMac, primaryModifierLabel } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
+import { isPhoneSignIn } from '../app/phoneSignIn';
 import { isWeb } from '../app/platform';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
 import type { ChatManager } from '../domain/chat/manager';
@@ -743,6 +744,35 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
   );
 };
 
+/** M10a: a phone sign-in signs out; its identity stays on the phone. */
+const SignOutSection = ({ onReset }: Pick<Props, 'onReset'>) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const signOut = () => {
+    setBusy(true);
+    setError(null);
+    onReset().catch((cause: unknown) => {
+      setError(`${plainError(cause, 'The sign-out did not start.')} Try again.`);
+      setBusy(false);
+    });
+  };
+  return (
+    <Section title="Sign out">
+      <p className="text-body-m text-fg-secondary">
+        Sign out of this computer. Your chats on this computer are deleted; your identity stays on your phone. To sign in again, add this device from the Polkadot app.
+      </p>
+      <Button variant="destructive" className="w-fit rounded-medium text-label-m text-fg-primary-inverted" onClick={signOut} disabled={busy} data-testid="sign-out">
+        {busy ? 'Signing out…' : 'Sign out'}
+      </Button>
+      {error ? (
+        <p role="alert" className="text-body-m text-fg-error">
+          {error}
+        </p>
+      ) : null}
+    </Section>
+  );
+};
+
 const DangerSection = ({ onReset }: Pick<Props, 'onReset'>) => {
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -867,7 +897,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
       <DemoSection profileId={profileId} runtime={demoRuntime} />
       <KeyboardSection />
       {submissions ? <DiagnosticsSection submissions={submissions} /> : null}
-      <DangerSection onReset={onReset} />
+      {isPhoneSignIn() ? <SignOutSection onReset={onReset} /> : <DangerSection onReset={onReset} />}
       <VersionFooter />
     </div>
   </div>

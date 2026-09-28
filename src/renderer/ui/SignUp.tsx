@@ -13,13 +13,15 @@ import { MAX_LENGTH, cleanDigits, cleanUsername, useUsernameClaim } from './user
 type Props = {
   identityApi: DesktopIdentityApi;
   onSignedUp: (result: CreateIdentityResponse) => void;
+  /** M10a: back to the first-run screen, "Sign in with Polkadot app". */
+  onBack?: () => void;
 };
 
 const TERMS_URL = 'https://www.polkadotcommunity.foundation/appterms';
 const PRIVACY_URL = 'https://www.polkadotcommunity.foundation/privacy';
 
 /** A centred card on the page surface: the one screen before any chat exists. */
-export const SignUp = ({ identityApi, onSignedUp }: Props) => {
+export const SignUp = ({ identityApi, onSignedUp, onBack }: Props) => {
   const [username, setUsername] = useState('');
   const [profile, setProfile] = useState<NetworkProfileId>(DEFAULT_NETWORK_PROFILE);
   const [progress, setProgress] = useState<string[]>([]);
@@ -166,6 +168,11 @@ export const SignUp = ({ identityApi, onSignedUp }: Props) => {
             <p role="alert" className="text-center text-body-s text-fg-error">
               {error}
             </p>
+          ) : null}
+          {onBack && !busy ? (
+            <Button type="button" variant="ghost" className="rounded-medium text-label-m font-normal" onClick={onBack} data-testid="back-to-phone">
+              Sign in with your phone instead
+            </Button>
           ) : null}
         </div>
       </form>
