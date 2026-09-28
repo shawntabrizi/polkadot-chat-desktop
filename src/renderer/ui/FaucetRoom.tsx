@@ -7,7 +7,6 @@ import { Droplets } from 'lucide-react';
 import { useState } from 'react';
 
 import { type MessageRow, db } from '../app/database';
-import { isPhoneSignIn } from '../app/phoneSignIn';
 import { listMessages, markButtonPressed, markRoomRead } from '../domain/chat/messages';
 import { isDripBusy, startDrip } from '../domain/faucet/dripFlow';
 import { COPY_ADDRESS_COMMAND, DRIP_COMMAND, FAUCET_INFO, FAUCET_PEER, FAUCET_USERNAME, addCopiedRow } from '../domain/faucet/faucet';
@@ -17,7 +16,7 @@ import { BotBadge } from './BotBadge';
 import type { BubbleActions } from './MessageBubble';
 import { MessageFlow } from './MessageFlow';
 import { RoomHeader } from './RoomHeader';
-import { type FaucetDrip, PHONE_SIGNED_IN } from '../../shared/desktop-api';
+import type { FaucetDrip } from '../../shared/desktop-api';
 
 import { plainError } from './format';
 import { useLiveQuery } from './useLiveQuery';
@@ -61,11 +60,7 @@ export const FaucetRoom = ({ address, drip }: Props) => {
         await navigator.clipboard.writeText(address);
         await addCopiedRow();
       } else if (action.kind === 'command' && action.command === DRIP_COMMAND) {
-        // M10a: the drip pays the account the seed signs for; a phone sign-in has no seed here.
-        if (isPhoneSignIn()) {
-          setError(PHONE_SIGNED_IN);
-          return;
-        }
+        // M10a: a public dev account signs the drip, never the identity, so a phone sign-in gets one too.
         if (!drip) throw new Error('The in-app faucet runs on devnet only.');
         // The pending row, the reference and the balance come from dripFlow.ts; a press while busy does nothing.
         if ((await startDrip(drip)) === 'ignored') return;

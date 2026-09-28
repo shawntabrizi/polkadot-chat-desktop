@@ -53,9 +53,9 @@ Totals: 76 members. 48 ported, 2 proxied, 26 unavailable.
 | `identity.forgetPaired` | ported | Sign out: deletes the `paired` row. |
 | `chain.getMetadata` / `setMetadata` | ported | IndexedDB, by code hash. |
 | `chain.dryRun` / `sign` / `watch` / `track` / `onTxStatus` | ported | `assetHub.ts` `createTxService` over polkadot-api in the page. |
-| `chain.contractRead` / `balance` / `onBestBlock` | ported | Same service. |
+| `chain.contractRead` / `balance` / `onBestBlock` | ported | Same service. M10a: a phone sign-in's `balance` and `onBestBlock` read its identity account through a signer-less connection instead (no mnemonic to build a tx service with). |
 | `chain.transferCall` / `transfersOf` | ported | Same service. |
-| `chain.faucetDrip` | ported | `faucet.ts` `dripDevnet`: public dev phrases, devnet Asset Hub only (the guard is the desktop's). |
+| `chain.faucetDrip` | ported | `faucet.ts` `dripDevnet`: public dev phrases, devnet Asset Hub only (the guard is the desktop's). M10a: a phone sign-in drips to its identity account over the same signer-less connection as `balance`. |
 | `assistant.*` (9) | unavailable | The proxy key would sit in the browser, the LLM proxy's CORS is not known, and the CLI engines need a local process. |
 | `app.setBadge` | ported | Badging API (`navigator.setAppBadge`) where the browser has it; else nothing. |
 | `app.notify` / `onNotifyOpen` | ported | Notification API after the person allows it. No OS sound; `silent` follows the request. |

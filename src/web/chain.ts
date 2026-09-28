@@ -8,6 +8,7 @@
  */
 
 import { hexToBytes } from '@noble/hashes/utils.js';
+import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 
 import {
   type BestBlock,
@@ -20,7 +21,7 @@ import {
 } from '../shared/desktop-api';
 import type { NetworkProfileId } from '../shared/network';
 
-import { type AssetHubChain, type TxService, createTxService, openAssetHub } from '../main/chain/assetHub';
+import { type AssetHubChain, type TxService, createTxService, openAssetHub, readAccountBalance } from '../main/chain/assetHub';
 import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin, quotaOf, storeResultOf } from '../main/chain/bulletin';
 import { assertDevnetChain, dripDevnet } from '../main/chain/faucet';
 import { hopAck, hopFetch } from '../main/chain/hop';
@@ -28,7 +29,7 @@ import { deriveIdentityKeys } from '../main/identity/keys';
 
 import { readMetadata, writeMetadata } from './metadataCache';
 
-export type ChainIdentity = { profile: NetworkProfileId; accountHex: string };
+export type ChainIdentity = { profile: NetworkProfileId; accountHex: string; paired?: true };
 
 export type WebChainDeps = {
   identity: () => Promise<ChainIdentity | null>;
@@ -88,6 +89,36 @@ export const createWebChain = (deps: WebChainDeps): { chain: DesktopChainApi; bu
     return service;
   };
 
+  // M10a: a phone sign-in's own connection, for the two members that need no
+  // seed: the drip (a public dev account signs it, never the identity) and
+  // the balance read (a plain storage read). Its own best blocks drive the
+  // balance chip live, as the tx service's do for a local identity.
+  let readOnly: { key: string; chain: Promise<AssetHubChain> } | null = null;
+  const readOnlyChain = async (): Promise<AssetHubChain> => {
+    const identity = await current();
+    if (readOnly?.key === identity.key) return readOnly.chain;
+    void readOnly?.chain.then(old => old.destroy(), () => undefined);
+    const chain = openAssetHub(identity.profile).then(opened => {
+      let lastBest = -1;
+      opened.client.bestBlocks$.subscribe({
+        next: best => {
+          const head = best[0];
+          if (!head || head.number === lastBest) return;
+          lastBest = head.number;
+          bestBlock.emit({ chainId: opened.genesis, number: head.number });
+        },
+        error: (cause: unknown) => console.warn('[asset-hub] best blocks stopped', cause),
+      });
+      return opened;
+    });
+    const entry = { key: identity.key, chain };
+    readOnly = entry;
+    chain.catch(() => {
+      if (readOnly === entry) readOnly = null;
+    });
+    return chain;
+  };
+
   let bulletinEntry: { key: string; service: Promise<BulletinService>; chain: Promise<BulletinChain> } | null = null;
   const bulletinService = async (): Promise<BulletinService> => {
     const identity = await current();
@@ -113,10 +144,18 @@ export const createWebChain = (deps: WebChainDeps): { chain: DesktopChainApi; bu
     track: async (hash, block) => (await txService()).track(hash, block),
     onTxStatus: txStatus.on,
     contractRead: async (chainId, address, calldata) => (await txService()).contractRead(chainId, address, calldata),
-    balance: async () => (await txService()).balance(),
+    // M10a: a phone sign-in reads its identity account's balance straight off the chain; no signer, no seed.
+    balance: async () => {
+      const identity = await current();
+      if (identity.paired) return readAccountBalance(await readOnlyChain(), ss58Address(bytes(identity.accountHex), 42));
+      return (await txService()).balance();
+    },
     onBestBlock: bestBlock.on,
+    // M10a: the drip is signed by a public dev account, never the identity, so a phone sign-in gets one too.
     faucetDrip: async chainId => {
       const allowed = assertDevnetChain(chainId);
+      const identity = await current();
+      if (identity.paired) return dripDevnet(await readOnlyChain(), allowed, bytes(identity.accountHex), txStatus.emit);
       await txService();
       if (!tx) throw new Error('Asset Hub is not open.');
       const to = deriveIdentityKeys(deps.mnemonic()).accountId;

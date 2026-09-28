@@ -16,14 +16,29 @@ import type { TxEvent } from 'polkadot-api';
 import { getTxCreator } from 'polkadot-api/tx-creator';
 
 import { READ_TIMEOUT_MS, retryOnNextEndpoint, withTimeout } from '../../shared/chainRead';
-import type { FaucetDrip, TxStatusEvent } from '../../shared/desktop-api';
+import type { FaucetDrip, PairedIdentity, TxStatusEvent } from '../../shared/desktop-api';
 import { NETWORK_PROFILES } from '../../shared/network';
 import { deriveSr25519PairFromSeed } from '../identity/crypto';
+import { deriveIdentityKeys } from '../identity/keys';
+import type { StoredIdentity } from '../identity/store';
 
 import { type AssetHubChain, CUSTOM_EXTENSIONS, dispatchErrorText } from './assetHub';
 
 /** Devnet Asset Hub: the only chain the in-app faucet runs on. */
 export const DEVNET_ASSET_HUB_GENESIS = NETWORK_PROFILES.devnet.assetHub?.genesis ?? '';
+
+/**
+ * M10a: `faucet:drip`'s recipient, decided here from what this computer has
+ * on disk, never from anything the renderer sends. The seed identity's own
+ * account, or a phone sign-in's paired identity account (the account the
+ * phone signs for) — either way a public dev account signs the transfer
+ * below, never the identity itself.
+ */
+export const faucetRecipient = (identity: StoredIdentity | null, paired: PairedIdentity | null): Uint8Array => {
+  if (identity) return deriveIdentityKeys(identity.mnemonic).accountId;
+  if (paired) return paired.identityAccountId;
+  throw new Error('This computer has no identity yet.');
+};
 
 /** The public Substrate development phrase (`//Alice` … `//Ferdie`). Public, not a secret. */
 const DEV_PHRASE = 'bottom drive obey lake curtain smoke basket hold race lonely fit walk';

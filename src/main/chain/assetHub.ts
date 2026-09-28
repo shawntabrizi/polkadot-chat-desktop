@@ -89,6 +89,17 @@ export async function openAssetHub(profileId: NetworkProfileId): Promise<AssetHu
 const read = <T>(chain: AssetHubChain, label: string, fn: () => Promise<T>): Promise<T> =>
   retryOnNextEndpoint(() => withTimeout(fn(), READ_TIMEOUT_MS, label), chain.switchEndpoint);
 
+/**
+ * Free/reserved/frozen of `address` (SS58) at the best block. No signer
+ * needed: a plain storage read, unlike `TxService.balance` below, which a
+ * phone sign-in can use too (M10a: reading the identity account needs no
+ * seed, only signing does).
+ */
+export const readAccountBalance = async (chain: AssetHubChain, address: string): Promise<AccountBalance> => {
+  const account = await read(chain, 'balance', () => chain.api.query.System.Account.getValue(address, AT_BEST));
+  return { chainId: chain.genesis, free: String(account.data.free), reserved: String(account.data.reserved), frozen: String(account.data.frozen) };
+};
+
 // ── Small codecs ────────────────────────────────────────────────────────────
 
 const hex = (bytes: Uint8Array): `0x${string}` => `0x${Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')}`;
@@ -467,15 +478,7 @@ export function createTxService(chain: AssetHubChain, signer: TxSigner, now: () 
     return estimate.returnData;
   };
 
-  const balance = async (): Promise<AccountBalance> => {
-    const account = await read(chain, 'balance', () => chain.api.query.System.Account.getValue(origin, AT_BEST));
-    return {
-      chainId: chain.genesis,
-      free: String(account.data.free),
-      reserved: String(account.data.reserved),
-      frozen: String(account.data.frozen),
-    };
-  };
+  const balance = (): Promise<AccountBalance> => readAccountBalance(chain, origin);
 
   const transferCall = async (to: Uint8Array, amount: bigint): Promise<Uint8Array> => {
     if (to.length !== 32) throw new Error('Invalid account.');

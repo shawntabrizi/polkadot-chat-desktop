@@ -5,8 +5,6 @@
 
 import { useEffect, useState } from 'react';
 
-import { isPhoneSignIn } from '../app/phoneSignIn';
-
 /** The latest Asset Hub best block number the main process reported; null before the first. */
 export const useBestBlock = (): number | null => {
   const [block, setBlock] = useState<number | null>(null);
@@ -40,8 +38,8 @@ export const useAssetHubBalance = (): { free: bigint | null; error: boolean } =>
   const [state, setState] = useState<{ free: bigint | null; error: boolean }>({ free: null, error: false });
   useEffect(() => {
     const chain = window.desktop?.chain;
-    // M10a: the balance read runs on main's signing service, which needs the seed a phone sign-in does not have.
-    if (!chain || isPhoneSignIn()) return;
+    // M10a: a phone sign-in reads this way too (main's `chain:balance` needs no seed for a read).
+    if (!chain) return;
     let active = true;
     chain.balance().then(
       balance => {

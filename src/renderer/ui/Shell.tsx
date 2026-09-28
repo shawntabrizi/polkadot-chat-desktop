@@ -17,7 +17,6 @@ import { CONNECTION_LABEL, type ConnectionSnapshot } from '../app/connectionStat
 import { type PeerId, db, groupIdOf, groupPeerOf, isGroupPeer } from '../app/database';
 import { isPrimaryModifier } from '../app/keyboard';
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
-import { isPhoneSignIn } from '../app/phoneSignIn';
 import { isWeb } from '../app/platform';
 import { ASSISTANT_PEER, type AssistantChat } from '../domain/assistant/assistant';
 import { countUnread } from '../domain/chat/messages';
@@ -162,8 +161,8 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
   useNotifications(desktopApp, selection.kind === 'room' ? selection.peer : null);
 
   // The Faucet's "Get 1 PAS" (dripFlow.ts): mirror the faucet bot's answer, time out, add the balance.
-  // M10a: a phone sign-in has no drip and no balance read (both need the seed in main).
-  const chatReady = runtime !== null && !isPhoneSignIn();
+  // M10a: a phone sign-in gets both too (a dev account signs the drip, and the balance read needs no seed).
+  const chatReady = runtime !== null;
   useEffect(() => {
     if (!chatReady) return;
     const stopStatus = window.desktop?.chain.onTxStatus(event => void applyDripStatus(event).catch(() => undefined)) ?? (() => undefined);

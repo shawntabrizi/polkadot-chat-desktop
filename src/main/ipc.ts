@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { ss58Address } from '@polkadot-labs/hdkd-helpers';
 import { type BrowserWindow, Notification, app, clipboard, ipcMain, shell } from 'electron';
 
 import {
@@ -42,17 +43,17 @@ import {
   type UsernameAvailability,
 } from '../shared/desktop-api';
 import { withToolsHint } from '../shared/assistantPrompt';
-import { isNetworkProfileId } from '../shared/network';
+import { type NetworkProfileId, isNetworkProfileId } from '../shared/network';
 import { openableUrl } from '../shared/openUrl';
 
 import { type AgentService, createAgentService } from './agent/service';
 import { ENGINES, ENGINE_IDS, type Turn, isEngineId } from './assistant/engines';
 import { assistantConfig, publicSettings, updateSettings } from './assistant/settings';
 import { TOOL_CAPABILITIES, createToolPolicy } from './assistant/toolPolicy';
-import { type AssetHubChain, type TxService, createTxService, openAssetHub } from './chain/assetHub';
+import { type AssetHubChain, type TxService, createTxService, openAssetHub, readAccountBalance } from './chain/assetHub';
 import { type BulletinChain, type BulletinService, bulletinSigner, createBulletinService, openBulletin, quotaOf, storeResultOf } from './chain/bulletin';
 import { hopAck, hopFetch } from './chain/hop';
-import { assertDevnetChain, dripDevnet } from './chain/faucet';
+import { assertDevnetChain, dripDevnet, faucetRecipient } from './chain/faucet';
 import { openFile, saveFile } from './files';
 import { deriveIdentityKeys } from './identity/keys';
 import { revealRecoveryPhrase } from './identity/recovery';
@@ -112,6 +113,39 @@ const seedIdentity = (): StoredIdentity => {
   if (identity) return identity;
   if (loadPairedPublic()) throw new Error(PHONE_SIGNED_IN);
   throw new Error('This computer has no identity yet.');
+};
+
+/**
+ * M10a: a phone sign-in's own Asset Hub connection, opened on first use like
+ * `txServiceFor`, for the two members that need no seed: the embedded
+ * Faucet's drip (a public dev account signs it, never the identity) and the
+ * balance read (a plain storage read). Never carries a signer; its own best
+ * blocks drive the balance chip live, as the tx service's do for a seed user.
+ */
+let pairedChain: { profile: NetworkProfileId; chain: Promise<AssetHubChain> } | null = null;
+const assetHubReadOnly = (getWindow: () => BrowserWindow | null, profile: NetworkProfileId): Promise<AssetHubChain> => {
+  if (pairedChain?.profile === profile) return pairedChain.chain;
+  void pairedChain?.chain.then(old => old.destroy(), () => undefined);
+  const chain = openAssetHub(profile).then(opened => {
+    let lastBest = -1;
+    opened.client.bestBlocks$.subscribe({
+      next: best => {
+        const head = best[0];
+        if (!head || head.number === lastBest) return;
+        lastBest = head.number;
+        const win = getWindow();
+        if (win && !win.webContents.isDestroyed()) win.webContents.send(IPC.chainBestBlock, { chainId: opened.genesis, number: head.number });
+      },
+      error: (cause: unknown) => console.warn('[asset-hub] best blocks stopped', cause),
+    });
+    return opened;
+  });
+  const entry = { profile, chain };
+  pairedChain = entry;
+  chain.catch(() => {
+    if (pairedChain === entry) pairedChain = null;
+  });
+  return chain;
 };
 
 /**
@@ -435,7 +469,13 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     if (!(calldata instanceof Uint8Array) || calldata.length > MAX_CALLDATA_BYTES) throw new Error('Invalid call data.');
     return (await txServiceFor(getWindow)).contractRead(chainId, address, calldata);
   });
-  ipcMain.handle(IPC.chainBalance, async (): Promise<AccountBalance> => (await txServiceFor(getWindow)).balance());
+  // M10a: a phone sign-in reads its identity account's balance straight off the chain; no signer, no seed.
+  ipcMain.handle(IPC.chainBalance, async (): Promise<AccountBalance> => {
+    if (loadIdentity()) return (await txServiceFor(getWindow)).balance();
+    const paired = loadPaired();
+    if (!paired) throw new Error('This computer has no identity yet.');
+    return readAccountBalance(await assetHubReadOnly(getWindow, paired.profile), ss58Address(paired.identityAccountId, 42));
+  });
   // M12g: call data only; nothing is signed without a dry-run of the intent that holds it.
   ipcMain.handle(IPC.chainTransferCall, async (_event, to: unknown, amount: unknown): Promise<Uint8Array> => {
     if (typeof to !== 'string' || !ACCOUNT.test(to)) throw new Error('Invalid account.');
@@ -448,10 +488,17 @@ export const registerIpc = (getWindow: () => BrowserWindow | null): void => {
     return (await txServiceFor(getWindow)).transfersOf(hash, block);
   });
   // The embedded Faucet: devnet Asset Hub only (the guard is checked before anything opens).
+  // M10a: the drip is signed by a public dev account, never the identity, so
+  // a phone sign-in gets one too, paid to its identity account.
   ipcMain.handle(IPC.faucetDrip, async (_event, chainId: unknown): Promise<FaucetDrip> => {
     const allowed = assertDevnetChain(chainId);
-    const to = deriveIdentityKeys(seedIdentity().mnemonic).accountId;
-    return dripDevnet(await assetHubFor(getWindow), allowed, to, event => sendTxStatus(getWindow, event));
+    const identity = loadIdentity();
+    if (identity) {
+      return dripDevnet(await assetHubFor(getWindow), allowed, faucetRecipient(identity, null), event => sendTxStatus(getWindow, event));
+    }
+    const paired = loadPaired();
+    if (!paired) throw new Error('This computer has no identity yet.');
+    return dripDevnet(await assetHubReadOnly(getWindow, paired.profile), allowed, faucetRecipient(null, paired), event => sendTxStatus(getWindow, event));
   });
 
   ipcMain.handle(IPC.assistantGetSettings, (): AssistantSettings => publicSettings());
