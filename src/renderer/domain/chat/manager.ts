@@ -115,6 +115,9 @@ import { type TypingStore, createPendingSeen, createSeenSender, createTypingSend
 import { type SubmissionMeter, createSubmissionMeter } from './submissions';
 import { ACCOUNT_FULL_NOTICE, ACCOUNT_FULL_REASON, type AccountSpace, isAccountFullStop } from './accountSpace';
 import { ALLOWANCE_RECHECK_MS } from './allowance';
+import { type DeviceSync, createDeviceSync } from '../deviceSync/engine';
+import { applyUpdate, collectEntities } from '../deviceSync/entities';
+import type { PeerLinkFactory } from '../deviceSync/link';
 
 export type ChatManagerDeps = {
   identity: UserIdentity;
@@ -131,6 +134,21 @@ export type ChatManagerDeps = {
    * `ALLOWANCE_RECHECK_MS`, so the reconnect banner shows before a send fails.
    */
   readAllowance?: () => Promise<boolean>;
+  /**
+   * M22b, a phone sign-in only: our phone as one of our devices. Its
+   * statement account is the identity account (Android `RealOurDevicesProvider`),
+   * its encryption key the one its pairing answer gave. With it the manager
+   * tells each new contact about the phone (`deviceAdded`) and runs device
+   * sync with it; `onRemoved` fires when the phone says this device is removed.
+   */
+  phone?: {
+    device: PeerDevice;
+    /** WebRTC for device sync; null where there is none (node). */
+    linkFactory: PeerLinkFactory | null;
+    /** True when the device's allowance is small or unknown (engine.ts budget rule). */
+    tightBudget: () => Promise<boolean>;
+    onRemoved: VoidFunction;
+  };
 };
 
 /**
@@ -234,6 +252,8 @@ export type ChatManager = {
   composing: (peer: ChatTargetId, text: string) => void;
   /** Each peer's typing state (spec 0005), in memory, with the local "working" state of known bots. */
   typing: TypingStore;
+  /** M22b: device sync with the phone; null unless signed in with the phone. */
+  deviceSync: DeviceSync | null;
   /** M12c: statements this manager submitted and messages the user sent, this session. */
   submissions: Pick<SubmissionMeter, 'snapshot' | 'subscribe'>;
   /** `AccountFull`: the chat list banner shows while `full` is true. */
@@ -762,6 +782,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     requestId: string,
     acceptedAt: number,
   ): Promise<ContactRow> => {
+    const known = !!(await getContact(seed.accountId));
     const contact = await upsertContactDevice(seed, device);
     await ensureRoom(contact.accountId);
     await addMessage(systemRow(contact.accountId, `accepted:${requestId}`, acceptedAt, { type: 'contactAdded' }), { read: true });
@@ -769,7 +790,35 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     sessions.start(contact);
     guard(sendPendingInvites(contact.accountId), 'group invites');
     guard(sendPendingJoins(contact.accountId), 'group joins');
+    if (!known) guard(announcePhone(contact.accountId), 'phone device fan-out');
     return contact;
+  };
+
+  /**
+   * M22b, Android `ContactDeviceFanOutService`: a new contact learns our
+   * devices. The request or the accept already named this device; the phone
+   * is the one they cannot know, so without this they would wrap nothing for
+   * it. Sent once, when the chat starts here.
+   */
+  const announcePhone = async (peer: HexString): Promise<void> => {
+    if (!deps.phone) return;
+    await sessions.send(peer, { tag: 'deviceAdded', value: deps.phone.device }, { messageId: randomId(), timestamp: Date.now() });
+  };
+
+  /**
+   * M22b: a contact the phone synced (`ChatsAdded`), or the peer of a synced
+   * message: made from the People chain, with no device until the phone's
+   * synced `deviceAdded` names one. False when the chain does not know them.
+   */
+  const adoptSyncedContact = async (peer: HexString): Promise<boolean> => {
+    if (await getContact(peer)) return true;
+    const found = await lookup.getPeerIdentity(hexToBytes(peer)).catch(() => null);
+    if (!found) return false;
+    const contact = await upsertContactDevice({ accountId: peer, username: found.username, chatPublicKey: found.chatPublicKey }, null);
+    await ensureRoom(peer);
+    ensureChannel(hexToBytes(peer), contact.chatPublicKey);
+    sessions.start(contact);
+    return true;
   };
 
   /** Spec 0009: a member we invited by chat request accepted it: the roster goes to them now. */
@@ -1272,6 +1321,35 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   checkAllowance();
   const allowanceTimer = deps.readAllowance ? setInterval(checkAllowance, ALLOWANCE_RECHECK_MS) : null;
 
+  // M22b: device sync with the phone (engine.ts): once at start, then when asked.
+  const phone = deps.phone;
+  const deviceSync: DeviceSync | null = phone
+    ? createDeviceSync({
+        own: { statementAccountId: deviceKeys.statementAccountPublicKey, encryptionPrivateKey: deviceKeys.encryptionPrivateKey },
+        phone: phone.device,
+        prover,
+        allocator,
+        statementStore,
+        linkFactory: phone.linkFactory,
+        collect: collectEntities,
+        apply: update =>
+          applyUpdate(update, {
+            ownStatementAccountId: deviceKeys.statementAccountPublicKey,
+            ensureContact: adoptSyncedContact,
+            removeChat: (peer, at) => deleteChat(peer, at),
+            deliverIncoming: handleIncoming,
+            onOwnDeviceRemoved: phone.onRemoved,
+          }),
+        space: meter.space,
+        undeliveredSends: async () => {
+          const since = Date.now() - 24 * 3_600_000;
+          return db.messages.filter(row => row.direction === 'outgoing' && (row.status === 'sending' || row.status === 'sent') && row.timestamp > since && !row.synced).count();
+        },
+        tightBudget: phone.tightBudget,
+      })
+    : null;
+  deviceSync?.syncNow();
+
   return {
     sendRequest: sendRequestTo,
 
@@ -1567,8 +1645,11 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     transferGroupOwnership: (groupId, account) => groupsV2.transferOwnership(groupId, account),
     acceptGroupInvite: groupId => groupsV2.acceptInvite(groupId),
 
+    deviceSync,
+
     dispose: () => {
       disposed = true;
+      deviceSync?.dispose();
       if (allowanceTimer) clearInterval(allowanceTimer);
       referenceListeners.clear();
       typingSender.dispose();

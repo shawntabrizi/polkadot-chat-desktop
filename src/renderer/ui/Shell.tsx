@@ -527,6 +527,7 @@ export const Shell = ({ username, identity, profileId, runtime, assistant, assis
               onReset={onReset}
               assistantApi={assistantApi}
               submissions={runtime?.manager.submissions ?? null}
+              deviceSync={runtime?.manager.deviceSync ?? null}
               demoRuntime={runtime}
             />
           </main>

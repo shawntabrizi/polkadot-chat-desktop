@@ -20,6 +20,7 @@ import { isPhoneSignIn } from '../app/phoneSignIn';
 import { isWeb } from '../app/platform';
 import { TEST_PROMPT, askOnce } from '../domain/assistant/assistant';
 import type { ChatManager } from '../domain/chat/manager';
+import type { DeviceSync } from '../domain/deviceSync/engine';
 import { listBlocked } from '../domain/chat/chatActions';
 import { type SubmissionCounts, submissionsLine } from '../domain/chat/submissions';
 import type { UserIdentity } from '../domain/identity/userIdentity';
@@ -56,6 +57,8 @@ type Props = {
   submissions: ChatManager['submissions'] | null;
   /** M12i Settings › Demo; null while chat starts. */
   demoRuntime: DemoRuntime | null;
+  /** M22b: device sync with the phone; null for a local account or while chat starts. */
+  deviceSync?: DeviceSync | null;
 };
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -744,6 +747,37 @@ const AssistantSection = ({ api }: { api: DesktopAssistantApi }) => {
   );
 };
 
+/** M22b: what device sync with the phone is doing, and a way to run it again. */
+const syncLine = (sync: ReturnType<DeviceSync['snapshot']>): string => {
+  switch (sync.state) {
+    case 'idle':
+      return sync.lastSyncAt === null ? 'Not synced yet.' : 'Up to date when last connected.';
+    case 'waiting':
+    case 'paused':
+      return sync.reason;
+    case 'connecting':
+      return `Connecting to your phone (try ${sync.attempt} of 3)…`;
+    case 'syncing':
+      return 'Connected to your phone. New chats and messages sync both ways.';
+  }
+};
+
+const PhoneSyncSection = ({ sync }: { sync: DeviceSync }) => {
+  const state = useSyncExternalStore(sync.subscribe, sync.snapshot);
+  const busy = state.state === 'connecting' || state.state === 'syncing';
+  return (
+    <Section title="Sync with your phone">
+      <p className="text-body-m text-fg-secondary" data-testid="phone-sync-state">
+        {syncLine(state)}
+      </p>
+      {state.lastSyncAt !== null ? <p className="text-body-s text-fg-tertiary">Last sync: {new Date(state.lastSyncAt).toLocaleString()}</p> : null}
+      <Button variant="secondary" className="w-fit rounded-medium text-label-m" onClick={sync.syncNow} disabled={busy} data-testid="phone-sync-now">
+        Sync now
+      </Button>
+    </Section>
+  );
+};
+
 /** M10a: a phone sign-in signs out; its identity stays on the phone. */
 const SignOutSection = ({ onReset }: Pick<Props, 'onReset'>) => {
   const [busy, setBusy] = useState(false);
@@ -877,7 +911,7 @@ const NotOnWebSection = ({ title }: { title: string }) => (
 );
 
 /** Settings fill the right pane: sections as containers on the page surface. */
-export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime }: Props) => (
+export const Settings = ({ username, identity, profileId, onReset, assistantApi, submissions, demoRuntime, deviceSync }: Props) => (
   <div className="h-full overflow-y-auto" data-testid="settings">
     <div className="mx-auto flex max-w-2xl flex-col gap-2 pb-2">
       <h1 className="px-5 pt-4 pb-2 text-heading-l text-fg-primary">Settings</h1>
@@ -907,6 +941,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
       <DemoSection profileId={profileId} runtime={demoRuntime} />
       <KeyboardSection />
       {submissions ? <DiagnosticsSection submissions={submissions} /> : null}
+      {deviceSync ? <PhoneSyncSection sync={deviceSync} /> : null}
       {isPhoneSignIn() ? <SignOutSection onReset={onReset} /> : <DangerSection onReset={onReset} />}
       <VersionFooter />
     </div>

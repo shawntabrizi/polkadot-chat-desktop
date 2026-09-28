@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { appDatabase } from '../app/database';
@@ -11,7 +11,8 @@ import { type AssistantChat, createAssistantChat } from '../domain/assistant/ass
 import { type ReferenceFollower, createReferenceFollower } from '../domain/chain/finality';
 import { type TxRunner, createTxRunner } from '../domain/chain/transactions';
 import { type ChatManager, createChatManager } from '../domain/chat/manager';
-import { readAllowance } from '../domain/chat/allowance';
+import { TIGHT_ALLOWANCE_COUNT, readAllowance, readAllowanceLimit } from '../domain/chat/allowance';
+import { rtcLinkFactory } from '../domain/deviceSync/rtcLink';
 import { createAttachmentService } from '../domain/chat/attachments';
 import { migrateAttachmentKeys } from '../domain/chat/attachmentKeyStore';
 import { attachmentService, setAttachmentService } from '../domain/chat/attachmentRuntime';
@@ -127,6 +128,8 @@ export const App = () => {
   const profileId = boot?.profileId ?? null;
   const username = boot?.username ?? null;
   const paired = boot?.paired ?? false;
+  // M22b: the phone removed this device (a synced `deviceRemoved`): the same sign-out as the button.
+  const removedByPhone = useRef<VoidFunction>(() => undefined);
 
   // The Faucet (M10 step 6) is local, but its link carries this identity's address.
   useEffect(() => {
@@ -160,6 +163,19 @@ export const App = () => {
       username,
       // M10a: a phone sign-in's device has an allowance only while the phone renews it.
       readAllowance: paired ? () => readAllowance(connection.lazyClient.getRequestFn(), deviceKeys.statementAccountPublicKey) : undefined,
+      // M22b: the phone is one of our devices; device sync runs with it.
+      phone: paired
+        ? {
+            device: { statementAccountId: identity.identityAccountId, encryptionPublicKey: identity.peerDeviceEncPubKey },
+            linkFactory: rtcLinkFactory(),
+            tightBudget: () =>
+              readAllowanceLimit(connection.lazyClient.getRequestFn(), deviceKeys.statementAccountPublicKey).then(
+                limit => limit === null || limit.maxCount <= TIGHT_ALLOWANCE_COUNT,
+                () => true,
+              ),
+            onRemoved: () => removedByPhone.current(),
+          }
+        : undefined,
     })
       .then(created => {
         if (!active) return created.dispose();
@@ -241,7 +257,7 @@ export const App = () => {
    * phone still lists this device until the person removes it there; the
    * device's allowance ends when the phone stops renewing it.
    */
-  const signOutWithUndo = async () => {
+  const signOutWithUndo = async (removed = false) => {
     const identityApi = window.desktop?.identity;
     if (!identityApi) throw new Error('This app runs only inside Polkadot Chat Desktop.');
     setBoot(null);
@@ -258,7 +274,7 @@ export const App = () => {
           setError(`${plainError(cause, 'The sign-out did not finish.')} Restart the app to try again.`);
         });
     }, RESET_UNDO_MS);
-    toast('Signed out', {
+    toast(removed ? 'This device was removed in the Polkadot app' : 'Signed out', {
       description: 'Your chats on this computer are deleted when this closes. Add this device from your phone to sign in again.',
       duration: RESET_UNDO_MS,
       action: {
@@ -272,6 +288,10 @@ export const App = () => {
       },
     });
   };
+
+  useEffect(() => {
+    removedByPhone.current = () => void signOutWithUndo(true).catch((cause: unknown) => console.error('[app] sign out after removal failed', cause));
+  });
 
   /**
    * Act first, then offer Undo (SKILL.md §10): the main process moves the
@@ -353,7 +373,7 @@ export const App = () => {
         assistant={assistant}
         assistantApi={isWeb() ? null : (window.desktop?.assistant ?? null)}
         connection={connection}
-        onReset={boot.paired ? signOutWithUndo : resetWithUndo}
+        onReset={boot.paired ? () => signOutWithUndo() : resetWithUndo}
       />
     );
   })();

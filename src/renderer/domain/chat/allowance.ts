@@ -28,5 +28,21 @@ export const readAllowance = async (request: RpcRequest, account: Uint8Array): P
   return typeof value === 'string' && value.length > 2;
 };
 
+/**
+ * M22b: the allowance's size, `StatementAllowance { max_count: u32, max_size: u32 }`
+ * little-endian (sp-statement-store). Null when there is none or the value
+ * has another length. Assumption, not checked against a live phone slot:
+ * the value is exactly that pair (the coordinator saw max_count 2, 500 KiB).
+ */
+export const readAllowanceLimit = async (request: RpcRequest, account: Uint8Array): Promise<{ maxCount: number; maxSize: number } | null> => {
+  const value = await request('state_getStorage', [allowanceStorageKey(account)]);
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{16}$/i.test(value)) return null;
+  const word = (at: number) => Number.parseInt(value.slice(2 + at * 2, 2 + at * 2 + 8).match(/../g)!.reverse().join(''), 16);
+  return { maxCount: word(0), maxSize: word(4) };
+};
+
+/** M22b: at or below this many statements, device sync waits for undelivered sends (engine.ts). */
+export const TIGHT_ALLOWANCE_COUNT = 4;
+
 /** How often a running app reads the allowance again (the phone renews hourly). */
 export const ALLOWANCE_RECHECK_MS = 10 * 60_000;

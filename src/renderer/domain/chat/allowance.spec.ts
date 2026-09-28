@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { allowanceStorageKey, readAllowance } from './allowance';
+import { TIGHT_ALLOWANCE_COUNT, allowanceStorageKey, readAllowance, readAllowanceLimit } from './allowance';
 
 // M10a: the start-up read decides whether a phone sign-in sees "open the app
 // on your phone" before its first send fails. It must read the key the node
@@ -26,5 +26,17 @@ describe('allowance', () => {
 
   it('passes a failed read on (the caller changes nothing)', async () => {
     await expect(readAllowance(async () => Promise.reject(new Error('socket closed')), account)).rejects.toThrow('socket closed');
+  });
+
+  // M22b: device sync waits for undelivered sends only on a small allowance. A linked
+  // device gets 2 statements and 500 KiB from the phone; a chat identity 50 and 512,000.
+  it('decodes max_count and max_size (u32 little-endian each)', async () => {
+    expect(await readAllowanceLimit(async () => '0x0200000000d00700', account)).toEqual({ maxCount: 2, maxSize: 512_000 });
+    expect(await readAllowanceLimit(async () => '0x3200000000d00700', account)).toEqual({ maxCount: 50, maxSize: 512_000 });
+    expect(2).toBeLessThanOrEqual(TIGHT_ALLOWANCE_COUNT);
+    expect(50).toBeGreaterThan(TIGHT_ALLOWANCE_COUNT);
+    // Missing, or a value of another shape: unknown (the caller treats it as tight).
+    expect(await readAllowanceLimit(async () => null, account)).toBeNull();
+    expect(await readAllowanceLimit(async () => '0x01', account)).toBeNull();
   });
 });
