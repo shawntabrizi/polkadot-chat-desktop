@@ -16,6 +16,9 @@ import { createWebDesktop } from './desktop';
 import { type PassphrasePurpose, createWebIdentity } from './identity';
 import { PassphraseCard } from './ui/PassphraseCard';
 
+/** M22c: the backend proxy prefix, or null when the build has none (vite.web.config.ts, `VITE_IDB_PROXY`). */
+declare const __IDB_PROXY__: string | null;
+
 /** A passphrase screen above the page (the renderer keeps running under it). */
 const askNewPassphrase = (purpose: PassphrasePurpose): Promise<string | null> =>
   new Promise(resolve => {
@@ -40,7 +43,7 @@ const askNewPassphrase = (purpose: PassphrasePurpose): Promise<string | null> =>
 const identity = createWebIdentity({
   db: webDatabase(),
   askNewPassphrase,
-  backendFetch: createBackendFetch(),
+  backendFetch: __IDB_PROXY__ === null ? null : createBackendFetch(undefined, undefined, __IDB_PROXY__),
   clipboard: {
     writeText: text => navigator.clipboard.writeText(text),
     readText: () => navigator.clipboard.readText(),

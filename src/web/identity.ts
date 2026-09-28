@@ -14,6 +14,7 @@ import {
   type CreateIdentityResponse,
   type DesktopIdentityApi,
   type IdentitySummary,
+  NO_IDENTITY_BACKEND,
   type PairedIdentity,
   PHONE_SIGNED_IN,
   type RendererSecrets,
@@ -51,7 +52,8 @@ export type WebIdentityDeps = {
   db: WebDatabase;
   /** Asks the person for a new passphrase (sign-up, or a phone sign-in); null when they cancel. */
   askNewPassphrase: (purpose: PassphrasePurpose) => Promise<string | null>;
-  backendFetch: typeof fetch;
+  /** M22c: null on a build with no backend proxy; sign-up and the availability check reject with `NO_IDENTITY_BACKEND`. */
+  backendFetch: typeof fetch | null;
   clipboard: ClipboardLike;
   createIdentity?: typeof desktopCreateIdentity;
   checkAvailability?: typeof desktopCheckAvailability;
@@ -119,6 +121,8 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
     });
 
   return {
+    backendFetch: deps.backendFetch,
+
     get: async () => {
       const record = await load();
       if (record) return summaryOf(record);
@@ -129,11 +133,14 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
     available: (username: string, profile: NetworkProfileId): Promise<UsernameAvailability> => {
       if (typeof username !== 'string' || !USERNAME.test(username)) return Promise.reject(new Error('The username must be 6 to 29 lowercase letters.'));
       if (!isNetworkProfileId(profile)) return Promise.reject(new Error('Unknown network.'));
+      if (!deps.backendFetch) return Promise.reject(new Error(NO_IDENTITY_BACKEND));
       return checkAvailability(username, profile, deps.backendFetch);
     },
 
     create: async (value: CreateIdentityRequest): Promise<CreateIdentityResponse> => {
       const request = parseCreateRequest(value);
+      const fetchImpl = deps.backendFetch;
+      if (!fetchImpl) throw new Error(NO_IDENTITY_BACKEND);
       if (creating) throw new Error('A sign-up is already running.');
       if (await load()) throw new Error('This browser already has an identity.');
       if (await loadPaired()) throw new Error('This browser is signed in with a phone. Sign out first.');
@@ -150,7 +157,7 @@ export const createWebIdentity = (deps: WebIdentityDeps): WebIdentityApi => {
         const sealedAtRest = await sealSecret(key, atRestKey, AT_REST_AAD);
         return await createIdentity({
           ...request,
-          fetchImpl: deps.backendFetch,
+          fetchImpl,
           onProgress: line => progress.forEach(listener => listener(line)),
           store: {
             load: async () => {

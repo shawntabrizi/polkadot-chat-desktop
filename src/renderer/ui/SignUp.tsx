@@ -4,7 +4,7 @@ import { DEFAULT_NETWORK_PROFILE, NETWORK_PROFILES, type NetworkProfileId } from
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-import type { CreateIdentityResponse, DesktopIdentityApi } from '../../shared/desktop-api';
+import { type CreateIdentityResponse, type DesktopIdentityApi, NO_IDENTITY_BACKEND } from '../../shared/desktop-api';
 
 import { Logo } from './Logo';
 import { plainError } from './format';
@@ -45,6 +45,30 @@ export const SignUp = ({ identityApi, onSignedUp, onBack }: Props) => {
         setBusy(false);
       });
   };
+
+  // M22c: a web build with no identity-backend proxy (GitHub Pages) cannot sign up; the phone can.
+  if (identityApi.backendFetch === null) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-4">
+        <div className="flex w-full max-w-[440px] flex-col gap-6 rounded-container bg-surface-container p-8 shadow-1">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <Logo className="h-12" />
+            <div className="flex flex-col gap-2">
+              <h1 className="text-display-l text-fg-primary">Create a local account</h1>
+              <p className="text-body-l text-fg-secondary" data-testid="signup-unavailable">
+                {NO_IDENTITY_BACKEND}
+              </p>
+            </div>
+          </div>
+          {onBack ? (
+            <Button type="button" className="h-auto w-full rounded-full px-9 py-3.5 text-label-l font-semibold" onClick={onBack} data-testid="back-to-phone">
+              Sign in with your phone instead
+            </Button>
+          ) : null}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center p-4">

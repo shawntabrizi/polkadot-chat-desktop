@@ -58,21 +58,37 @@ const webTwins = (): Plugin => ({
  * page calls `/idb/<profile>/…` on its own origin (src/web/backend.ts) and
  * this proxy forwards it. A deployment needs the same reverse proxy.
  */
+const IDB_PREFIX = '/idb';
 const idbProxy: Record<string, ProxyOptions> = Object.fromEntries(
   Object.values(NETWORK_PROFILES).map(profile => [
-    `/idb/${profile.id}`,
-    { target: profile.identityBackend, changeOrigin: true, rewrite: (path: string) => path.slice(`/idb/${profile.id}`.length) || '/' },
+    `${IDB_PREFIX}/${profile.id}`,
+    { target: profile.identityBackend, changeOrigin: true, rewrite: (path: string) => path.slice(`${IDB_PREFIX}/${profile.id}`.length) || '/' },
   ]),
 );
 
+/**
+ * M22c: where the backend calls go (src/web/backend.ts). Unset: `/idb`, the
+ * dev and preview proxy above. `off`: no proxy (GitHub Pages); sign-up and
+ * username search show `NO_IDENTITY_BACKEND`. Any other value: a proxy's URL
+ * prefix, `<prefix>/<profile>/<backend path>`.
+ */
+const idbProxyTarget = (value = process.env.VITE_IDB_PROXY): string | null => {
+  if (value === undefined || value === '') return IDB_PREFIX;
+  if (value === 'off') return null;
+  return value.replace(/\/+$/, '');
+};
+
 export default defineConfig({
   root: resolve(root, 'src/web'),
-  base: './',
+  // M22c: `./` (relative, any static host and any path) unless PCD_WEB_BASE names one,
+  // as the Pages workflow does (`/polkadot-chat-desktop/`).
+  base: process.env.PCD_WEB_BASE || './',
   plugins: [webTwins(), react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
     __APP_COMMIT__: JSON.stringify(gitCommit()),
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+    __IDB_PROXY__: JSON.stringify(idbProxyTarget()),
   },
   resolve: {
     alias: {

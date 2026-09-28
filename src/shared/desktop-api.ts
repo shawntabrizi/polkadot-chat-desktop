@@ -206,6 +206,12 @@ export type DesktopIdentityApi = {
   pairedSecrets: () => Promise<PairedIdentity>;
   /** M10a "Sign out": forgets the paired identity on this machine. The phone revokes by not renewing the allowance. */
   forgetPaired: () => Promise<void>;
+  /**
+   * M22c, web build only: a `fetch` for identity-backend URLs (through the
+   * proxy), or `null` when the site has no proxy: sign-up and username search
+   * then show `NO_IDENTITY_BACKEND`. Absent on the desktop: call the backend directly.
+   */
+  backendFetch?: typeof fetch | null;
 };
 
 /**
@@ -640,6 +646,12 @@ export type DesktopProfilesApi = {
  * outside the desktop app.
  */
 export const NOT_ON_WEB = 'Available only inside Polkadot Chat Desktop.';
+
+/**
+ * M22c: what sign-up and username search show on a web build with no
+ * identity-backend proxy (GitHub Pages; the backend sends no CORS headers).
+ */
+export const NO_IDENTITY_BACKEND = 'Not available on this site: use the desktop app or sign in with your phone.';
 
 export type DesktopApi = {
   /** M22a: `web` when src/web implements this interface in a browser (docs/web.md). */

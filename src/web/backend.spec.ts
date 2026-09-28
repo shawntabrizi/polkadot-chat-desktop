@@ -25,6 +25,15 @@ describe('identity backend through /idb', () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  // M22c: a proxy on another origin (VITE_IDB_PROXY) takes the same paths, with no code change.
+  it('sends to a proxy URL prefix instead of /idb when the build names one', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}'));
+    await createBackendFetch(() => 'https://shawntabrizi.github.io/polkadot-chat-desktop/', fetchFn as unknown as typeof fetch, 'https://idb.example.org/p')(
+      `${NETWORK_PROFILES.paseo.identityBackend}/api/v1/usernames/search?prefix=ab`,
+    );
+    expect(fetchFn).toHaveBeenCalledWith('https://idb.example.org/p/paseo/api/v1/usernames/search?prefix=ab', undefined);
+  });
+
   it('passes method, headers and body through unchanged', async () => {
     const fetchFn = vi.fn(async () => new Response('{}'));
     const init = { method: 'POST', headers: { authorization: 'Bearer t' }, body: '{}' };

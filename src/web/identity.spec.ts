@@ -4,7 +4,7 @@ import { deriveIdentityKeys, generateMnemonic } from '../main/identity/keys';
 import type { createIdentity as desktopCreateIdentity } from '../main/identity/service';
 
 import type { PairedIdentity } from '../shared/desktop-api';
-import { PHONE_SIGNED_IN } from '../shared/desktop-api';
+import { NO_IDENTITY_BACKEND, PHONE_SIGNED_IN } from '../shared/desktop-api';
 
 import { webDatabase } from './database';
 import { RESET_GRACE_MS, type WebIdentityDeps, createWebIdentity } from './identity';
@@ -96,6 +96,21 @@ describe('web identity', () => {
     expect(checkAvailability).toHaveBeenCalledWith('webtester', 'devnet', backendFetch);
     await api.create({ username: 'webtester', digits: null, profile: 'devnet' });
     expect(fakeCreate.mock.calls[0]?.[0].fetchImpl).toBe(backendFetch);
+  });
+
+  // M22c: GitHub Pages has no proxy and the backend no CORS. Sign-up must say so before
+  // it asks for a passphrase, and never start a claim it cannot finish.
+  it('refuses sign-up and the availability check up front with no backend proxy', async () => {
+    const askNewPassphrase = vi.fn(async () => PASSPHRASE);
+    const checkAvailability = vi.fn();
+    const api = createWebIdentity(deps({ backendFetch: null, askNewPassphrase, checkAvailability }));
+    expect(api.backendFetch).toBeNull();
+    await expect(api.available('webtester', 'devnet')).rejects.toThrow(NO_IDENTITY_BACKEND);
+    await expect(api.create({ username: 'webtester', digits: null, profile: 'devnet' })).rejects.toThrow(NO_IDENTITY_BACKEND);
+    expect(checkAvailability).not.toHaveBeenCalled();
+    expect(askNewPassphrase).not.toHaveBeenCalled();
+    expect(fakeCreate).not.toHaveBeenCalled();
+    expect(await api.get()).toBeNull();
   });
 
   it('undoes a reset inside the grace time, and not after it', async () => {

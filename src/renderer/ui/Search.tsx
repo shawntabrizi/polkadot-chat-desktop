@@ -22,6 +22,8 @@ import { type SearchResult, searchUsernames } from '../domain/identity/search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
+import { NO_IDENTITY_BACKEND } from '../../shared/desktop-api';
+
 import { AssistantAvatar, GroupAvatar, PeerAvatar } from './Avatar';
 import { BotBadge } from './BotBadge';
 import { type ChatSelection, type ChatTarget, type ListData, type Row, useChatRows } from './ChatList';
@@ -142,6 +144,10 @@ export const SearchPane = ({
   const active = typed !== '' || adding;
   const invite = onJoinLink ? parseInviteLink(typed) : null;
   const prefix = globalQuery(query);
+  // M22c: the web build's backend fetch (through its proxy), null on a site with none; the desktop calls the backend directly.
+  const backendFetch = window.desktop?.identity.backendFetch;
+  const noBackend = backendFetch === null;
+  const searchFetch = backendFetch ?? fetch;
 
   useEffect(() => {
     if (focusSignal === 0) return;
@@ -152,10 +158,10 @@ export const SearchPane = ({
   // One network search per pause in typing: each one mines a proof of work
   // and the backend rate-limits (M7b step 1b).
   useEffect(() => {
-    if (prefix === null) return;
+    if (prefix === null || noBackend) return;
     let live = true;
     const timer = setTimeout(() => {
-      searchUsernames(profile, prefix, selfIdentityAccountId, fetch, { limit: GLOBAL_PAGE_SIZE }).then(
+      searchUsernames(profile, prefix, selfIdentityAccountId, searchFetch, { limit: GLOBAL_PAGE_SIZE }).then(
         page => {
           if (live) setGlobal({ query: prefix, results: page.results, nextCursor: page.nextCursor, failed: false, loadingMore: false });
         },
@@ -168,16 +174,16 @@ export const SearchPane = ({
       live = false;
       clearTimeout(timer);
     };
-  }, [prefix, profile, selfIdentityAccountId]);
+  }, [prefix, profile, selfIdentityAccountId, noBackend, searchFetch]);
 
   const current = prefix !== null && global?.query === prefix ? global : null;
-  const searching = prefix !== null && current === null;
+  const searching = prefix !== null && current === null && !noBackend;
 
   const showMore = () => {
     if (!current?.nextCursor || current.loadingMore) return;
     const shown = current;
     setGlobal({ ...shown, loadingMore: true });
-    searchUsernames(profile, shown.query, selfIdentityAccountId, fetch, { limit: GLOBAL_PAGE_SIZE, cursor: shown.nextCursor }).then(
+    searchUsernames(profile, shown.query, selfIdentityAccountId, searchFetch, { limit: GLOBAL_PAGE_SIZE, cursor: shown.nextCursor }).then(
       page => {
         setGlobal(latest => {
           if (latest?.query !== shown.query) return latest;
@@ -338,7 +344,7 @@ export const SearchPane = ({
               })}
             </section>
           ) : null}
-          {sections.global.length > 0 || searching || current?.failed ? (
+          {sections.global.length > 0 || searching || current?.failed || (prefix !== null && noBackend) ? (
             <section aria-label="Global search" className="flex flex-col gap-0.5" data-testid="search-global">
               <SectionHeader>Global search</SectionHeader>
               {sections.global.map(hit => {
@@ -362,6 +368,11 @@ export const SearchPane = ({
               {current?.failed ? (
                 <p className="px-2 py-1.5 text-body-s text-fg-tertiary" data-testid="search-unavailable">
                   Search unavailable
+                </p>
+              ) : null}
+              {prefix !== null && noBackend ? (
+                <p className="px-2 py-1.5 text-body-s text-fg-tertiary" data-testid="search-unavailable">
+                  {NO_IDENTITY_BACKEND}
                 </p>
               ) : null}
               {current?.nextCursor && !current.loadingMore ? (
