@@ -3,6 +3,7 @@
 // domain action (domain/demo/demo.ts), which is idempotent; the rows read
 // their state from the database, so an accept shows as soon as it lands.
 
+import { isPhoneSignIn } from '../app/phoneSignIn';
 import { Bot } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -324,6 +325,11 @@ export const DemoSettings = ({ profileId, bots, runtime }: ListProps) => {
   return (
     <div className="flex flex-col gap-3" data-testid="demo-settings">
       <p className="text-body-m text-fg-secondary">Bots on {NETWORK_PROFILES[profileId].label} that accept any chat. Each request says “Hi!”.</p>
+      {isPhoneSignIn() ? (
+        <p className="text-body-s text-fg-tertiary" data-testid="demo-phone-capacity">
+          Your phone gives this device room for about one conversation at a time. Start one bot, and start another when you are done.
+        </p>
+      ) : null}
       <ul className="-mx-2 flex flex-col gap-0.5" aria-label="Demo bots">
         {bots.map(bot => {
           const status = statusOf(bot);

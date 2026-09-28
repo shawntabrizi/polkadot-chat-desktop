@@ -245,6 +245,8 @@ export const App = () => {
   // M10a: the phone's sign-in is saved; start again as that identity.
   const signedIn = useCallback(() => {
     toast('Signed in with your phone');
+    // M12i: the chat screen that follows shows "Meet the demo bots" once, as after a local sign-up.
+    markDemoIntro();
     setNeedsSignUp(false);
     setStartCount(count => count + 1);
   }, []);
