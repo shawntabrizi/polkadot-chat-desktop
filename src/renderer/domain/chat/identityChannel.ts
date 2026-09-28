@@ -19,12 +19,16 @@ import {
   type ExpiryAllocator,
   type StatementProver,
   type StatementStoreAdapter,
+  type Statement,
+  StatementData,
   createAccountId,
   createEncryption,
   createSession,
+  createSessionId,
 } from '@novasamatech/statement-store';
 
-import { randomId } from '../../app/bytes';
+import { bytesToHex, randomId } from '../../app/bytes';
+import type { PeerDevice } from '../../app/database';
 
 import { type ChatContent, ChatMessageCodec, type ChatMessageWire, type IdentityChannelEvent, toIdentityChannelEvent } from './identityEvents';
 
@@ -106,5 +110,84 @@ export const createIdentityChannel = (params: {
       stopResponding();
       session.dispose();
     },
+  };
+};
+
+/**
+ * mds.md "Accepting a Chat Request": the device that accepts posts
+ * `DeviceChatAccepted` on the identity session SessionId(B, A), keyed
+ * K(A, B) = ECDH(EPk(B), EPb(A)). Every device of B holds EPk(B), so this
+ * device can read what ANOTHER of our devices (the phone) posted there, on
+ * our own outgoing topic, which the channel above never listens to.
+ *
+ * Read only: nothing is answered (an answer would go on the peer's topic as
+ * if from us). Only statements signed by one of `ownSigners` count: the peer
+ * holds K(A, B) too, and must not be able to accept its own request for us.
+ */
+export const watchOwnAccepts = (params: {
+  ownIdentityAccountId: Uint8Array;
+  ownIdentityChatPrivateKey: Uint8Array;
+  peerIdentityAccountId: Uint8Array;
+  peerIdentityChatPublicKey: Uint8Array;
+  /** Our devices' statement accounts (the phone, this device). */
+  ownSigners: readonly Uint8Array[];
+  /** Checks a statement's proof (any prover verifies any signer). */
+  prover: StatementProver;
+  statementStore: StatementStoreAdapter;
+  onAccepted: (accepted: { requestId: string; device: PeerDevice; timestamp: number }) => void;
+}): VoidFunction => {
+  const sharedSecret = x25519.getSharedSecret(params.ownIdentityChatPrivateKey, params.peerIdentityChatPublicKey);
+  const topic = createSessionId(
+    sharedSecret,
+    { accountId: createAccountId(params.ownIdentityAccountId), pin: undefined },
+    { accountId: createAccountId(params.peerIdentityAccountId), pin: undefined },
+  );
+  const encryption = createEncryption(sharedSecret);
+  const signers = new Set(params.ownSigners.map(bytesToHex));
+  const seenStatements = new Set<string>();
+  const seenMessages = new Set<string>();
+  let stopped = false;
+
+  const handle = async (statement: Statement): Promise<void> => {
+    const { data, proof } = statement;
+    if (!data || proof?.type !== 'sr25519') return;
+    const key = bytesToHex(data);
+    if (seenStatements.has(key)) return;
+    seenStatements.add(key);
+    if (!signers.has(String(proof.value.signer).toLowerCase() as `0x${string}`)) return;
+    const verified = await params.prover.verifyMessageProof(statement);
+    if (stopped || !verified.isOk() || !verified.value) return;
+    const decrypted = encryption.decrypt(data);
+    if (decrypted.isErr()) return;
+    let body: ReturnType<typeof StatementData.dec>;
+    try {
+      body = StatementData.dec(decrypted.value);
+    } catch {
+      return;
+    }
+    if (body.tag !== 'request') return;
+    for (const bytes of body.value.data) {
+      let message: ChatMessageWire;
+      try {
+        message = ChatMessageCodec.dec(bytes);
+      } catch {
+        continue;
+      }
+      if (seenMessages.has(message.messageId)) continue;
+      seenMessages.add(message.messageId);
+      const content = message.versioned.value;
+      if (content.tag !== 'deviceChatAccepted') continue;
+      params.onAccepted({ requestId: content.value.requestId, device: content.value.device, timestamp: Number(message.timestamp) });
+    }
+  };
+  const take = (statements: Statement[]) => {
+    for (const statement of statements) void handle(statement).catch(error => console.warn('[chat] own accept not read', error));
+  };
+
+  const unsubscribe = params.statementStore.subscribeStatements({ matchAll: [topic] }, page => take(page.statements));
+  void params.statementStore.queryStatements({ matchAll: [topic] }).match(take, error => console.warn('[chat] own accept query failed: %s', error.message));
+  return () => {
+    stopped = true;
+    unsubscribe();
   };
 };

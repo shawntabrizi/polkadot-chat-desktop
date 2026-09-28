@@ -28,10 +28,19 @@ export const usePendingIncoming = (): RequestRow[] => {
   const requests = useLiveQuery(listRequests, []);
   const contacts = useLiveQuery(() => db.contacts.toArray(), []);
   const blocked = useLiveQuery(() => db.blocked.toArray(), []);
+  return pendingIncomingOf(requests ?? [], contacts ?? [], blocked ?? []);
+};
+
+/** What `usePendingIncoming` shows, from the rows. */
+export const pendingIncomingOf = (
+  requests: readonly RequestRow[],
+  contacts: readonly { accountId: HexString }[],
+  blocked: readonly { accountId: HexString }[],
+): RequestRow[] => {
   // M12e: a blocked sender's earlier requests are not shown either.
-  const known = new Set([...(contacts ?? []).map(contact => contact.accountId), ...(blocked ?? []).map(row => row.accountId)]);
+  const known = new Set<string>([...contacts.map(contact => contact.accountId), ...blocked.map(row => row.accountId)]);
   const newest = new Map<string, RequestRow>();
-  for (const request of requests ?? []) {
+  for (const request of requests) {
     if (request.direction !== 'incoming' || request.status !== 'pending' || known.has(request.peerAccountId)) continue;
     const seen = newest.get(request.peerAccountId);
     if (!seen || request.timestamp > seen.timestamp) newest.set(request.peerAccountId, request);

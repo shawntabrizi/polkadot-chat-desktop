@@ -90,7 +90,7 @@ import {
 } from './groups';
 import { joinProof } from './groupKeys';
 import { type GroupsV2, createGroupsV2, isV2, joinOpenerText, parseInviteLink } from './groupsV2';
-import { type IdentityChannel, createIdentityChannel } from './identityChannel';
+import { type IdentityChannel, createIdentityChannel, watchOwnAccepts } from './identityChannel';
 import type { ButtonWire, GroupControl, IdentityChannelEvent } from './identityEvents';
 import {
   addMessage,
@@ -384,6 +384,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
   // One identity channel per peer: contacts, and pending outgoing requests
   // (the accept arrives there). Keyed by the peer's identity account.
   const channels = new Map<HexString, IdentityChannel>();
+  // Phone sign-in: pending incoming requests whose accept on another of our devices we watch for, by peer.
+  const ownAcceptWatches = new Map<HexString, VoidFunction>();
   let stopRequests: VoidFunction = () => undefined;
   let disposed = false;
 
@@ -781,6 +783,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     device: PeerDevice | null,
     requestId: string,
     acceptedAt: number,
+    /** False when another of our devices accepted: it already told the peer about our devices. */
+    announce = true,
   ): Promise<ContactRow> => {
     const known = !!(await getContact(seed.accountId));
     const contact = await upsertContactDevice(seed, device);
@@ -790,7 +794,7 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     sessions.start(contact);
     guard(sendPendingInvites(contact.accountId), 'group invites');
     guard(sendPendingJoins(contact.accountId), 'group joins');
-    if (!known) guard(announcePhone(contact.accountId), 'phone device fan-out');
+    if (!known && announce) guard(announcePhone(contact.accountId), 'phone device fan-out');
     return contact;
   };
 
@@ -916,13 +920,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     return request;
   };
 
-  const acceptRequest: ChatManager['acceptRequest'] = async requestId => {
-    const request = await requireRequest(requestId, 'incoming');
+  /** An incoming request becomes a chat here: the accept on this device, or (phone sign-in) on another of ours. */
+  const acceptIncoming = async (request: RequestRow, acceptedAt: number, acceptedHere: boolean): Promise<void> => {
+    const { requestId } = request;
+    stopOwnAcceptWatch(request.peerAccountId);
     await setRequestStatus(requestId, 'accepted');
     // Spec 0013: a chat starts; our set rides our first message in it.
     await capabilitiesUnsent(request.peerAccountId);
     const seed = { accountId: request.peerAccountId, username: request.peerUsername, chatPublicKey: request.peerChatPublicKey };
-    await establishContact(seed, request.senderDevice, requestId, Date.now());
+    await establishContact(seed, request.senderDevice, requestId, acceptedAt, acceptedHere);
     if (request.welcomeMessage) {
       await addMessage(
         {
@@ -938,6 +944,52 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
         { read: true },
       );
     }
+  };
+
+  const stopOwnAcceptWatch = (peer: HexString): void => {
+    ownAcceptWatches.get(peer)?.();
+    ownAcceptWatches.delete(peer);
+  };
+
+  /**
+   * Phone sign-in: a request this device shows may already be accepted on
+   * the phone. The phone's `DeviceChatAccepted` sits on our own identity
+   * topic with the peer (mds.md; `watchOwnAccepts`); once read, the request
+   * is accepted here too, so it leaves "New requests" and the chat opens.
+   * Device sync (`ChatsAdded`) would do the same, but only while a WebRTC
+   * link with the phone is open.
+   */
+  const watchOwnAccept = async (request: RequestRow): Promise<void> => {
+    const phoneDevice = deps.phone?.device;
+    const peer = request.peerAccountId;
+    if (!phoneDevice || request.direction !== 'incoming' || request.status !== 'pending') return;
+    // A contact's replayed request is not shown: nothing to watch for.
+    if (await getContact(peer)) return;
+    if (disposed || ownAcceptWatches.has(peer)) return;
+    ownAcceptWatches.set(
+      peer,
+      watchOwnAccepts({
+        ownIdentityAccountId: identity.identityAccountId,
+        ownIdentityChatPrivateKey: identity.identityChatPrivateKey,
+        peerIdentityAccountId: hexToBytes(peer),
+        peerIdentityChatPublicKey: request.peerChatPublicKey,
+        ownSigners: [phoneDevice.statementAccountId, deviceKeys.statementAccountPublicKey],
+        prover,
+        statementStore,
+        onAccepted: accepted => guard(onOwnAccept(peer, accepted.requestId, accepted.timestamp), 'accept on another device'),
+      }),
+    );
+  };
+
+  const onOwnAccept = async (peer: HexString, requestId: string, acceptedAt: number): Promise<void> => {
+    const request = await getRequest(requestId);
+    if (!request || request.direction !== 'incoming' || request.peerAccountId !== peer || request.status !== 'pending') return;
+    await acceptIncoming(request, acceptedAt, false);
+  };
+
+  const acceptRequest: ChatManager['acceptRequest'] = async requestId => {
+    const request = await requireRequest(requestId, 'incoming');
+    await acceptIncoming(request, Date.now(), true);
     // mds.md §"Accepting a Chat Request": the accept carries this device's
     // DeviceInfo on the identity-level session, because the peer cannot
     // address a device it does not know yet.
@@ -958,10 +1010,15 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
       if (request.direction === 'outgoing' && request.status === 'pending') {
         ensureChannel(hexToBytes(request.peerAccountId), request.peerChatPublicKey);
       }
+      guard(watchOwnAccept(request), 'own accept watch');
     }
     stopRequests = subscribeToIncomingRequests({ ownAccountId: identity.identityAccountId, statementStore }, data =>
       guard(
-        intakeRequestStatement({ identity, lookup }, data).then(row => (row ? admitJoinOpener(row) : undefined)),
+        intakeRequestStatement({ identity, lookup }, data).then(async row => {
+          if (!row) return;
+          await watchOwnAccept(row);
+          await admitJoinOpener(row);
+        }),
         'request intake',
       ),
     );
@@ -975,6 +1032,8 @@ export const createChatManager = async (deps: ChatManagerDeps): Promise<ChatMana
     if (groupTimer) clearInterval(groupTimer);
     groupTimer = null;
     stopRequests();
+    for (const stop of ownAcceptWatches.values()) stop();
+    ownAcceptWatches.clear();
     sessions.stopAll();
     for (const channel of channels.values()) channel.dispose();
     channels.clear();
