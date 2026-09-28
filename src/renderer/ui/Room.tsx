@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { type HexString, bytesToHex } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { BANNER_DELAY_MS, type ConnectionSnapshot, showsBanner } from '../app/connectionState';
+import { isPhoneSignIn } from '../app/phoneSignIn';
 import { type AssistantPeerId, type MessageRow, type PeerId, db } from '../app/database';
 import { ASSISTANT_COMMANDS, ASSISTANT_USERNAME, type AssistantChat } from '../domain/assistant/assistant';
 import {
@@ -37,7 +38,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
-import type { AssistantSettings, ChainTransfer } from '../../shared/desktop-api';
+import { type AssistantSettings, type ChainTransfer, PHONE_SIGNED_IN } from '../../shared/desktop-api';
 import { type BalanceHint, decodeUint256, headerParts, hintCalldata, hintLine, planckInHintUnits, reviveAddressOf, spendable } from '../../shared/balanceHint';
 import { CALL_KIND_REVIVE, type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
@@ -407,7 +408,7 @@ export const Room = (props: Props) => {
     const update = (next: Partial<Strip>) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, ...next } : current));
     const chain = window.desktop?.chain;
     if (!chain || !manager || !transactions) {
-      update({ state: { phase: 'refused', reason: 'This app cannot run chain actions here.', dryRun: null } });
+      update({ state: { phase: 'refused', reason: isPhoneSignIn() ? PHONE_SIGNED_IN : 'This app cannot run chain actions here.', dryRun: null } });
       return;
     }
     // A call that pays into the bot's declared contract: the strip says what the balance becomes.
@@ -1037,7 +1038,13 @@ export const Room = (props: Props) => {
                   { label: 'Send PAS', icon: <ArrowUpRight />, onSelect: () => openPayment('send'), testId: 'plus-send-pas' },
                   { label: 'Request PAS', icon: <ArrowDownLeft />, onSelect: () => openPayment('request'), testId: 'plus-request-pas' },
                 ]
-              : []
+              : // M10a: payments need the seed; a phone sign-in says so instead of hiding them.
+                isPhoneSignIn() && manager && contact && assetHubChainId
+                ? [
+                    { label: 'Send PAS', icon: <ArrowUpRight />, onSelect: () => setError(PHONE_SIGNED_IN), testId: 'plus-send-pas' },
+                    { label: 'Request PAS', icon: <ArrowDownLeft />, onSelect: () => setError(PHONE_SIGNED_IN), testId: 'plus-request-pas' },
+                  ]
+                : []
           }
           panel={
             // The signing strip docks here, above the field: always in view (2026-09-24).

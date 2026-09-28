@@ -13,6 +13,7 @@ import type { HexString } from '../app/bytes';
 import { DEFAULT_CHAT_PREFS, readChatPrefs } from '../app/chatPrefs';
 import { type ContactRow, type GroupRow, type MessageRow, type PeerCapabilitiesRow, type PeerInfoRow, db, groupPeerOf } from '../app/database';
 import { hexToBytes } from '../app/bytes';
+import { isPhoneSignIn } from '../app/phoneSignIn';
 import { type TxRunner, referenceNote } from '../domain/chain/transactions';
 import { GROUP_SUPPORT_WORDS, type GroupSupport, groupSupportOf, loadAnsweredPeers } from '../domain/chat/capabilities';
 import type { BotCommand, TxStatus } from '../domain/chat/content';
@@ -47,6 +48,7 @@ import { type StripPhase, TxStrip } from './Transactions';
 import { intentExpired } from './txButton';
 import { useLiveQuery } from './useLiveQuery';
 
+import { PHONE_SIGNED_IN } from '../../shared/desktop-api';
 import { type TxIntent, decodeTxIntent } from '../../shared/txIntent';
 
 /** Remove, Leave and Delete act at once and can be undone this long. */
@@ -635,7 +637,7 @@ export const GroupRoom = ({ groupId, manager, self, transactions = null, usernam
     const update = (state: StripPhase) => setStrip(current => (current && current.messageId === messageId && current.row === r && current.index === i ? { ...current, state } : current));
     const chain = window.desktop?.chain;
     if (!chain || !transactions) {
-      update({ phase: 'refused', reason: 'This app cannot run chain actions here.', dryRun: null });
+      update({ phase: 'refused', reason: isPhoneSignIn() ? PHONE_SIGNED_IN : 'This app cannot run chain actions here.', dryRun: null });
       return;
     }
     chain

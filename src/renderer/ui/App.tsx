@@ -166,10 +166,11 @@ export const App = () => {
         manager = created;
         // Spec 0007: references of the transactions this app signs go out through the manager.
         const chain = window.desktop?.chain;
-        transactions = chain ? createTxRunner({ chain, sendReference: created.sendReference, recordReference: created.recordReference }) : null;
+        // M10a: a phone sign-in has no seed to sign with: no runner (the strips say why) and nothing to follow.
+        transactions = chain && !paired ? createTxRunner({ chain, sendReference: created.sendReference, recordReference: created.recordReference }) : null;
         // M12c: every reference bubble follows its transaction on the chain.
         const assetHub = NETWORK_PROFILES[profileId].assetHub;
-        follower = chain && assetHub ? createReferenceFollower({ chain, onReference: created.onReference, chainId: assetHub.genesis }) : null;
+        follower = chain && assetHub && !paired ? createReferenceFollower({ chain, onReference: created.onReference, chainId: assetHub.genesis }) : null;
         // M12e: the Diagnostics totals live in main, so a reload does not zero them.
         const diagnostics = window.desktop?.diagnostics;
         stopForward = diagnostics ? forwardCounts(created.submissions, delta => diagnostics.add(delta)) : () => undefined;

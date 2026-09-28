@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { formatDay } from './format';
 import { useLiveQuery } from './useLiveQuery';
 
-import type { BulletinQuota } from '../../shared/desktop-api';
+import { type BulletinQuota, PHONE_SIGNED_IN } from '../../shared/desktop-api';
 
 /** "Free space" keeps copies newer than this. */
 const FREE_CHOICES = [
@@ -57,7 +57,9 @@ export const StorageSettings = ({ attachmentsOn }: { attachmentsOn: boolean }) =
         setQuota(value ? { phase: 'ready', quota: value, at: Date.now() } : { phase: 'none' });
       },
       (cause: unknown) => {
-        if (live) setQuota({ phase: 'off', reason: `The Bulletin chain did not answer (${cause instanceof Error ? cause.message : String(cause)}).` });
+        const message = cause instanceof Error ? cause.message : String(cause);
+        // M10a: the Bulletin key comes from the seed; a phone sign-in has none here.
+        if (live) setQuota({ phase: 'off', reason: message === PHONE_SIGNED_IN ? PHONE_SIGNED_IN : `The Bulletin chain did not answer (${message}).` });
       },
     );
     return () => {

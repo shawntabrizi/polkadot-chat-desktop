@@ -29,7 +29,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 import { BUILD, bugReportLine } from '../../shared/appVersion';
-import { type AssistantEngineId, type AssistantEngineStatus, type AssistantSettings, type AssistantTool, type DesktopAssistantApi, NOT_ON_WEB } from '../../shared/desktop-api';
+import { type AssistantEngineId, type AssistantEngineStatus, type AssistantSettings, type AssistantTool, type DesktopAssistantApi, NOT_ON_WEB, PHONE_SIGNED_IN } from '../../shared/desktop-api';
 import { EXPLORERS, EXPLORER_CAPTIONS, EXPLORER_LABELS, type ExplorerId } from '../../shared/explorers';
 
 import { AgentSettings } from './AgentSettings';
@@ -822,6 +822,7 @@ const DemoSection = ({ profileId, runtime }: { profileId: NetworkProfileId; runt
 const AgentSection = ({ profileId }: { profileId: NetworkProfileId }) => {
   const desktop = window.desktop;
   if (isWeb()) return <NotOnWebSection title="Agent" />;
+  if (isPhoneSignIn()) return <PhoneOnlySection title="Agent" what="Publish my agent" />;
   if (!desktop?.agent) return null;
   return (
     <Section title="Agent">
@@ -859,6 +860,15 @@ const VersionFooter = () => {
   );
 };
 
+/** M10a: a section that needs the identity's seed, for a phone sign-in (the seed stays on the phone). */
+const PhoneOnlySection = ({ title, what }: { title: string; what: string }) => (
+  <Section title={title}>
+    <p className="text-body-m text-fg-secondary" data-testid="phone-only">
+      {what}: {PHONE_SIGNED_IN}
+    </p>
+  </Section>
+);
+
 /** M22a: a desktop-only section in the web build, as Assistant shows outside the desktop app. */
 const NotOnWebSection = ({ title }: { title: string }) => (
   <Section title={title}>
@@ -879,7 +889,7 @@ export const Settings = ({ username, identity, profileId, onReset, assistantApi,
           <ProfilesSettings api={window.desktop.profiles} />
         </Section>
       ) : null}
-      <SecuritySection />
+      {isPhoneSignIn() ? <PhoneOnlySection title="Security" what="Recovery phrase" /> : <SecuritySection />}
       <AppearanceSection />
       <ChatSection />
       <PrivacySection />

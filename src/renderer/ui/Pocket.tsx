@@ -11,12 +11,14 @@ import { Check, Copy, Droplets, Wallet } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { NETWORK_PROFILES, type NetworkProfileId } from '../app/network';
+import { isPhoneSignIn } from '../app/phoneSignIn';
 import { getPeopleConnection } from '../app/statementStore';
 import { readPeopleFree } from '../domain/chain/balances';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
 
 import { formatPas } from '../../shared/balanceHint';
+import { PHONE_SIGNED_IN } from '../../shared/desktop-api';
 import { accountLink } from '../../shared/explorers';
 
 import { ExplorerButton, useExplorer } from './ExplorerButton';
@@ -27,7 +29,7 @@ import { useAssetHubBalance, useBestBlock } from './useChain';
 /** The footer chip: "12.3 PAS" in mono, or a quiet dash until the first read. */
 export const BalanceChip = ({ active, onOpen }: { active: boolean; onOpen: () => void }) => {
   const { free, error } = useAssetHubBalance();
-  const text = free !== null ? formatPas(free) : error ? 'Balance unknown' : '… PAS';
+  const text = isPhoneSignIn() ? '— PAS' : free !== null ? formatPas(free) : error ? 'Balance unknown' : '… PAS';
   return (
     <button
       type="button"
@@ -116,7 +118,7 @@ export const Pocket = ({ username, address, profileId, onGetFunds }: Props) => {
         <section className="flex flex-col overflow-hidden rounded-container bg-surface-container py-2 shadow-1" aria-label="Balances">
           <h2 className="px-5 pt-3 pb-1 text-heading-s text-fg-primary">Balances</h2>
           <BalanceRow chain="Asset Hub" testId="pocket-asset-hub">
-            {amount(assetHub)}
+            {isPhoneSignIn() ? <span className="text-fg-secondary">{PHONE_SIGNED_IN}</span> : amount(assetHub)}
           </BalanceRow>
           <BalanceRow chain="People chain" testId="pocket-people">
             {amount(people, 'No balance needed')}
