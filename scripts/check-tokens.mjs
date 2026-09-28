@@ -45,6 +45,8 @@ const walk = dir => {
   }
 };
 walk(renderer);
+// M22a: the web build's own screens (src/web/ui) follow the same rules.
+walk(join(root, 'src/web'));
 
 const hits = [];
 for (const file of files) {

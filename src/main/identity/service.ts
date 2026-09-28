@@ -38,6 +38,8 @@ export type CreateIdentityInput = {
   store: IdentityStore;
   /** How long to wait for the chain to publish the key. */
   attestationTimeoutMs?: number;
+  /** M22a: the web build routes backend calls through its same-origin proxy (src/web/backend.ts). */
+  fetchImpl?: typeof fetch;
 };
 
 export type CreateIdentityResult = {
@@ -62,6 +64,7 @@ export async function createIdentity({
   onProgress = () => undefined,
   store,
   attestationTimeoutMs = ATTESTATION_TIMEOUT_MS,
+  fetchImpl = fetch,
 }: CreateIdentityInput): Promise<CreateIdentityResult> {
   const { base } = normalizeUsername(username);
   if (digits != null && !/^\d{2}$/.test(digits)) throw new Error('The number must be two digits, 00 to 99.');
@@ -79,7 +82,7 @@ export async function createIdentity({
   try {
     const session =
       network.identityRegistrationAuth === 'client-proof'
-        ? await acquireIdentitySession({ backendUrl: network.identityBackend, mnemonic })
+        ? await acquireIdentitySession({ backendUrl: network.identityBackend, mnemonic, fetchImpl })
         : null;
     const result = await registerIdentity({
       mnemonic,
@@ -88,6 +91,7 @@ export async function createIdentity({
       backendUrl: network.identityBackend,
       identityToken: session?.token ?? null,
       litePerson: runLitePerson,
+      fetchImpl,
     });
     claimed = result.username;
   } catch (error) {
@@ -120,22 +124,22 @@ export async function createIdentity({
 // is about to expire so each keystroke pause costs one request, not three.
 const anonymousTokens = new Map<string, string>();
 
-const anonymousToken = async (backendUrl: string, fresh: boolean): Promise<string> => {
+const anonymousToken = async (backendUrl: string, fresh: boolean, fetchImpl: typeof fetch): Promise<string> => {
   const cached = anonymousTokens.get(backendUrl);
   if (cached && !fresh && !jwtExpiresSoon(cached)) return cached;
-  const { token } = await obtainAnonymousSession({ backendUrl });
+  const { token } = await obtainAnonymousSession({ backendUrl, fetchImpl });
   anonymousTokens.set(backendUrl, token);
   return token;
 };
 
 /** Whether `username` (letters only) is free on the profile's backend, and which numbers are left. */
-export async function checkAvailability(username: string, profile: NetworkProfileId): Promise<UsernameAvailability> {
+export async function checkAvailability(username: string, profile: NetworkProfileId, fetchImpl: typeof fetch = fetch): Promise<UsernameAvailability> {
   const backendUrl = NETWORK_PROFILES[profile].identityBackend;
   try {
-    return await checkUsernameAvailable({ backendUrl, username, token: await anonymousToken(backendUrl, false) });
+    return await checkUsernameAvailable({ backendUrl, username, token: await anonymousToken(backendUrl, false, fetchImpl), fetchImpl });
   } catch (error) {
     // A revoked or expired bearer: mint a new one once.
     if ((error as BackendError).status !== 401) throw error;
-    return checkUsernameAvailable({ backendUrl, username, token: await anonymousToken(backendUrl, true) });
+    return checkUsernameAvailable({ backendUrl, username, token: await anonymousToken(backendUrl, true, fetchImpl), fetchImpl });
   }
 }

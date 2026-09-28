@@ -582,7 +582,16 @@ export type DesktopProfilesApi = {
   restore: (phrase: string, network: NetworkProfileId) => Promise<string>;
 };
 
+/**
+ * M22a: what a member the web build cannot offer rejects with (docs/web.md);
+ * the UI shows it as is. The same words Settings › Assistant already shows
+ * outside the desktop app.
+ */
+export const NOT_ON_WEB = 'Available only inside Polkadot Chat Desktop.';
+
 export type DesktopApi = {
+  /** M22a: `web` when src/web implements this interface in a browser (docs/web.md). */
+  platform: 'desktop' | 'web';
   version: string;
   /** The OS version for a bug report ("15.6" on macOS). */
   osVersion: string;

@@ -8,6 +8,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "dev:web": "vite --config vite.web.config.ts",
+    "build:web": "vite build --config vite.web.config.ts",
+    "preview:web": "vite preview --config vite.web.config.ts",
     "check": "tsc --noEmit -p tsconfig.json && vitest run && eslint . && npm run check:tokens",
     "check:tokens": "node scripts/check-tokens.mjs",
     "test": "vitest run",

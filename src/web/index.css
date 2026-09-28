@@ -1,0 +1,4 @@
+/* M22a: the renderer's stylesheet. Tailwind scans the Vite root (src/web) by
+   default; the renderer's classes live in src/renderer, so scan it too. */
+@import "../renderer/index.css";
+@source "../renderer";

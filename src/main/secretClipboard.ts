@@ -4,10 +4,11 @@
  * to check that; main can (docs/questions.md M19 "Clipboard after Copy").
  * Main keeps a SHA-256 of the secret for the check, never the text.
  *
- * Plain Node (the clipboard and the timers come in), so the rule runs in a spec.
+ * Plain code (the clipboard and the timers come in), so the rule runs in a spec.
  */
 
-import { createHash } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 
 export const SECRET_CLIPBOARD_MS = 60_000;
 
@@ -17,7 +18,8 @@ const realTimers: Timers = { set: (run, ms) => setTimeout(run, ms), clear: timer
 /** Electron 44's clipboard reads and writes are promises. */
 export type ClipboardLike = { writeText: (text: string) => Promise<void>; readText: () => Promise<string>; clear: () => void };
 
-const digest = (text: string): string => createHash('sha256').update(text).digest('hex');
+// @noble, not node:crypto: the web build reuses this rule with the browser clipboard (M22a).
+const digest = (text: string): string => bytesToHex(sha256(new TextEncoder().encode(text)));
 
 /**
  * `copy` writes the secret and starts the 60 s time (a second copy starts it

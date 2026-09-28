@@ -14,6 +14,7 @@ const listen =
   };
 
 const api: DesktopApi = {
+  platform: 'desktop',
   version: process.versions.electron,
   osVersion: process.getSystemVersion(),
   identity: {
