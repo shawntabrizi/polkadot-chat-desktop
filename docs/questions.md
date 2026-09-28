@@ -285,3 +285,12 @@ For the owner:
 - **QR density.** The offer carries the whole user agent as `PlatformVersion` (~150 characters), so the code is dense at 232 px. Send the app version or the OS version instead?
 - **A cancelled web passphrase** keeps nothing, but the phone has already allocated a slot and lists the device. Remove the device from the phone by hand, or ask for the passphrase before the QR is shown?
 - **Sign out does not tell the phone.** The device stays in the phone's Linked devices until removed there (the allowance lapses when the phone stops renewing). A `DeviceRemoved` from our side is M22b; acceptable until then?
+
+## M22b (2026-09-28)
+
+- **The phone syncs only with "Polkadot Desktop".** `RealDeviceSyncCoordinator.getIfSyncableOrNull` starts a sync engine only for a linked device whose host name is exactly `Polkadot Desktop`. M10a sends "Polkadot Chat Desktop" / "Polkadot Chat Web", so the real phone opens the Statement Store session with us but never answers the Offer: sync pauses after 3 tries ("your phone did not answer"). Options: send `Polkadot Desktop` as host name (it is what the phone keys on, but it names another product), or ask the app team to key on something else. Not changed here (it is a value we already send).
+- **Removal reaches us by SSO, not by DeviceRemoved.** On "remove device" the phone deallocates the slot, sends SSO `Disconnected` on the pairing session, deletes the session (which disposes the sync session), and only then broadcasts `DeviceRemoved` to contacts. So the synced `deviceRemoved` this build signs out on will in practice not arrive. Handling SSO `Disconnected` needs the pairing session kept open after M10a's sign-in (host-papp territory). Do it in a later phase?
+- **No TURN.** The phone adds TURN servers from its backend (`TurnApi`); we have only Google STUN, so sync fails behind symmetric NATs. Is there a TURN service we may use?
+- **Sign out still does not tell the phone** (M10a question). The phone keeps the device until removed there.
+- **Group posting set.** Our v2 group posting set is still `[this device]`; the phone posts group carriers as the identity account. Add the phone's account to our posting set (0011 multi-device) in a groups phase?
+- **2-statement budget with chats.** Any chat plus sync exceeds 2 live statements; the store then evicts this device's oldest statement on each send. The sync rules avoid evicting an undelivered send, but chat itself already churns. Is a larger linked-device allowance planned?

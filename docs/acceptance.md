@@ -4571,3 +4571,61 @@ Not run:
 - **A real allowance read for a phone-added device**: no such device exists in the test set. The key and the call are pinned by `allowance.spec.ts`.
 - **The web passphrase screen after a pairing** in a browser: covered by `web/identity.spec.ts`.
 - `e2e:profiles` (claims devnet usernames): only its first-run wait was changed.
+
+## M22b — Multi-device chat and device sync (2026-09-28)
+
+`npm run check`:
+
+```
+ Test Files  126 passed (126)
+      Tests  1086 passed (1086)
+check:tokens: clean (251 files)
+```
+
+(Before M22b: 119 files, 1048 tests.) New specs in `domain/deviceSync/`: `codec.spec.ts` (10, hand-written Kotlin-layout vectors: SyncMessage Update/Ack, every SyncEntity, LocalMessage with Text / DeviceAdded(17) / DeviceRemoved(18) and every status, SyncSignalingEnvelope variants, MinimalSetup with a candidate, DataChannelMessage, PeerConnectionSignal candidates), `sdp.spec.ts` (3, SdpCoderTest.kt's own input and output), `signaler.spec.ts` (6), `runner.spec.ts` (4), `entities.spec.ts` (6), `engine.spec.ts` (6, budget cases), `mds.spec.ts` (2); `allowance.spec.ts` +1. None skipped.
+
+`npm run build`:
+
+```
+out/main/index.js       282.73 kB
+out/preload/index.js  9.16 kB
+out/renderer/assets/index-DFG8O6ou.css    110.48 kB
+out/renderer/assets/index-DoLcc_XX.js   3,354.20 kB
+```
+
+`npm run build:web` (both bundles contain the RTCPeerConnection link):
+
+```
+out/web/index.html                                                     0.93 kB │ gzip:     0.53 kB
+out/web/assets/index-gKEaWCxi.js                                     724.09 kB │ gzip:   249.62 kB
+out/web/assets/main-BWQY2fh0.js                                    1,043.58 kB │ gzip:   370.64 kB
+```
+
+Headless smoke with a throwaway profile (`PCD_HEADLESS=1 PCD_USER_DATA_DIR=$(mktemp -d) electron out/main/index.js --smoke`): `SMOKE_OK`.
+
+`npm run e2e:mds` (the script plays the phone and one contact on an in-memory Statement Store; the data channel is the in-memory loopback link because node has no WebRTC; run twice, same result):
+
+```
+PAIRED identity=0x22304d7b… device=0x48eee50f…
+DEVICE_ADDED contact=0x01010101… knows=0x48eee50f… roster=2
+SYNC_OPEN app=syncing phone=syncing
+CHAT_SYNCED contact=pcdfriend.12 devices=1 rows=incoming:received,outgoing:delivered unread=0
+CONTACT_TO_DEVICE text="live to all your devices" via=session
+OWN_TO_BOTH contact=yes phone=Outgoing:DELIVERED
+REMOVED sign-out=1
+MDS_OK
+```
+
+Real WebRTC, once, in a throwaway headless Electron page (not committed: a Vite build of an entry that runs two `createRtcLink` links, each with `startSignaler` over `createSignalSession` on an in-memory store, then `runSync` on both ports; `electron --user-data-dir=<tmp>`):
+
+```
+RTC CHANNEL_OPEN
+RTC UPDATE_OVER_WEBRTC_OK
+```
+
+So Chromium accepts the SDP rebuilt from `MinimalSetup` and the data channel carries a SyncMessage.
+
+### Not run
+
+- **Against the owner's phone.** Needs the phone. Expected today: the device pairs, the phone opens the session, but it never answers the Offer (it syncs only with host name "Polkadot Desktop", docs/questions.md M22b), so Settings shows "Paused: your phone did not answer…" after about 1.5 min. If the host name is changed, report: Settings state, whether chats and history appear, and whether a message sent here shows on the phone.
+- **The phone's initial sync is a stub** (`RealSyncDeviceUseCase.kt`): expect only what changes on the phone after the channel opens (new contacts, new messages), not the full history.
